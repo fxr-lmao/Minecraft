@@ -3,7 +3,7 @@
 // block edits are O(1) lookups.
 
 import { WORLD_SIZE, WORLD_LAYERS } from './constants.js';
-import { buildBlockMeshes } from './blocks.js';
+import { buildWorldMeshes } from './blocks.js';
 
 // block ids (see textures.js BLOCK_DEFS)
 export const BEDROCK = 8;
@@ -86,10 +86,6 @@ export class World {
 
   /** Build all render meshes for the current world state. */
   buildMeshes() {
-    const positions = [];
-    for (const b of this.solidBlocks()) {
-      positions.push({ id: b.id, x: b.x + 0.5, y: b.y + 0.5, z: b.z + 0.5 });
-    }
-    return buildBlockMeshes(positions);
+    return buildWorldMeshes(this);
   }
 }

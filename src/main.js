@@ -1,6 +1,9 @@
 // Minecraft browser clone — entry point.
 // Game loop: fixed 120 Hz physics (Minecraft-accurate movement constants),
-// render at display refresh rate.
+// render at display refresh rate. Performance features:
+//   - face-culled voxel meshes (few thousand quads instead of hundreds of thousands)
+//   - adaptive render resolution: drops pixel scale when FPS is low, raises it again when headroom returns
+//   - high-performance GPU preference, no MSAA
 
 import * as THREE from 'three';
 import { World } from './world.js';
@@ -12,11 +15,43 @@ import { PHYSICS_DT, FOV_BASE, FOV_SPRINT, FOV_SNEAK, SPEED_WALK } from './const
 import { clamp, lerp } from './utils.js';
 
 const MOUSE_SENSITIVITY = 0.0024;
+const TOUCH_SENSITIVITY = 0.006;
+
+// ---------------- error / loading overlays ----------------
+const fatalEl = document.getElementById('fatal');
+const fatalMsg = document.getElementById('fatal-msg');
+const loadingEl = document.getElementById('loading');
+let firstFrame = true;
+
+function showFatal(message) {
+  fatalMsg.textContent = message;
+  fatalEl.classList.remove('hidden');
+  loadingEl.classList.add('hidden');
+}
+window.addEventListener('error', (e) => showFatal(e.message || 'Unknown script error'));
+window.addEventListener('unhandledrejection', (e) =>
+  showFatal(String((e.reason && e.reason.message) || e.reason || 'Unknown error'))
+);
+document.getElementById('fatal-reload').addEventListener('click', () => location.reload());
+
+// WebGL2 check (three r185 requires WebGL2)
+try {
+  const probe = document.createElement('canvas');
+  if (!probe.getContext('webgl2')) throw new Error('no webgl2');
+} catch {
+  showFatal('WebGL2 is not supported by this browser or device. Please update your browser or try another one.');
+}
 
 // ---------------- renderer / scene ----------------
 const canvas = document.getElementById('game');
-const renderer = new THREE.WebGLRenderer({ canvas, antialias: false });
-renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+const renderer = new THREE.WebGLRenderer({
+  canvas,
+  antialias: false, // MSAA is expensive on mobile GPUs
+  powerPreference: 'high-performance',
+});
+const DPR_CAP = Math.min(window.devicePixelRatio || 1, 2);
+let pixelRatio = DPR_CAP;
+renderer.setPixelRatio(pixelRatio);
 renderer.setSize(window.innerWidth, window.innerHeight);
 renderer.shadowMap.enabled = true;
 renderer.shadowMap.type = THREE.PCFSoftShadowMap;
@@ -36,7 +71,8 @@ scene.add(hemi);
 const sun = new THREE.DirectionalLight(0xfff2d9, 1.7);
 sun.position.set(60, 100, 40);
 sun.castShadow = true;
-sun.shadow.mapSize.set(2048, 2048);
+let shadowMapSize = 2048;
+sun.shadow.mapSize.set(shadowMapSize, shadowMapSize);
 sun.shadow.camera.near = 10;
 sun.shadow.camera.far = 260;
 const s = 46;
@@ -58,8 +94,29 @@ const input = new Input(canvas);
 const hud = new Hud();
 const sky = createSky(scene);
 
+if (input.touchMode) document.body.classList.add('touch');
+
+// ---------------- adaptive resolution ----------------
+let resTimer = 0;
+
+function applyResolution() {
+  renderer.setPixelRatio(pixelRatio);
+  renderer.setSize(window.innerWidth, window.innerHeight);
+  camera.aspect = window.innerWidth / window.innerHeight;
+  camera.updateProjectionMatrix();
+}
+
+function setShadowMapSize(size) {
+  if (shadowMapSize === size) return;
+  shadowMapSize = size;
+  sun.shadow.mapSize.set(size, size);
+  if (sun.shadow.map) {
+    sun.shadow.map.dispose();
+    sun.shadow.map = null; // rebuilt on next render
+  }
+}
+
 // ---------------- game state ----------------
-let paused = true; // waiting for pointer lock
 let prevSprinting = false;
 let prevSneaking = false;
 
@@ -87,16 +144,16 @@ function frame(now) {
   fpsSmooth += (instFps - fpsSmooth) * 0.06;
   frameMsSmooth += (frameDt * 1000 - frameMsSmooth) * 0.06;
 
-  // ---- mouse look ----
-  if (input.locked) {
-    const { dx, dy } = input.consumeMouse();
-    player.yaw -= dx * MOUSE_SENSITIVITY;
-    player.pitch = clamp(player.pitch - dy * MOUSE_SENSITIVITY, -Math.PI / 2 + 0.01, Math.PI / 2 - 0.01);
+  // ---- look (mouse or touch drag) ----
+  if (input.active) {
+    const { dx, dy } = input.consumeLook();
+    const sens = input.touchMode ? TOUCH_SENSITIVITY : MOUSE_SENSITIVITY;
+    player.yaw -= dx * sens;
+    player.pitch = clamp(player.pitch - dy * sens, -Math.PI / 2 + 0.01, Math.PI / 2 - 0.01);
   }
 
-  // ---- physics (paused while the mouse is released) ----
-  if (input.locked) {
-    paused = false;
+  // ---- physics (paused while the mouse is released / before start) ----
+  if (input.active) {
     acc += frameDt;
     let steps = 0;
     while (acc >= PHYSICS_DT && steps < 8) {
@@ -106,12 +163,29 @@ function frame(now) {
     }
     if (steps === 8) acc = 0; // drop backlog on huge hitches
   } else {
-    paused = true;
     acc = 0;
   }
 
+  // ---- adaptive resolution ----
+  if (input.active) {
+    resTimer += frameDt;
+    if (fpsSmooth < 48 && pixelRatio > 1 && resTimer > 2.5) {
+      pixelRatio = Math.max(1, pixelRatio - 0.25);
+      applyResolution();
+      if (pixelRatio <= 1.5) setShadowMapSize(1024);
+      resTimer = 0;
+    } else if (fpsSmooth > 100 && pixelRatio < DPR_CAP && resTimer > 3) {
+      pixelRatio = Math.min(DPR_CAP, pixelRatio + 0.25);
+      applyResolution();
+      if (pixelRatio > 1.5) setShadowMapSize(2048);
+      resTimer = 0;
+    }
+  } else {
+    resTimer = 0;
+  }
+
   // ---- status messages on mode changes ----
-  if (!paused) {
+  if (input.active) {
     if (player.sprinting && !prevSprinting) hud.showStatus('Sprinting');
     if (!player.sprinting && prevSprinting) hud.showStatus('Sprinting stopped');
     if (player.sneaking && !prevSneaking) hud.showStatus('Sneaking');
@@ -164,33 +238,43 @@ function frame(now) {
     blockUnder,
     fps: Math.round(fpsSmooth),
     frameMs: frameMsSmooth,
+    pixelScale: pixelRatio,
+    touch: input.touchMode,
   });
 
   renderer.render(scene, camera);
+
+  // hide the loading screen once the first frame is on screen
+  if (firstFrame) {
+    firstFrame = false;
+    loadingEl.classList.add('hidden');
+  }
 }
 
-// ---------------- overlay / pointer lock ----------------
+// ---------------- overlay / pointer lock / start ----------------
 hud.overlayEl.addEventListener('click', () => {
-  try {
-    input.requestLock();
-  } catch (e) {
-    /* pointer lock unavailable */
-  }
+  input.start();
+  if (input.touchMode) hud.hideOverlay();
 });
 document.addEventListener('pointerlockchange', () => {
   if (input.locked) {
     hud.hideOverlay();
-  } else {
+  } else if (!input.touchMode) {
     hud.showOverlay();
   }
 });
 
-// ---------------- resize ----------------
-window.addEventListener('resize', () => {
-  camera.aspect = window.innerWidth / window.innerHeight;
-  camera.updateProjectionMatrix();
-  renderer.setSize(window.innerWidth, window.innerHeight);
+// debug toggle button (touch devices have no F3 key)
+document.getElementById('btn-debug').addEventListener('click', () => hud.toggleDebug());
+
+// WebGL context lost (iOS reclaims memory in background tabs, etc.)
+canvas.addEventListener('webglcontextlost', (e) => {
+  e.preventDefault();
+  showFatal('The graphics context was lost (often caused by low memory). Tap Reload to continue.');
 });
+
+// ---------------- resize ----------------
+window.addEventListener('resize', applyResolution);
 
 // ---------------- go ----------------
 requestAnimationFrame(frame);

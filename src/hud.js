@@ -51,6 +51,11 @@ export class Hud {
       key.textContent = i + 1;
       slot.appendChild(img);
       slot.appendChild(key);
+      slot.addEventListener('click', (e) => {
+        e.stopPropagation();
+        this.selectSlot(i);
+        this.showStatus(`Selected: ${def.name}`);
+      });
       this.hotbarEl.appendChild(slot);
     });
   }
@@ -91,7 +96,7 @@ export class Hud {
     const dir = info.yawDeg % 360;
     const idx = Math.round((dir + 360) % 360 / 90) % 4;
     const lines = [
-      `Minecraft [browser clone] alpha 0.1`,
+      `Minecraft [browser clone] alpha 0.2`,
       ``,
       `XYZ: ${info.pos.x.toFixed(3)} / ${info.pos.y.toFixed(3)} / ${info.pos.z.toFixed(3)}`,
       `Block: ${BLOCK_NAMES.get(info.blockUnder) ?? '?'}`,
@@ -102,6 +107,7 @@ export class Hud {
       `On ground: ${info.onGround}`,
       ``,
       `FPS: ${info.fps}  (${info.frameMs.toFixed(1)} ms)`,
+      `Pixel scale: ${info.pixelScale.toFixed(2)}x  ·  Touch: ${info.touch ? 'on' : 'off'}`,
       `World: ${WORLD_SIZE}x${WORLD_SIZE} flat`,
     ];
     this.debugEl.textContent = lines.join('\n');
