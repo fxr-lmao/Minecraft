@@ -96,17 +96,18 @@ export class Hud {
     const dir = info.yawDeg % 360;
     const idx = Math.round((dir + 360) % 360 / 90) % 4;
     const lines = [
-      `Minecraft [browser clone] alpha 0.2`,
+      `Minecraft [browser clone] alpha 0.3`,
       ``,
       `XYZ: ${info.pos.x.toFixed(3)} / ${info.pos.y.toFixed(3)} / ${info.pos.z.toFixed(3)}`,
       `Block: ${BLOCK_NAMES.get(info.blockUnder) ?? '?'}`,
       `Chunk: ${Math.floor(info.pos.x / 16)} ${Math.floor(info.pos.z / 16)}`,
       `Facing: ${CARDINALS[idx]} (${((dir + 360) % 360).toFixed(1)} / ${info.pitchDeg.toFixed(1)})`,
+      `Camera: ${info.cameraName}`,
       ``,
       `Speed: ${info.speed.toFixed(2)} m/s  ${info.mode}`,
       `On ground: ${info.onGround}`,
       ``,
-      `FPS: ${info.fps}  (${info.frameMs.toFixed(1)} ms)`,
+      `FPS: ${info.fps}  (${info.frameMs.toFixed(1)} ms · target ${info.fpsTarget} · display ${info.displayHz}Hz)`,
       `Pixel scale: ${info.pixelScale.toFixed(2)}x  ·  Touch: ${info.touch ? 'on' : 'off'}`,
       `World: ${WORLD_SIZE}x${WORLD_SIZE} flat`,
     ];

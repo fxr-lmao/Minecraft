@@ -1,11 +1,19 @@
 // Keyboard, mouse, and touch input.
 //
 // Desktop: pointer-lock mouse look, WASD, Ctrl/double-tap-W sprint.
+// If pointer lock can't be acquired (embedded previews, iframes without
+// the allow-pointer-lock flag, browsers that reject the request), a
+// fallback mode kicks in: click-drag on the canvas to look, arrow keys
+// steer.
 // Touch devices (iPad etc.): virtual joystick (left thumb) + drag to look
 // (right thumb) + on-screen jump / sprint / sneak buttons. The keyboard
 // still works if one is attached.
 
 import { clamp } from './utils.js';
+
+const ARROW_KEYS = new Set(['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown']);
+const ARROW_YAW_SPEED = 2.4; // rad/s
+const ARROW_PITCH_SPEED = 1.8; // rad/s
 
 const KEYMAP = {
   KeyW: 'forward',
@@ -30,6 +38,14 @@ export class Input {
     this.mouseDY = 0;
     this.locked = false;
 
+    // pointer-lock fallback: click-drag look + arrow-key steering
+    this.fallbackEnabled = false;
+    this.dragging = false;
+    this._dragLast = { x: 0, y: 0 };
+    this.dragDX = 0;
+    this.dragDY = 0;
+    this.arrows = new Set();
+
     this.touchMode =
       typeof window !== 'undefined' &&
       'ontouchstart' in window &&
@@ -51,6 +67,14 @@ export class Input {
 
     // ---- keyboard ----
     window.addEventListener('keydown', (e) => {
+      // arrow keys steer the camera in fallback mode
+      if (ARROW_KEYS.has(e.code)) {
+        if (this.fallbackEnabled && !this.locked) {
+          e.preventDefault(); // keep the page from scrolling
+          this.arrows.add(e.code);
+        }
+        return;
+      }
       const action = KEYMAP[e.code];
       if (action) e.preventDefault();
       if (e.repeat) return;
@@ -58,8 +82,17 @@ export class Input {
       if (action) this.keys.add(action);
     });
     window.addEventListener('keyup', (e) => {
+      if (ARROW_KEYS.has(e.code)) {
+        this.arrows.delete(e.code);
+        return;
+      }
       const action = KEYMAP[e.code];
       if (action) this.keys.delete(action);
+    });
+    window.addEventListener('blur', () => {
+      this.keys.clear();
+      this.arrows.clear();
+      this.dragging = false;
     });
 
     // ---- pointer lock ----
@@ -70,9 +103,29 @@ export class Input {
 
     // ---- mouse ----
     document.addEventListener('mousemove', (e) => {
-      if (!this.locked) return;
-      this.mouseDX += e.movementX;
-      this.mouseDY += e.movementY;
+      if (this.locked) {
+        this.mouseDX += e.movementX;
+        this.mouseDY += e.movementY;
+        return;
+      }
+      if (this.dragging) {
+        this.dragDX += e.clientX - this._dragLast.x;
+        this.dragDY += e.clientY - this._dragLast.y;
+        this._dragLast.x = e.clientX;
+        this._dragLast.y = e.clientY;
+      }
+    });
+
+    // ---- fallback drag look (pointer lock unavailable) ----
+    canvas.addEventListener('contextmenu', (e) => e.preventDefault());
+    canvas.addEventListener('mousedown', (e) => {
+      if (!this.fallbackEnabled || this.locked) return;
+      this.dragging = true;
+      this._dragLast.x = e.clientX;
+      this._dragLast.y = e.clientY;
+    });
+    window.addEventListener('mouseup', () => {
+      this.dragging = false;
     });
 
     // ---- touch ----
@@ -80,9 +133,9 @@ export class Input {
     this._bindButtons();
   }
 
-  /** Game is running: pointer locked (desktop) or started (touch). */
+  /** Game is running: pointer locked, fallback engaged, or started (touch). */
   get active() {
-    return this.locked || (this.touchMode && this.touchStarted);
+    return this.locked || this.fallbackEnabled || (this.touchMode && this.touchStarted);
   }
 
   /** Called from the start overlay. */
@@ -92,15 +145,41 @@ export class Input {
   }
 
   requestLock() {
-    const p = this.canvas.requestPointerLock();
+    if (typeof this.canvas.requestPointerLock !== 'function') return;
+    let p;
+    try {
+      p = this.canvas.requestPointerLock();
+    } catch {
+      return; // e.g. document not focused; the fallback path will engage
+    }
     // Chrome rejects with a promise if called too soon after Esc; ignore.
     if (p && typeof p.catch === 'function') p.catch(() => {});
   }
 
-  /** Consume accumulated look deltas (mouse and/or touch). */
-  consumeLook() {
+  /** Enable mouse-look fallback: click-drag to look, arrow keys steer. */
+  enableFallback() {
+    this.fallbackEnabled = true;
+  }
+
+  /** Leave fallback mode (back to the start overlay). */
+  endFallback() {
+    this.fallbackEnabled = false;
+    this.dragging = false;
+    this.arrows.clear();
+    this.keys.clear();
+  }
+
+  /**
+   * Consume accumulated look deltas (mouse lock, drag, touch).
+   * Returns { dx, dy, arrowDX, arrowDY } — `dx/dy` are raw pixel deltas the
+   * caller scales by a sensitivity; `arrowDX/arrowDY` are already radians
+   * in the same sign convention (positive = look right / look down).
+   */
+  consumeLook(dt = 0) {
     let dx = 0;
     let dy = 0;
+    let arrowDX = 0;
+    let arrowDY = 0;
     if (this.locked) {
       dx += this.mouseDX;
       dy += this.mouseDY;
@@ -113,7 +192,21 @@ export class Input {
       this.touch.look.dx = 0;
       this.touch.look.dy = 0;
     }
-    return { dx, dy };
+    if (this.fallbackEnabled && !this.locked) {
+      dx += this.dragDX;
+      dy += this.dragDY;
+      this.dragDX = 0;
+      this.dragDY = 0;
+      if (dt > 0) {
+        arrowDX =
+          ((this.arrows.has('ArrowRight') ? 1 : 0) - (this.arrows.has('ArrowLeft') ? 1 : 0)) *
+          ARROW_YAW_SPEED * dt;
+        arrowDY =
+          ((this.arrows.has('ArrowDown') ? 1 : 0) - (this.arrows.has('ArrowUp') ? 1 : 0)) *
+          ARROW_PITCH_SPEED * dt;
+      }
+    }
+    return { dx, dy, arrowDX, arrowDY };
   }
 
   /**

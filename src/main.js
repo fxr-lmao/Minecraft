@@ -1,8 +1,13 @@
 // Minecraft browser clone — entry point.
 // Game loop: fixed 120 Hz physics (Minecraft-accurate movement constants),
-// render at display refresh rate. Performance features:
+// render at display refresh rate. Features:
 //   - face-culled voxel meshes (few thousand quads instead of hundreds of thousands)
-//   - adaptive render resolution: drops pixel scale when FPS is low, raises it again when headroom returns
+//   - adaptive frame pacing: measures the display cadence, targets 120 fps on
+//     high-refresh screens, scales render resolution / shadow quality to hold it
+//   - camera modes (F5): first person / third person (back) / third person (front)
+//     with an animated Steve-style character in third person
+//   - pointer-lock fallback: click-drag to look + arrow keys steer where
+//     pointer lock is unavailable (embedded previews, sandboxed iframes)
 //   - high-performance GPU preference, no MSAA
 
 import * as THREE from '../vendor/three.module.min.js';
@@ -10,12 +15,19 @@ import { World } from './world.js';
 import { Player } from './player.js';
 import { Input } from './input.js';
 import { Hud } from './hud.js';
+import { Character } from './character.js';
 import { createSky, FOG_COLOR } from './sky.js';
 import { PHYSICS_DT, FOV_BASE, FOV_SPRINT, FOV_SNEAK, SPEED_WALK } from './constants.js';
-import { clamp, lerp } from './utils.js';
+import {
+  clamp, lerp,
+  refreshBucket, initialTargetFps, tierDown, tierUp,
+} from './utils.js';
 
 const MOUSE_SENSITIVITY = 0.0024;
 const TOUCH_SENSITIVITY = 0.006;
+
+const CAMERA_MODES = ['First person', 'Third person (back)', 'Third person (front)'];
+const THIRD_PERSON_DIST = 4.5;
 
 // ---------------- error / loading overlays ----------------
 const fatalEl = document.getElementById('fatal');
@@ -50,6 +62,7 @@ const renderer = new THREE.WebGLRenderer({
   powerPreference: 'high-performance',
 });
 const DPR_CAP = Math.min(window.devicePixelRatio || 1, 2);
+const PR_MIN = 0.75; // floor for adaptive resolution
 let pixelRatio = DPR_CAP;
 renderer.setPixelRatio(pixelRatio);
 renderer.setSize(window.innerWidth, window.innerHeight);
@@ -85,7 +98,7 @@ sun.shadow.normalBias = 0.12;
 scene.add(sun);
 scene.add(sun.target);
 
-// ---------------- world / player / input / hud / sky ----------------
+// ---------------- world / player / input / hud / sky / character ----------------
 const world = new World();
 for (const mesh of world.buildMeshes().values()) scene.add(mesh);
 
@@ -93,12 +106,12 @@ const player = new Player(world);
 const input = new Input(canvas);
 const hud = new Hud();
 const sky = createSky(scene);
+const character = new Character();
+scene.add(character.group);
 
 if (input.touchMode) document.body.classList.add('touch');
 
-// ---------------- adaptive resolution ----------------
-let resTimer = 0;
-
+// ---------------- adaptive quality ----------------
 function applyResolution() {
   renderer.setPixelRatio(pixelRatio);
   renderer.setSize(window.innerWidth, window.innerHeight);
@@ -114,6 +127,137 @@ function setShadowMapSize(size) {
     sun.shadow.map.dispose();
     sun.shadow.map = null; // rebuilt on next render
   }
+}
+
+// one place to apply a quality step: resolution + shadow fidelity together
+function applyQuality() {
+  applyResolution();
+  setShadowMapSize(pixelRatio > 1.5 ? 2048 : pixelRatio > 1 ? 1536 : 1024);
+}
+
+// ---------------- adaptive frame pacing ----------------
+// rAF fires at the display cadence, so the *achievable* frame rate is a
+// property of the display. We measure it, snap to a standard refresh rate,
+// and hold the highest image quality that sustains the targeted FPS
+// (120 fps on high-refresh screens). If even minimum resolution can't hold
+// the target we relax it one tier; sustained headroom restores it.
+let displayHz = 60;
+let fpsTarget = 60;
+let hzAccum = 0;
+let hzFrames = 0;
+let perfCooldown = 0;
+let lowTimer = 0;
+let highTimer = 0;
+
+function adaptPerformance(frameDt) {
+  // rolling 2.5 s window over the observed cadence; the estimate only ever
+  // moves UP (a struggling GPU measures low, but an idle one never lies high)
+  hzAccum += frameDt;
+  hzFrames++;
+  if (hzAccum >= 2.5) {
+    const win = hzFrames / hzAccum;
+    hzAccum = 0;
+    hzFrames = 0;
+    const hz = refreshBucket(win);
+    if (hz > displayHz) {
+      displayHz = hz;
+      const ambition = initialTargetFps(displayHz);
+      if (fpsTarget < ambition) fpsTarget = ambition;
+    }
+  }
+
+  perfCooldown = Math.max(0, perfCooldown - frameDt);
+
+  const lowMark = fpsTarget * 0.85;
+  const highMark = Math.min(fpsTarget * 0.99, displayHz * 0.98);
+
+  if (fpsSmooth < lowMark) {
+    highTimer = 0;
+    lowTimer += frameDt;
+    if (lowTimer > 1.4 && perfCooldown === 0) {
+      if (pixelRatio > PR_MIN) {
+        pixelRatio = Math.max(PR_MIN, Math.round((pixelRatio - 0.25) * 100) / 100);
+        applyQuality();
+      } else {
+        const relaxed = tierDown(fpsTarget);
+        if (relaxed !== fpsTarget) {
+          fpsTarget = relaxed;
+          hud.showStatus(`Performance: frame target ${fpsTarget} fps`);
+        }
+      }
+      lowTimer = 0;
+      perfCooldown = 1.25;
+    }
+  } else if (fpsSmooth > highMark) {
+    lowTimer = 0;
+    highTimer += frameDt;
+    if (highTimer > 3 && perfCooldown === 0) {
+      if (pixelRatio < DPR_CAP) {
+        pixelRatio = Math.min(DPR_CAP, Math.round((pixelRatio + 0.25) * 100) / 100);
+        applyQuality();
+      } else {
+        fpsTarget = tierUp(fpsTarget, displayHz);
+      }
+      highTimer = 0;
+      perfCooldown = 1.25;
+    }
+  } else {
+    lowTimer = 0;
+    highTimer = 0;
+  }
+}
+
+function resetPerformanceTimers() {
+  hzAccum = 0;
+  hzFrames = 0;
+  lowTimer = 0;
+  highTimer = 0;
+  perfCooldown = 0;
+}
+
+// ---------------- camera modes ----------------
+let cameraMode = 0; // 0 first person, 1 third (back), 2 third (front)
+
+function cycleCamera() {
+  cameraMode = (cameraMode + 1) % CAMERA_MODES.length;
+  hud.showStatus(`Camera: ${CAMERA_MODES[cameraMode]}`);
+}
+
+const _lookDir = new THREE.Vector3();
+const _boomDir = new THREE.Vector3();
+const _sample = new THREE.Vector3();
+const BOOM_PAD = 0.28;
+const BOOM_STEP = 0.25;
+
+/** Camera forward including pitch (matches rotation order YXZ). */
+function lookDirection(yaw, pitch, out) {
+  const cp = Math.cos(pitch);
+  return out.set(-Math.sin(yaw) * cp, Math.sin(pitch), -Math.cos(yaw) * cp);
+}
+
+/** Is the boom about to clip a solid block around (x, y, z)? */
+function boomBlocked(x, y, z) {
+  for (const ox of [-BOOM_PAD, BOOM_PAD]) {
+    for (const oy of [-BOOM_PAD, BOOM_PAD]) {
+      for (const oz of [-BOOM_PAD, BOOM_PAD]) {
+        if (world.isSolid(Math.floor(x + ox), Math.floor(y + oy), Math.floor(z + oz))) {
+          return true;
+        }
+      }
+    }
+  }
+  return false;
+}
+
+/** Shorten the third-person camera boom so it never enters solid geometry. */
+function thirdPersonBoom(eye, dir, want) {
+  for (let t = BOOM_STEP; t <= want; t += BOOM_STEP) {
+    _sample.copy(dir).multiplyScalar(t).add(eye);
+    if (boomBlocked(_sample.x, _sample.y, _sample.z)) {
+      return Math.max(0.6, t - BOOM_STEP);
+    }
+  }
+  return want;
 }
 
 // ---------------- game state ----------------
@@ -144,15 +288,19 @@ function frame(now) {
   fpsSmooth += (instFps - fpsSmooth) * 0.06;
   frameMsSmooth += (frameDt * 1000 - frameMsSmooth) * 0.06;
 
-  // ---- look (mouse or touch drag) ----
+  // ---- look (pointer lock, drag fallback, arrow keys, or touch) ----
   if (input.active) {
-    const { dx, dy } = input.consumeLook();
+    const look = input.consumeLook(frameDt);
     const sens = input.touchMode ? TOUCH_SENSITIVITY : MOUSE_SENSITIVITY;
-    player.yaw -= dx * sens;
-    player.pitch = clamp(player.pitch - dy * sens, -Math.PI / 2 + 0.01, Math.PI / 2 - 0.01);
+    player.yaw -= look.dx * sens + look.arrowDX;
+    player.pitch = clamp(
+      player.pitch - look.dy * sens - look.arrowDY,
+      -Math.PI / 2 + 0.01,
+      Math.PI / 2 - 0.01
+    );
   }
 
-  // ---- physics (paused while the mouse is released / before start) ----
+  // ---- physics (paused while on the start overlay) ----
   if (input.active) {
     acc += frameDt;
     let steps = 0;
@@ -166,22 +314,11 @@ function frame(now) {
     acc = 0;
   }
 
-  // ---- adaptive resolution ----
+  // ---- adaptive frame pacing + resolution ----
   if (input.active) {
-    resTimer += frameDt;
-    if (fpsSmooth < 48 && pixelRatio > 1 && resTimer > 2.5) {
-      pixelRatio = Math.max(1, pixelRatio - 0.25);
-      applyResolution();
-      if (pixelRatio <= 1.5) setShadowMapSize(1024);
-      resTimer = 0;
-    } else if (fpsSmooth > 100 && pixelRatio < DPR_CAP && resTimer > 3) {
-      pixelRatio = Math.min(DPR_CAP, pixelRatio + 0.25);
-      applyResolution();
-      if (pixelRatio > 1.5) setShadowMapSize(2048);
-      resTimer = 0;
-    }
+    adaptPerformance(frameDt);
   } else {
-    resTimer = 0;
+    resetPerformanceTimers();
   }
 
   // ---- status messages on mode changes ----
@@ -195,15 +332,11 @@ function frame(now) {
   }
 
   // ---- camera ----
-  camera.rotation.y = player.yaw;
-  camera.rotation.x = player.pitch;
-
-  const eye = player.eyePos;
   const fovTarget = player.sprinting ? FOV_SPRINT : player.sneaking ? FOV_SNEAK : FOV_BASE;
   camera.fov += (fovTarget - camera.fov) * Math.min(1, frameDt * 10);
   camera.updateProjectionMatrix();
 
-  // head bob
+  // head bob (computed always, applied in first person)
   const speedFactor = clamp(player.horizontalSpeed / SPEED_WALK, 0, 1.35);
   player.bobPhase = (player.bobPhase || 0) + player.horizontalSpeed * frameDt * 2.1;
   const bobAmp = player.onGround ? (player.sprinting ? 0.085 : 0.055) * speedFactor : 0;
@@ -212,12 +345,43 @@ function frame(now) {
   player.bobY = lerp(player.bobY || 0, bobY, Math.min(1, frameDt * 12));
   player.bobX = lerp(player.bobX || 0, bobX, Math.min(1, frameDt * 12));
 
-  const right = player.rightVector();
-  camera.position.set(
-    eye.x + right.x * player.bobX,
-    eye.y + player.bobY,
-    eye.z + right.z * player.bobX
-  );
+  const eye = player.eyePos;
+  let boomDist = 0;
+
+  if (cameraMode === 0) {
+    camera.rotation.y = player.yaw;
+    camera.rotation.x = player.pitch;
+    const right = player.rightVector();
+    camera.position.set(
+      eye.x + right.x * player.bobX,
+      eye.y + player.bobY,
+      eye.z + right.z * player.bobX
+    );
+  } else {
+    lookDirection(player.yaw, player.pitch, _lookDir);
+    _boomDir.copy(_lookDir);
+    if (cameraMode === 1) _boomDir.multiplyScalar(-1); // behind the player
+
+    boomDist = thirdPersonBoom(eye, _boomDir, THIRD_PERSON_DIST);
+    let cx = eye.x + _boomDir.x * boomDist;
+    let cy = eye.y + _boomDir.y * boomDist;
+    let cz = eye.z + _boomDir.z * boomDist;
+
+    // never push the camera below the terrain surface
+    const gx = clamp(Math.floor(cx), 0, world.size - 1);
+    const gz = clamp(Math.floor(cz), 0, world.size - 1);
+    const groundTop = world.heightAt(gx, gz) + 1;
+    if (cy < groundTop + 0.18) cy = groundTop + 0.18;
+
+    camera.position.set(cx, cy, cz);
+    // front view looks back at the player
+    camera.rotation.y = cameraMode === 1 ? player.yaw : player.yaw + Math.PI;
+    camera.rotation.x = cameraMode === 1 ? player.pitch : -player.pitch;
+  }
+
+  // ---- character (third person only; hidden if the boom collapsed) ----
+  character.group.visible = cameraMode !== 0 && boomDist > 0.9;
+  character.update(frameDt, player);
 
   // ---- sun / sky follow player ----
   sun.position.set(player.pos.x + 60, 105, player.pos.z + 40);
@@ -238,8 +402,11 @@ function frame(now) {
     blockUnder,
     fps: Math.round(fpsSmooth),
     frameMs: frameMsSmooth,
+    fpsTarget,
+    displayHz,
     pixelScale: pixelRatio,
     touch: input.touchMode,
+    cameraName: CAMERA_MODES[cameraMode],
   });
 
   renderer.render(scene, camera);
@@ -252,10 +419,35 @@ function frame(now) {
 }
 
 // ---------------- overlay / pointer lock / start ----------------
-hud.overlayEl.addEventListener('click', () => {
+
+let fallbackHintShown = false;
+
+/** Engage drag + arrow-key look when pointer lock can't be acquired. */
+function engageFallback() {
+  if (input.touchMode || input.locked || input.fallbackEnabled) return;
+  input.enableFallback();
+  hud.hideOverlay();
+  if (!fallbackHintShown) {
+    fallbackHintShown = true;
+    hud.showStatus('Mouse lock unavailable — click-drag to look, arrow keys steer');
+  }
+}
+
+function beginPlay() {
   input.start();
-  if (input.touchMode) hud.hideOverlay();
-});
+  if (input.touchMode) {
+    hud.hideOverlay();
+    return;
+  }
+  // Pointer lock normally engages within a frame or two after the user
+  // gesture; if it hasn't, the environment denies it — drop to fallback.
+  setTimeout(() => {
+    if (!input.locked) engageFallback();
+  }, 300);
+}
+
+hud.overlayEl.addEventListener('click', beginPlay);
+
 document.addEventListener('pointerlockchange', () => {
   if (input.locked) {
     hud.hideOverlay();
@@ -264,12 +456,33 @@ document.addEventListener('pointerlockchange', () => {
   }
 });
 
+// The browser told us straight away the lock request failed.
+document.addEventListener('pointerlockerror', engageFallback);
+
+// In fallback mode Esc pauses back to the overlay (there's no lock to exit).
+window.addEventListener('keydown', (e) => {
+  if (e.code === 'Escape' && input.fallbackEnabled && !input.locked) {
+    input.endFallback();
+    hud.showOverlay();
+  }
+});
+
+// F5 cycles the camera (preventDefault keeps the browser from reloading).
+window.addEventListener('keydown', (e) => {
+  if (e.code === 'F5') {
+    e.preventDefault();
+    if (input.active) cycleCamera();
+  }
+});
+
 // Start with any key too (Magic Keyboard on iPad, or just convenience):
 // the overlay is visible, so a keypress is an explicit user gesture.
-window.addEventListener('keydown', () => {
+// Escape/F5 are excluded — Esc pauses in fallback mode (its handler runs
+// first on the same event), and F5 is the camera toggle, not a start key.
+window.addEventListener('keydown', (e) => {
   if (hud.overlayEl.classList.contains('hidden')) return;
-  input.start();
-  hud.hideOverlay();
+  if (e.code === 'Escape' || e.code === 'F5') return;
+  beginPlay();
 });
 
 // debug toggle button (touch devices have no F3 key)
@@ -286,3 +499,25 @@ window.addEventListener('resize', applyResolution);
 
 // ---------------- go ----------------
 requestAnimationFrame(frame);
+
+// handle for tests / debugging from the console
+window.__game = {
+  player, input, hud, world, camera, renderer,
+  cycleCamera,
+  debugState() {
+    return {
+      active: input.active,
+      locked: input.locked,
+      fallback: input.fallbackEnabled,
+      cameraMode,
+      characterVisible: character.group.visible,
+      pos: { x: player.pos.x, y: player.pos.y, z: player.pos.z },
+      yaw: player.yaw,
+      pitch: player.pitch,
+      fps: Math.round(fpsSmooth),
+      fpsTarget,
+      displayHz,
+      pixelRatio,
+    };
+  },
+};
