@@ -1,0 +1,193 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Minecraft — browser clone</title>
+  <style>
+    :root {
+      --mc-gray: #c6c6c6;
+      --mc-gray-dark: #555555;
+      --mc-hover: #ffffff;
+    }
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    html, body {
+      width: 100%; height: 100%;
+      overflow: hidden;
+      background: #000;
+      font-family: "Segoe UI", "Helvetica Neue", Arial, sans-serif;
+      user-select: none;
+      -webkit-user-select: none;
+    }
+    #game {
+      display: block;
+      width: 100vw;
+      height: 100vh;
+      image-rendering: pixelated;
+    }
+
+    /* ---------- crosshair ---------- */
+    #crosshair {
+      position: fixed;
+      left: 50%; top: 50%;
+      width: 20px; height: 20px;
+      transform: translate(-50%, -50%);
+      pointer-events: none;
+      z-index: 10;
+      mix-blend-mode: difference;
+    }
+    #crosshair::before, #crosshair::after {
+      content: "";
+      position: absolute;
+      background: #fff;
+    }
+    #crosshair::before { left: 9px; top: 0; width: 2px; height: 20px; }
+    #crosshair::after  { top: 9px; left: 0; height: 2px; width: 20px; }
+
+    /* ---------- hotbar ---------- */
+    #hotbar {
+      position: fixed;
+      left: 50%; bottom: 8px;
+      transform: translateX(-50%);
+      display: flex;
+      gap: 2px;
+      padding: 3px;
+      background: rgba(0, 0, 0, 0.35);
+      border: 2px solid rgba(0, 0, 0, 0.6);
+      border-radius: 3px;
+      z-index: 10;
+      pointer-events: none;
+    }
+    .slot {
+      width: 46px; height: 46px;
+      background: rgba(255, 255, 255, 0.12);
+      border: 2px solid rgba(255, 255, 255, 0.25);
+      border-radius: 2px;
+      position: relative;
+    }
+    .slot.selected {
+      background: rgba(255, 255, 255, 0.35);
+      border-color: #fff;
+      box-shadow: 0 0 6px rgba(255,255,255,0.6);
+    }
+    .slot img {
+      position: absolute; inset: 0;
+      width: 100%; height: 100%;
+      image-rendering: pixelated;
+    }
+    .slot .key {
+      position: absolute;
+      right: 2px; bottom: 1px;
+      font-size: 10px;
+      color: #fff;
+      text-shadow: 1px 1px 0 #000;
+      font-weight: bold;
+    }
+
+    /* ---------- debug / F3 ---------- */
+    #debug {
+      position: fixed;
+      left: 4px; top: 4px;
+      color: #fff;
+      font-family: "Consolas", "Courier New", monospace;
+      font-size: 13px;
+      line-height: 1.45;
+      text-shadow: 1px 1px 0 rgba(0, 0, 0, 0.8);
+      background: rgba(0, 0, 0, 0.25);
+      padding: 6px 10px;
+      border-radius: 4px;
+      z-index: 10;
+      pointer-events: none;
+      display: none;
+      white-space: pre;
+    }
+    #debug.visible { display: block; }
+
+    /* ---------- center status text (sprint etc.) ---------- */
+    #status {
+      position: fixed;
+      left: 50%; bottom: 18%;
+      transform: translateX(-50%);
+      color: #fff;
+      font-size: 18px;
+      font-weight: bold;
+      text-shadow: 2px 2px 0 rgba(0,0,0,0.6);
+      z-index: 10;
+      pointer-events: none;
+      opacity: 0;
+      transition: opacity 0.25s;
+    }
+    #status.show { opacity: 1; }
+
+    /* ---------- overlays ---------- */
+    .overlay {
+      position: fixed;
+      inset: 0;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      background: rgba(0, 0, 0, 0.55);
+      z-index: 20;
+      cursor: pointer;
+    }
+    .overlay.hidden { display: none; }
+    .overlay .panel {
+      background: rgba(30, 30, 30, 0.92);
+      border: 3px solid #000;
+      outline: 3px solid #6a6a6a;
+      padding: 28px 40px;
+      text-align: center;
+      color: #fff;
+      max-width: 620px;
+    }
+    .overlay h1 {
+      font-size: 42px;
+      margin-bottom: 4px;
+      letter-spacing: 1px;
+      text-shadow: 3px 3px 0 #3a3a3a;
+    }
+    .overlay .subtitle { color: #aaa; margin-bottom: 18px; font-size: 14px; }
+    .overlay .controls {
+      text-align: left;
+      display: inline-block;
+      font-size: 14px;
+      line-height: 1.9;
+      margin-bottom: 18px;
+    }
+    .overlay .controls b { color: #ffd966; font-family: Consolas, monospace; }
+    .overlay .click { color: #fff; font-size: 15px; animation: pulse 1.6s infinite; }
+    @keyframes pulse { 50% { opacity: 0.35; } }
+  </style>
+</head>
+<body>
+  <canvas id="game"></canvas>
+
+  <div id="crosshair"></div>
+
+  <div id="hotbar"></div>
+
+  <div id="status"></div>
+
+  <pre id="debug"></pre>
+
+  <div id="overlay" class="overlay">
+    <div class="panel">
+      <h1>MINECRAFT</h1>
+      <div class="subtitle">browser clone · alpha 0.1</div>
+      <div class="controls">
+        <div><b>W A S D</b> — move</div>
+        <div><b>SPACE</b> — jump &nbsp;(hold to keep jumping)</div>
+        <div><b>CTRL</b> or <b>double-tap W</b> — sprint</div>
+        <div><b>SHIFT</b> — sneak</div>
+        <div><b>MOUSE</b> — look around</div>
+        <div><b>1–9 / scroll</b> — select hotbar slot</div>
+        <div><b>F3</b> — debug screen (position, speed, FPS)</div>
+        <div><b>ESC</b> — release mouse</div>
+      </div>
+      <div class="click">Click to play</div>
+    </div>
+  </div>
+
+  <script type="module" src="/src/main.js"></script>
+</body>
+</html>
