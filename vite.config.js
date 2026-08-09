@@ -10,6 +10,11 @@ export default defineConfig({
     allowedHosts: true, // accept the sandbox preview host
   },
   build: {
+    // Output into docs/ so GitHub Pages can serve the built site directly
+    // ("Deploy from a branch" → folder /docs). The build uses relative asset
+    // paths (base: './') so it works from any Pages subpath.
+    outDir: 'docs',
+    emptyOutDir: true,
     target: 'es2020',
     chunkSizeWarningLimit: 700,
   },

@@ -264,6 +264,14 @@ document.addEventListener('pointerlockchange', () => {
   }
 });
 
+// Start with any key too (Magic Keyboard on iPad, or just convenience):
+// the overlay is visible, so a keypress is an explicit user gesture.
+window.addEventListener('keydown', () => {
+  if (hud.overlayEl.classList.contains('hidden')) return;
+  input.start();
+  hud.hideOverlay();
+});
+
 // debug toggle button (touch devices have no F3 key)
 document.getElementById('btn-debug').addEventListener('click', () => hud.toggleDebug());
 
