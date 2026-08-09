@@ -1,0 +1,17 @@
+{
+  "name": "minecraft-clone",
+  "private": true,
+  "version": "0.2.0",
+  "type": "module",
+  "description": "A browser Minecraft clone: flat world, player movement, jumping, sprinting.",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview",
+    "test": "node scripts/physics-test.mjs && node scripts/world-test.mjs && node scripts/mesher-test.mjs && node scripts/uv-test.mjs"
+  },
+  "dependencies": {
+    "three": "^0.185.1",
+    "vite": "^8.2.1"
+  }
+}
