@@ -5,7 +5,7 @@
 //   - adaptive render resolution: drops pixel scale when FPS is low, raises it again when headroom returns
 //   - high-performance GPU preference, no MSAA
 
-import * as THREE from 'three';
+import * as THREE from '../vendor/three.module.min.js';
 import { World } from './world.js';
 import { Player } from './player.js';
 import { Input } from './input.js';

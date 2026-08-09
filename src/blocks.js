@@ -8,7 +8,7 @@
 // (0 = side, 1 = top, 2 = bottom), 4 corners wound CCW when viewed from
 // outside, and UVs within that column.
 
-import * as THREE from 'three';
+import * as THREE from '../vendor/three.module.min.js';
 import { BLOCK_DEFS, getBlockAssets } from './textures.js';
 
 export const FACES = [

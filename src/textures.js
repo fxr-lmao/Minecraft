@@ -2,7 +2,7 @@
 // Each block gets a 48x16 atlas: [side | top | bottom] columns.
 // Textures are generated with a seeded RNG so they look identical every load.
 
-import * as THREE from 'three';
+import * as THREE from '../vendor/three.module.min.js';
 import { mulberry32, clamp } from './utils.js';
 
 export const TEX_SIZE = 16;

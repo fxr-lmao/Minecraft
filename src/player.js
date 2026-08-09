@@ -9,7 +9,7 @@
 //   sneak speed 1.295 blk/s
 //   gravity 32 blk/s^2, jump velocity 8.95 blk/s (≈1.25 blk jump height)
 
-import * as THREE from 'three';
+import * as THREE from '../vendor/three.module.min.js';
 import {
   GRAVITY, JUMP_VELOCITY,
   SPEED_WALK, SPEED_SNEAK, AIR_WALK,

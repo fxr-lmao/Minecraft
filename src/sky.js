@@ -1,7 +1,7 @@
 // Daytime sky: gradient dome, sun sprite, drifting pixel clouds.
 // No time cycle yet — a static pleasant midday.
 
-import * as THREE from 'three';
+import * as THREE from '../vendor/three.module.min.js';
 import { mulberry32 } from './utils.js';
 
 export const SKY_TOP = 0x6eb5ff;

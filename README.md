@@ -13,6 +13,7 @@ A from-scratch Minecraft-style game built with [Three.js](https://threejs.org/) 
 - **Touch controls** — on iPad/phones: virtual joystick (left thumb), drag to look (right thumb), on-screen Jump / Sprint / Sneak buttons, tap the hotbar to select blocks
 - **HUD** — crosshair, hotbar (block selector), F3 debug screen (position, speed, FPS, pixel scale)
 - **Robust loading** — loading screen, friendly error screen if something goes wrong (no more silent black screens), WebGL2 detection
+- **Runs on static hosts with zero build step** — pure ES modules with no bare imports; Three.js is vendored in `vendor/` (MIT, see `vendor/THREE.LICENSE`)
 
 ## Controls
 
@@ -37,53 +38,16 @@ npm run dev        # http://localhost:5173
 
 Press any key or click the screen to start, then move around.
 
-## Deploying to GitHub Pages (important — read this)
+## Deploying to GitHub Pages
 
-GitHub Pages serves **files from your repo**, it never runs a build. The raw source (with `import 'three'`) therefore can't run on Pages — the HTML loads but the game never starts. You must deploy the **built** site. The build outputs to `docs/` with relative asset paths, ready for Pages.
+No build step needed — the repo *is* the site (browsers load the ES modules directly; `node_modules` and Vite are only used for local dev).
 
-**Option A — Pages branch mode (simplest, no workflow).**
-
-1. Make sure the built site is in the repo: `npm run build` (creates `docs/` — it is committed).
+1. Push your code to GitHub.
 2. Repo **Settings → Pages → Source: "Deploy from a branch"**.
-3. Branch: `main`, folder: `/docs`, Save.
-4. Your game is live at `https://<user>.github.io/Minecraft/` and auto-rebuilds on every push to `main` (remember to `npm run build` before pushing changes).
+3. Branch: the branch you pushed to, folder: `/` (root), Save.
+4. Live at `https://<user>.github.io/<repo>/` — every push auto-updates the site.
 
-**Option B — GitHub Actions workflow.** Add `.github/workflows/deploy.yml` to the repo (this token can't push workflow files, so create it on GitHub: repo → Add file → Create new file):
-
-```yaml
-name: Deploy to GitHub Pages
-on:
-  push: { branches: [main] }
-  workflow_dispatch:
-permissions:
-  contents: read
-  pages: write
-  id-token: write
-concurrency: { group: pages, cancel-in-progress: true }
-jobs:
-  build:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with: { node-version: 22, cache: npm }
-      - run: npm ci
-      - run: npm test
-      - run: npm run build
-      - uses: actions/upload-pages-artifact@v3
-        with: { path: docs }
-  deploy:
-    needs: build
-    runs-on: ubuntu-latest
-    environment:
-      name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
-    steps:
-      - id: deployment
-        uses: actions/deploy-pages@v4
-```
-
-Then set **Settings → Pages → Source: "GitHub Actions"**.
+(Previously the game referenced `import 'three'` — a Node package — which GitHub Pages can't resolve, so the HTML loaded but the game never started. That's fixed by vendoring Three.js into `vendor/` and using relative imports.)
 
 ## Tests
 
