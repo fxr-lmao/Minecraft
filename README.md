@@ -38,13 +38,46 @@ Click the screen to capture the mouse, then move around.
 
 ## GitHub Pages
 
-The repo includes `.github/workflows/deploy.yml` which builds and deploys to Pages automatically.
-
-1. Push to `main` (or run the workflow manually from the Actions tab).
-2. In repo **Settings → Pages**, set Source to **GitHub Actions**.
-3. Your game will be live at `https://<user>.github.io/Minecraft/`.
-
 The build uses relative asset paths (`base: './'`), so it works from any subpath — this fixes the black screen that happens when assets are referenced with absolute paths on a project site.
+
+**Option A — GitHub Actions (recommended).** Add this workflow at `.github/workflows/deploy.yml` (or use any Pages action that runs `npm run build` and publishes `dist`):
+
+```yaml
+name: Deploy to GitHub Pages
+on:
+  push: { branches: [main] }
+  workflow_dispatch:
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+concurrency: { group: pages, cancel-in-progress: true }
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 22, cache: npm }
+      - run: npm ci
+      - run: npm test
+      - run: npm run build
+      - uses: actions/upload-pages-artifact@v3
+        with: { path: dist }
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4
+```
+
+Then in repo **Settings → Pages** set Source to **GitHub Actions**. The game will be live at `https://<user>.github.io/Minecraft/`.
+
+**Option B — manual.** Run `npm run build` locally, then push the contents of `dist/` to a `gh-pages` branch (e.g. with `npx gh-pages -d dist`) and select that branch in Settings → Pages.
 
 ## Tests
 
