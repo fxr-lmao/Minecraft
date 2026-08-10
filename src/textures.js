@@ -239,7 +239,7 @@ export const BLOCK_DEFS = [
 
 /**
  * Build a 48x16 atlas canvas for a block: [side | top | bottom].
- * Also returns the side face canvas (for hotbar icons).
+ * Also returns the individual faces (for inventory icons).
  */
 function buildAtlas(block) {
   const rand = mulberry32(block.id * 7919 + 13);
@@ -253,23 +253,81 @@ function buildAtlas(block) {
   ctx.drawImage(side, 0, 0);
   ctx.drawImage(top, TEX_SIZE, 0);
   ctx.drawImage(bottom, TEX_SIZE * 2, 0);
-  return { atlas: cv, side };
+  return { atlas: cv, side, top };
+}
+
+// ---------- inventory icons ----------
+// Minecraft draws item icons as an isometric cube: the top face as a rhombus
+// with the two lit/shaded side faces below it. Each face is a 2x3 affine
+// transform mapping the 16x16 texture onto its parallelogram.
+
+const ICON_SCALE = 3; // canvas pixels per texel -> 96x96 icon
+
+function drawIconFace(ctx, img, m, shade) {
+  const S = TEX_SIZE;
+  ctx.save();
+  ctx.setTransform(m.a, m.b, m.c, m.d, m.e, m.f);
+  ctx.imageSmoothingEnabled = false;
+  // Slight overdraw hides the hairline seams between the three faces.
+  ctx.drawImage(img, 0, 0, S, S, -0.03, -0.03, S + 0.06, S + 0.06);
+  ctx.restore();
+  if (!shade) return;
+  const pt = (u, v) => [m.a * u + m.c * v + m.e, m.b * u + m.d * v + m.f];
+  const corners = [pt(0, 0), pt(S, 0), pt(S, S), pt(0, S)];
+  ctx.save();
+  ctx.beginPath();
+  ctx.moveTo(corners[0][0], corners[0][1]);
+  for (let i = 1; i < 4; i++) ctx.lineTo(corners[i][0], corners[i][1]);
+  ctx.closePath();
+  ctx.fillStyle = `rgba(0,0,0,${shade})`;
+  ctx.fill();
+  ctx.restore();
+}
+
+function buildIcon(side, top) {
+  const q = TEX_SIZE * ICON_SCALE; // half-width of the cube (48)
+  const cv = document.createElement('canvas');
+  cv.width = q * 2;
+  cv.height = q * 2;
+  const ctx = cv.getContext('2d');
+  const h = q / 2; // vertical drop of the isometric edges
+  const k = ICON_SCALE; // texel -> canvas px along a face edge
+  // top rhombus: (0,h) (q,0) (2q,h) (q,2h)
+  drawIconFace(ctx, top, { a: k, b: -k / 2, c: k, d: k / 2, e: 0, f: h }, 0);
+  // left face
+  drawIconFace(ctx, side, { a: k, b: k / 2, c: 0, d: k, e: 0, f: h }, 0.28);
+  // right face
+  drawIconFace(ctx, side, { a: k, b: -k / 2, c: 0, d: k, e: q, f: 2 * h }, 0.12);
+  return cv;
 }
 
 const cache = new Map();
 
-/** Returns { texture: THREE.CanvasTexture (48x16 atlas), iconUrl } for a block def. */
+/**
+ * Returns { texture: THREE.CanvasTexture (48x16 atlas), iconUrl } for a block
+ * def. `iconUrl` is the isometric cube used by the hotbar and inventory.
+ */
 export function getBlockAssets(block) {
   if (cache.has(block.id)) return cache.get(block.id);
-  const { atlas, side } = buildAtlas(block);
+  const { atlas, side, top } = buildAtlas(block);
   const texture = new THREE.CanvasTexture(atlas);
   texture.magFilter = THREE.NearestFilter;
   texture.minFilter = THREE.NearestMipmapLinearFilter;
   texture.generateMipmaps = true;
   texture.colorSpace = THREE.SRGBColorSpace;
   texture.anisotropy = 4;
-  const iconUrl = side.toDataURL();
+  const iconUrl = buildIcon(side, top).toDataURL();
   const assets = { texture, iconUrl };
   cache.set(block.id, assets);
   return assets;
+}
+
+/** Look up a block definition by id (null for air / unknown ids). */
+export function getBlockDefById(id) {
+  return BLOCK_DEFS.find((b) => b.id === id) ?? null;
+}
+
+/** Display name for a block id. */
+export function blockName(id) {
+  return getBlockDefById(id)?.name ?? 'Air';
 }

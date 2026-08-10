@@ -17,6 +17,7 @@ import {
   PLAYER_WIDTH, PLAYER_HEIGHT, PLAYER_EYE, STEP_HEIGHT,
   WORLD_SIZE, SPAWN,
 } from './constants.js';
+import { lookVector } from './view.js';
 
 const HALF = PLAYER_WIDTH / 2;
 const EPS = 1e-4;
@@ -55,6 +56,11 @@ export class Player {
   /** Horizontal right vector from yaw. */
   rightVector() {
     return new THREE.Vector3(Math.cos(this.yaw), 0, -Math.sin(this.yaw));
+  }
+
+  /** Full look direction (yaw + pitch) — what the crosshair points at. */
+  lookDirection() {
+    return lookVector(this.yaw, this.pitch);
   }
 
   /**
