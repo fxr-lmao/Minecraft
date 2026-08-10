@@ -1,6 +1,6 @@
 // Smoke test for the player physics on the real flat world.
 import { Player } from '../src/player.js';
-import { World } from '../src/world.js';
+import { World, GRASS } from '../src/world.js';
 import { PHYSICS_DT } from '../src/constants.js';
 
 const world = new World();
@@ -106,6 +106,84 @@ const assert = (name, cond, detail) => {
   p.pos.set(64.5, 40, 64.5);
   for (let i = 0; i < 400; i++) p.update(PHYSICS_DT, { forward: 0, strafe: 0, jump: false, sprint: false, sneak: false });
   assert('fast fall lands on ground', p.onGround && Math.abs(p.pos.y - 4.0001) < 0.01, p.pos.y.toFixed(4));
+}
+
+// 11. walking into blocks — regression for the auto-step bug that dropped the
+//     player through the floor to y = -3 whenever one axis was blocked and the
+//     other was free (running along a wall at an angle).
+{
+  const walled = new World();
+  for (let z = 60; z < 70; z++) {
+    for (let y = 4; y < 6; y++) walled.setBlock(66, y, z, GRASS); // wall at x=66
+  }
+
+  // yaw -pi/2 points "forward" at +x, straight into the wall; strafe then
+  // pushes along +z, so forward+strafe runs at it diagonally.
+  const runInto = (input, seconds, w = walled) => {
+    const p = new Player(w);
+    p.pos.set(64.5, 4.001, 64.5);
+    p.yaw = -Math.PI / 2;
+    let minY = p.pos.y;
+    let maxY = p.pos.y;
+    const steps = Math.round(seconds / PHYSICS_DT);
+    for (let i = 0; i < steps; i++) {
+      p.update(PHYSICS_DT, input);
+      minY = Math.min(minY, p.pos.y);
+      maxY = Math.max(maxY, p.pos.y);
+    }
+    return { p, minY, maxY };
+  };
+
+  const straight = runInto({ forward: 1, strafe: 0, jump: false, sprint: false, sneak: false }, 2);
+  assert('wall stops you at its face',
+    Math.abs(straight.p.pos.x - 65.7) < 0.01, straight.p.pos.x.toFixed(3));
+  assert('walking into a wall never sinks',
+    straight.minY > 3.99, straight.minY.toFixed(3));
+
+  const diagonal = runInto({ forward: 1, strafe: 1, jump: false, sprint: false, sneak: false }, 2);
+  assert('diagonal wall contact never sinks',
+    diagonal.minY > 3.99, diagonal.minY.toFixed(3));
+  assert('diagonal wall contact never pops up',
+    diagonal.maxY < 4.01, diagonal.maxY.toFixed(3));
+  assert('you slide along the wall instead of stopping',
+    diagonal.p.pos.z > 66, diagonal.p.pos.z.toFixed(3));
+
+  const sprintDiag = runInto({ forward: 1, strafe: 1, jump: false, sprint: true, sneak: false }, 2);
+  assert('sprinting into a wall stays on the ground',
+    sprintDiag.minY > 3.99 && sprintDiag.p.onGround, sprintDiag.minY.toFixed(3));
+
+  // a full block cannot be walked up — you have to jump, like Minecraft
+  const noStep = runInto({ forward: 1, strafe: 0, jump: false, sprint: false, sneak: false }, 3);
+  assert('a full block is not auto-climbed',
+    Math.abs(noStep.p.pos.y - 4.0) < 0.01, noStep.p.pos.y.toFixed(3));
+
+  // ...and jumping up onto a one-block-high ledge does work
+  const ledge = new World();
+  for (let x = 66; x < 80; x++) {
+    for (let z = 60; z < 70; z++) ledge.setBlock(x, 4, z, GRASS);
+  }
+  const jumped = runInto({ forward: 1, strafe: 0, jump: true, sprint: false, sneak: false }, 3, ledge);
+  assert('you can jump up onto a ledge',
+    jumped.p.pos.x > 67 && jumped.p.pos.y >= 4.99,
+    `x=${jumped.p.pos.x.toFixed(2)} y=${jumped.p.pos.y.toFixed(3)}`);
+
+  // walking at the same ledge without jumping gets you nowhere
+  const walkedAtLedge = runInto({ forward: 1, strafe: 0, jump: false, sprint: false, sneak: false }, 3, ledge);
+  assert('the ledge blocks you without a jump',
+    Math.abs(walkedAtLedge.p.pos.x - 65.7) < 0.01 && Math.abs(walkedAtLedge.p.pos.y - 4) < 0.01,
+    `x=${walkedAtLedge.p.pos.x.toFixed(2)} y=${walkedAtLedge.p.pos.y.toFixed(3)}`);
+}
+
+// 12. running into the world border must not sink the player either
+{
+  const p = new Player(world);
+  p.pos.set(127.0, 4.001, 64.5);
+  let minY = p.pos.y;
+  for (let i = 0; i < 400; i++) {
+    p.update(PHYSICS_DT, { forward: 1, strafe: 1, jump: false, sprint: true, sneak: false });
+    minY = Math.min(minY, p.pos.y);
+  }
+  assert('border contact never sinks', minY > 3.99, minY.toFixed(3));
 }
 
 console.log(results.join('\n'));
