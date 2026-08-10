@@ -12,7 +12,7 @@ A from-scratch Minecraft-style game built with [Three.js](https://threejs.org/) 
 - **Settings** — mouse and touch sensitivity, field of view, invert-Y, and a fullscreen toggle, all persisted
 - **Fast rendering** — face-culled voxel meshing (~18k quads instead of ~393k) split into chunks, so placing or breaking a block re-meshes 1/16th of the world instead of all of it
 - **Adaptive resolution** — render scale and shadow quality drop automatically when FPS is low and recover when there's headroom (great on iPads/phones)
-- **Minecraft-accurate movement** — walk 4.317, sprint 5.612, sneak 1.295 blocks/s, gravity 32 blk/s², jump ≈1.25 blocks, air drag, auto-step and sprint-cancel on wall bumps
+- **Minecraft-accurate movement** — walk 4.317, sprint 5.612, sneak 1.295 blocks/s, gravity 32 blk/s², jump ≈1.25 blocks, air drag, axis-separated collision that slides along walls, and sprint-cancel on wall bumps. Full blocks are jumped onto, not stepped onto, same as the real game
 - **Robust loading** — loading screen, friendly error screen instead of a silent black page, WebGL2 detection
 - **Zero build step** — pure ES modules with no bare imports; Three.js is vendored in `vendor/` (MIT, see `vendor/THREE.LICENSE`)
 

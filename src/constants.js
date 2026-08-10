@@ -31,7 +31,9 @@ export const DRAG_AIR = -TICK_RATE * Math.log(0.91); // ~1.89 /s
 export const PLAYER_WIDTH = 0.6; // x/z extent of the AABB
 export const PLAYER_HEIGHT = 1.8;
 export const PLAYER_EYE = 1.62;
-export const STEP_HEIGHT = 0.6; // auto-step up ledges this high
+// Minecraft's step height. Unused while every block is a full cube (0.6 is
+// too low to climb one, so you jump); it is here for slabs and stairs.
+export const STEP_HEIGHT = 0.6;
 
 // FOV
 export const FOV_BASE = 70;

@@ -14,7 +14,7 @@ import {
   GRAVITY, JUMP_VELOCITY,
   SPEED_WALK, SPEED_SNEAK, AIR_WALK,
   DRAG_GROUND, DRAG_AIR,
-  PLAYER_WIDTH, PLAYER_HEIGHT, PLAYER_EYE, STEP_HEIGHT,
+  PLAYER_WIDTH, PLAYER_HEIGHT, PLAYER_EYE,
   WORLD_SIZE, SPAWN,
 } from './constants.js';
 import { lookVector } from './view.js';
@@ -173,13 +173,13 @@ export class Player {
     if (dx !== 0) {
       this.pos.x += dx;
       const hit = this._collideX(dx);
-      if (hit) { this.pos.x = hit; this.vel.x = 0; blockedX = true; }
+      if (hit !== null) { this.pos.x = hit; this.vel.x = 0; blockedX = true; }
     }
     // Z axis
     if (dz !== 0) {
       this.pos.z += dz;
       const hit = this._collideZ(dz);
-      if (hit) { this.pos.z = hit; this.vel.z = 0; blockedZ = true; }
+      if (hit !== null) { this.pos.z = hit; this.vel.z = 0; blockedZ = true; }
     }
     // Y axis
     if (dy !== 0) {
@@ -196,14 +196,9 @@ export class Player {
       }
     }
 
-    const blockedHorizontal = blockedX || blockedZ;
-
-    // Auto-step: if we bumped a wall while on the ground, try stepping up.
-    if (blockedHorizontal && (this.onGround || dy <= 0)) {
-      this._tryStep(dx, dz, dt);
-    }
-
-    return { blockedHorizontal };
+    // Sliding along a wall falls out of the axis-separated resolve above:
+    // the blocked axis stops, the free axis keeps moving.
+    return { blockedHorizontal: blockedX || blockedZ };
   }
 
   /** Returns the AABB min/max as {minX, maxX, minY, maxY, minZ, maxZ}. */
@@ -282,55 +277,20 @@ export class Player {
     return resolved;
   }
 
-  /** Try to walk up a ledge up to STEP_HEIGHT tall. */
-  _tryStep(dx, dz, dt) {
-    const saved = this.pos.clone();
-    const savedVy = this.vel.y;
-    const wasSprinting = this.sprinting;
-
-    // headroom check
-    this.pos.y += STEP_HEIGHT + 0.01;
-    let headHit = false;
-    const b = this._aabb();
-    outer: for (let cy = Math.floor(b.minY); cy <= Math.floor(b.maxY - 1e-9); cy++) {
-      for (let cx = Math.floor(b.minX); cx <= Math.floor(b.maxX - 1e-9); cx++) {
-        for (let cz = Math.floor(b.minZ); cz <= Math.floor(b.maxZ - 1e-9); cz++) {
-          if (this.world.isSolid(cx, cy, cz)) { headHit = true; break outer; }
-        }
-      }
-    }
-    if (headHit) { this.pos.copy(saved); return; }
-
-    // try horizontal movement again
-    this.vel.y = 0;
-    if (dx !== 0) {
-      this.pos.x += dx;
-      const hit = this._collideX(dx);
-      if (hit) { this.pos.x = hit; this.vel.x = 0; }
-    }
-    if (dz !== 0) {
-      this.pos.z += dz;
-      const hit = this._collideZ(dz);
-      if (hit) { this.pos.z = hit; this.vel.z = 0; }
-    }
-    // fall back down
-    const before = this.pos.y;
-    this.pos.y -= 10;
-    const hitY = this._collideY(-1);
-    if (hitY !== null) {
-      this.pos.y = hitY;
-      this.onGround = true;
-    } else {
-      this.pos.y = before;
-    }
-
-    // only accept if we actually moved forward
-    const movedX = Math.abs(this.pos.x - saved.x) > 1e-6;
-    const movedZ = Math.abs(this.pos.z - saved.z) > 1e-6;
-    if (!movedX && !movedZ) {
-      this.pos.copy(saved);
-      this.vel.y = savedVy;
-      this.sprinting = wasSprinting;
-    }
-  }
+  // There is deliberately no auto-step here.
+  //
+  // Every block in this world is a full 1.0 cube and Minecraft's step height
+  // is 0.6, so a step-up can never succeed anyway — you jump onto a block,
+  // exactly like the real game. The previous attempt at one was also the
+  // source of a nasty bug: it moved the player 10 blocks down to "fall back
+  // to the surface", but the downward resolve only inspects the cells the
+  // player's own box overlaps. Ten blocks below the surface that box is
+  // under the world, where every cell reports solid (the world is sealed
+  // from below), so the player was planted at y = -3 — inside the void.
+  // It fired whenever one axis was blocked and the other was free, i.e.
+  // every time you ran along a wall at an angle.
+  //
+  // When partial blocks (slabs, stairs) arrive, a step-up will be needed
+  // again: raise by the step height, retry the horizontal move, then resolve
+  // downward by *at most* the step height — never by an unbounded drop.
 }
