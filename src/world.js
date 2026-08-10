@@ -24,6 +24,10 @@ export class World {
     this.blocks = new Uint8Array(this.size * this.layers * this.size);
     /** Chunk keys ("cx,cz") whose meshes are out of date. */
     this.dirtyChunks = new Set();
+    /** Every player edit as index -> block id, for saving. */
+    this.edits = new Map();
+    /** Bumped on every edit so the save loop knows there is work to do. */
+    this.revision = 0;
     this.generate();
   }
 
@@ -73,6 +77,8 @@ export class World {
     const i = this.index(x, y, z);
     if (this.blocks[i] === id) return false;
     this.blocks[i] = id;
+    this.edits.set(i, id);
+    this.revision++;
     this.markDirty(x, z);
     // A block on a chunk border also changes the neighbour's hidden faces.
     const lx = x % this.chunkSize;
@@ -82,6 +88,22 @@ export class World {
     if (lz === 0) this.markDirty(x, z - 1);
     if (lz === this.chunkSize - 1) this.markDirty(x, z + 1);
     return true;
+  }
+
+  /**
+   * Re-apply saved edits. Done before the meshes are built, so this writes
+   * straight into the grid without touching the dirty-chunk set.
+   */
+  applyEdits(edits) {
+    const cells = this.blocks.length;
+    let applied = 0;
+    for (const { index, id } of edits) {
+      if (index < 0 || index >= cells) continue;
+      this.blocks[index] = id;
+      this.edits.set(index, id);
+      applied++;
+    }
+    return applied;
   }
 
   markDirty(x, z) {

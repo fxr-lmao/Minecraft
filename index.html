@@ -48,7 +48,7 @@
       <button id="btn-pause" class="tbtn small" type="button">❚❚</button>
       <button id="btn-inventory" class="tbtn small" type="button">Inv</button>
       <button id="btn-view" class="tbtn small" type="button">View</button>
-      <button id="btn-debug" class="tbtn small" type="button">F3</button>
+      <button id="btn-debug" class="tbtn small" type="button">Debug</button>
     </div>
     <div class="tui-right">
       <div class="tui-row">
@@ -81,28 +81,67 @@
   <div id="overlay" class="overlay hidden">
     <div class="panel">
       <h1 id="overlay-title">MINECRAFT</h1>
-      <div class="subtitle">browser clone · alpha 0.3</div>
-      <div class="controls">
-        <b>W A S D</b><span>Move</span>
-        <b>SPACE</b><span>Jump (hold to keep jumping)</span>
-        <b>CTRL / double-tap W</b><span>Sprint</span>
-        <b>SHIFT</b><span>Sneak</span>
-        <b>MOUSE</b><span>Look around</span>
-        <b>LEFT / RIGHT CLICK</b><span>Break / place a block</span>
-        <b>MIDDLE CLICK</b><span>Pick the block you are looking at</span>
-        <b>1–9 / scroll</b><span>Select a hotbar slot</span>
-        <b>E</b><span>Inventory (9 × 3 grid)</span>
-        <b>V</b> <span>Cycle view: first person → third person → front</span>
-        <b>G</b><span>Debug screen (position, speed, FPS)</span>
-        <b>ESC</b><span>Release the mouse / pause</span>
+      <div id="overlay-subtitle" class="subtitle">browser clone · alpha 0.4</div>
+
+      <p id="overlay-hint" class="hint hidden"></p>
+
+      <div class="menu-buttons">
+        <button id="btn-resume" class="btn" type="button">Play</button>
+        <button id="btn-fullscreen" class="btn" type="button">Fullscreen</button>
+        <button id="btn-relock" class="btn hidden" type="button">Lock the mouse</button>
       </div>
-      <div class="note">
-        📱 iPad with a Magic Keyboard: click once to lock the mouse, <b>Esc</b> releases it.
-        F3/F5 don't exist on that keyboard, so use <b>G</b> for debug and <b>V</b> for the camera.<br />
-        👆 Touch only: left thumb steers, right thumb looks, on-screen buttons do the rest.
+
+      <div class="settings">
+        <label>
+          <span>Mouse sensitivity <output id="out-sens"></output></span>
+          <input id="set-sens" type="range" />
+        </label>
+        <label>
+          <span>Touch sensitivity <output id="out-touch"></output></span>
+          <input id="set-touch" type="range" />
+        </label>
+        <label>
+          <span>Field of view <output id="out-fov"></output></span>
+          <input id="set-fov" type="range" />
+        </label>
+        <label class="check">
+          <input id="set-invert" type="checkbox" />
+          <span>Invert vertical look</span>
+        </label>
       </div>
-      <div id="overlay-hint" class="click hidden"></div>
-      <div class="click">Tap / click to play</div>
+
+      <details class="controls-details">
+        <summary>Controls</summary>
+        <div class="controls">
+          <b>W A S D</b><span>Move</span>
+          <b>SPACE</b><span>Jump (hold to keep jumping)</span>
+          <b>CTRL / double-tap W</b><span>Sprint</span>
+          <b>SHIFT</b><span>Sneak</span>
+          <b>MOUSE</b><span>Look around</span>
+          <b>LEFT / RIGHT CLICK</b><span>Break / place a block</span>
+          <b>MIDDLE CLICK</b><span>Pick the block you are looking at</span>
+          <b>1–9 / scroll</b><span>Select a hotbar slot</span>
+          <b>SHIFT + scroll</b><span>Zoom the third-person camera</span>
+          <b>E</b><span>Inventory (9 × 3 grid)</span>
+          <b>V</b><span>Cycle view: first person → third person → front</span>
+          <b>F</b><span>Fullscreen</span>
+          <b>G</b><span>Debug screen (position, speed, FPS)</span>
+          <b>ESC</b><span>Release the mouse / pause</span>
+        </div>
+        <p class="note">
+          📱 iPad with a Magic Keyboard: click to grab the mouse, <b>Esc</b> releases it. If Safari
+          refuses to lock the pointer the game switches to free look automatically — moving the
+          cursor turns the view and the screen edges keep turning. Going fullscreen usually makes
+          the real lock work.<br />
+          👆 Touch only: left thumb steers, right thumb looks, on-screen buttons do the rest.<br />
+          💾 Your world saves itself in this browser.
+        </p>
+      </details>
+
+      <div class="menu-footer">
+        <button id="btn-reset" class="btn small danger" type="button">Reset world</button>
+      </div>
+      <div class="click">Press any key, or tap outside this menu, to play</div>
     </div>
   </div>
 

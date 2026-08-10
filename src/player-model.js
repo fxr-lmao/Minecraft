@@ -144,9 +144,22 @@ export function createPlayerModel() {
   const legL = limb(PANTS, 41, 4, 12, 4, -2, 12, shoe);
   const legR = limb(PANTS, 42, 4, 12, 4, 2, 12, shoe);
 
+  // The head turns independently of the body (YXZ so yaw applies before pitch).
+  headPivot.rotation.order = 'YXZ';
+
+  const materials = [];
+  group.traverse((o) => {
+    if (!o.isMesh) return;
+    if (Array.isArray(o.material)) materials.push(...o.material);
+    else materials.push(o.material);
+  });
+
   let phase = 0;
   let swing = 0; // 0..1 arm swing when breaking/placing
   let crouch = 0;
+  let sprintLean = 0;
+  let bodyYaw = null; // smoothed; the head twists relative to it
+  let opacity = 1;
 
   return {
     group,
@@ -157,14 +170,57 @@ export function createPlayerModel() {
     },
 
     /**
-     * @param {object} s { dt, pos, yaw, pitch, speed, onGround, sneaking }
+     * Fade the avatar out when the third-person camera is right on top of it.
+     * Transparency is only switched on while it is actually needed.
+     */
+    setOpacity(value) {
+      const o = clamp(value, 0, 1);
+      if (Math.abs(o - opacity) < 0.01) return;
+      opacity = o;
+      const transparent = o < 0.999;
+      for (const m of materials) {
+        m.opacity = o;
+        if (m.transparent !== transparent) {
+          m.transparent = transparent;
+          m.depthWrite = !transparent;
+          m.needsUpdate = true;
+        }
+      }
+    },
+
+    /**
+     * @param {object} s
+     *   { dt, pos, yaw, pitch, speed, onGround, sneaking, sprinting, vel }
      */
     update(s) {
       group.position.set(s.pos.x, s.pos.y, s.pos.z);
-      group.rotation.y = s.yaw;
+
+      // ---- body / head separation ----
+      // Minecraft turns the body toward where you are *moving* and lets the
+      // head twist up to ~55° away from it; look further and the body follows.
+      // Without this the whole avatar snaps around with the mouse, which is
+      // what made third person look so stiff.
+      if (bodyYaw === null) bodyYaw = s.yaw;
+      const moving = s.speed > 0.35 && s.vel;
+      const targetYaw = moving ? Math.atan2(-s.vel.x, -s.vel.z) : bodyYaw;
+      const turnRate = moving ? 9 : 0;
+      bodyYaw = approachAngle(bodyYaw, targetYaw, turnRate, s.dt);
+
+      // clamp the head twist, dragging the body along past the limit
+      let twist = wrapAngle(s.yaw - bodyYaw);
+      const LIMIT = 0.96; // ~55°
+      if (twist > LIMIT) {
+        bodyYaw = wrapAngle(s.yaw - LIMIT);
+        twist = LIMIT;
+      } else if (twist < -LIMIT) {
+        bodyYaw = wrapAngle(s.yaw + LIMIT);
+        twist = -LIMIT;
+      }
+      group.rotation.y = bodyYaw;
+      headPivot.rotation.y = twist;
       headPivot.rotation.x = clamp(s.pitch, -1.3, 1.3);
 
-      // walk cycle
+      // ---- walk cycle (relative to the body, so strafing swings too) ----
       phase += s.speed * s.dt * 2.4;
       const amp = clamp(s.speed * 0.17, 0, 0.95);
       const a = Math.sin(phase) * amp;
@@ -185,10 +241,15 @@ export function createPlayerModel() {
 
       // sneak: lean forward, drop the body, tilt the arms back
       crouch += ((s.sneaking ? 1 : 0) - crouch) * Math.min(1, s.dt * 14);
-      body.rotation.x = crouch * 0.45;
+      // sprint: lean into the run
+      sprintLean += ((s.sprinting ? 1 : 0) - sprintLean) * Math.min(1, s.dt * 8);
+
+      const lean = crouch * 0.45 + sprintLean * 0.16;
+      body.rotation.x = lean;
       body.position.y = (18 - 2 * crouch) * PX;
       headPivot.position.y = (24 - 3 * crouch) * PX;
       headPivot.position.z = crouch * 2.2 * PX;
+      headPivot.rotation.x -= lean * 0.75; // keep the head level while leaning
       armL.position.y = armR.position.y = (24 - 3 * crouch) * PX;
       armL.position.z = armR.position.z = crouch * 1.8 * PX;
       legL.position.y = legR.position.y = (12 - 1 * crouch) * PX;
@@ -200,4 +261,19 @@ export function createPlayerModel() {
       }
     },
   };
+}
+
+/** Wrap an angle to (-pi, pi]. */
+export function wrapAngle(a) {
+  const t = (a + Math.PI) % (Math.PI * 2);
+  return (t < 0 ? t + Math.PI * 2 : t) - Math.PI;
+}
+
+/** Move `current` toward `target` the short way round, at `rate` rad/s. */
+export function approachAngle(current, target, rate, dt) {
+  const diff = wrapAngle(target - current);
+  if (rate <= 0) return current;
+  const step = rate * dt;
+  if (Math.abs(diff) <= step) return wrapAngle(target);
+  return wrapAngle(current + Math.sign(diff) * step);
 }

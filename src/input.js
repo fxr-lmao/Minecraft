@@ -1,19 +1,35 @@
 // Keyboard, mouse/trackpad, and touch input.
 //
-// The tricky device is an iPad with the Magic Keyboard: it reports touch
-// support *and* has a trackpad and a keyboard. The old code keyed everything
-// off `'ontouchstart' in window`, so it locked itself into touch mode and
-// never requested pointer lock — the trackpad could never grab the mouse.
+// Look modes
+// ----------
+// Pointer lock is the best way to read a mouse, but it cannot be relied on:
+// iPadOS Safari often refuses it outright in a normal tab, and — crucially —
+// it refuses *silently*: requestPointerLock() returns undefined, fires no
+// 'pointerlockerror', and simply never locks. Gating mouse look on
+// document.pointerLockElement therefore leaves an iPad trackpad completely
+// dead with nothing reporting why.
 //
-// Now the input mode follows whatever the player actually used:
-//   - starting with a click (pointerType mouse) or a key  -> pointer lock,
-//     Esc releases it, clicking the pause screen re-locks
-//   - starting with a finger                              -> on-screen controls
-//   - either can take over at any time; the touch UI shows and hides itself
-// Pointer lock failures (unsupported browser) fall back to touch controls
-// instead of leaving the player stuck on the title screen.
+// So the pointer is never trusted, it is verified: we ask for the lock, then
+// check a moment later whether it actually engaged, and fall back if not.
+// Three modes result, and the game plays in all of them:
+//
+//   'lock'  pointer locked; raw movement deltas, cursor hidden by the browser
+//   'free'  no lock available; look follows raw cursor movement, and parking
+//           the cursor against a screen edge keeps turning (so you can still
+//           spin 360° even though the cursor stops at the screen edge)
+//   'touch' finger drag to look
+//
+// Entering fullscreen first measurably improves the odds of a real lock on
+// iPadOS, so a touch-capable device tries that on the same user gesture.
 
 import { clamp } from './utils.js';
+
+export const LOOK_LOCK = 'lock';
+export const LOOK_FREE = 'free';
+export const LOOK_TOUCH = 'touch';
+
+/** How long to wait before deciding requestPointerLock() silently failed. */
+const LOCK_VERIFY_MS = 400;
 
 const KEYMAP = {
   KeyW: 'forward',
@@ -32,8 +48,8 @@ const KEYMAP = {
 };
 
 // One-shot keys -> action names emitted to the game.
-// F3/F5 do not exist on the iPad Magic Keyboard, so G and V are the primary
-// bindings and the function keys are aliases for desktop muscle memory.
+// F3/F5/F11 do not exist on the iPad Magic Keyboard, so G, V and F are the
+// primary bindings and the function keys are aliases.
 const ACTION_KEYS = {
   KeyE: 'inventory',
   KeyI: 'inventory',
@@ -41,11 +57,18 @@ const ACTION_KEYS = {
   F5: 'view',
   KeyG: 'debug',
   F3: 'debug',
+  KeyF: 'fullscreen',
+  F11: 'fullscreen',
   Escape: 'escape',
 };
 
 const JOY_RADIUS = 55; // px of finger travel for full deflection
 const JOY_DEADZONE = 8; // px before the stick responds
+
+// Free-look edge turning: how close to the edge (fraction of the viewport)
+// starts a turn, and how fast the turn runs at the very edge.
+const EDGE_ZONE = 0.12;
+const EDGE_SPEED = 900; // equivalent mouse px per second
 
 export class Input {
   constructor(canvas) {
@@ -54,7 +77,13 @@ export class Input {
     this.mouseDX = 0;
     this.mouseDY = 0;
     this.locked = false;
-    this.touchStarted = false;
+
+    /** The game is running (started, not paused). */
+    this.sessionActive = false;
+    /** How look input is being read right now. */
+    this.lookMode = LOOK_LOCK;
+    /** True once a lock attempt was verified as failed; stops auto-retrying. */
+    this.lockUnavailable = false;
 
     this.hasTouch =
       typeof window !== 'undefined' &&
@@ -69,6 +98,9 @@ export class Input {
     /** Set by the game to receive one-shot actions. */
     this.onAction = () => {};
 
+    // free-look cursor tracking
+    this.pointer = { x: 0, y: 0, seen: false, inside: true };
+
     this.touch = {
       joy: null, // { id, ox, oy, x, y }
       look: { id: null, px: 0, py: 0, dx: 0, dy: 0 },
@@ -80,6 +112,7 @@ export class Input {
     this._doubleTap = { forward: { last: 0, active: false } };
     this._joyBase = document.getElementById('joy-base');
     this._joyKnob = document.getElementById('joy-knob');
+    this._lockTimer = null;
 
     this._initKeyboard();
     this._initPointer();
@@ -87,45 +120,84 @@ export class Input {
     this._bindButtons();
   }
 
-  /** Game is running: pointer locked (mouse) or a touch session started. */
+  /** Game is running (in any look mode). */
   get active() {
-    return this.locked || this.touchStarted;
+    return this.sessionActive;
+  }
+
+  /** Human-readable mode, for the debug screen and the pause menu. */
+  get lookModeLabel() {
+    if (this.lookMode === LOOK_TOUCH) return 'touch';
+    if (this.lookMode === LOOK_FREE) return 'mouse (free look)';
+    return this.locked ? 'mouse (locked)' : 'mouse';
   }
 
   // ------------------------------------------------------------- lifecycle
 
   /**
    * Start playing. `source` is 'touch' for a finger, anything else for a
-   * mouse/trackpad/keyboard (which grabs the pointer).
+   * mouse/trackpad/keyboard.
    */
   start(source) {
     if (source === 'touch') {
       this.usingTouch = true;
-      this.touchStarted = true;
+      this.lookMode = LOOK_TOUCH;
+      this.sessionActive = true;
       return;
     }
     this.usingTouch = false;
+    // A touch-capable device that is being driven by a keyboard/trackpad is
+    // almost certainly an iPad with the Magic Keyboard: going fullscreen on
+    // this same gesture is what makes Safari willing to lock the pointer.
+    if (this.hasTouch) this.enterFullscreen();
     this.requestLock();
+    // The session starts either way — if the lock never engages we play in
+    // free-look mode rather than stranding the player on the title screen.
+    this.sessionActive = true;
   }
 
   requestLock() {
     if (!this.pointerLockSupported) {
-      this._lockFailed();
+      this._lockVerifyFailed();
       return;
     }
+    this.lookMode = LOOK_LOCK;
     try {
       const p = this.canvas.requestPointerLock();
-      // Chrome rejects with a promise if called too soon after Esc.
-      if (p && typeof p.catch === 'function') p.catch(() => this._lockFailed());
+      // Chrome returns a promise and rejects if called too soon after Esc.
+      // Safari returns undefined and reports nothing at all, hence the timer.
+      if (p && typeof p.catch === 'function') p.catch(() => this._lockVerifyFailed());
     } catch {
-      this._lockFailed();
+      this._lockVerifyFailed();
+      return;
     }
+    clearTimeout(this._lockTimer);
+    this._lockTimer = setTimeout(() => {
+      if (!this.locked) this._lockVerifyFailed();
+    }, LOCK_VERIFY_MS);
   }
 
-  /** Release the mouse (Esc) or end a touch session — the game pauses. */
+  /** Ask for the lock again after the player explicitly requested a retry. */
+  retryLock() {
+    this.lockUnavailable = false;
+    this.enterFullscreen();
+    this.requestLock();
+  }
+
+  /** The lock did not engage — play with cursor-movement look instead. */
+  _lockVerifyFailed() {
+    clearTimeout(this._lockTimer);
+    if (this.locked) return;
+    this.lockUnavailable = true;
+    this.lookMode = this.usingTouch ? LOOK_TOUCH : LOOK_FREE;
+    this.onAction('lookmode', this.lookMode);
+  }
+
+  /** Release the mouse (Esc) — the game pauses. */
   release() {
+    clearTimeout(this._lockTimer);
     if (this.locked && document.exitPointerLock) document.exitPointerLock();
-    this.touchStarted = false;
+    this.sessionActive = false;
     this.keys.clear();
     this.pressed.break = false;
     this.pressed.place = false;
@@ -133,17 +205,49 @@ export class Input {
 
   /** Release the pointer without ending the session (opening a menu). */
   releasePointerOnly() {
+    clearTimeout(this._lockTimer);
     if (this.locked && document.exitPointerLock) document.exitPointerLock();
   }
 
-  _lockFailed() {
-    // No pointer lock available: if this device can be played by touch, do
-    // that instead of leaving the player on a dead title screen.
-    if (this.hasTouch) {
-      this.usingTouch = true;
-      this.touchStarted = true;
+  /** Re-acquire the pointer after a menu closes. */
+  resumePointer() {
+    if (this.lookMode === LOOK_TOUCH || this.lockUnavailable) return;
+    this.requestLock();
+  }
+
+  // ---------------------------------------------------------- fullscreen
+
+  get isFullscreen() {
+    return Boolean(document.fullscreenElement || document.webkitFullscreenElement);
+  }
+
+  enterFullscreen() {
+    const el = document.documentElement;
+    const fn = el.requestFullscreen || el.webkitRequestFullscreen;
+    if (!fn) return false;
+    try {
+      const p = fn.call(el);
+      if (p && typeof p.catch === 'function') p.catch(() => {});
+      return true;
+    } catch {
+      return false;
     }
-    this.onAction('lockfailed');
+  }
+
+  exitFullscreen() {
+    const fn = document.exitFullscreen || document.webkitExitFullscreen;
+    if (!fn) return;
+    try {
+      const p = fn.call(document);
+      if (p && typeof p.catch === 'function') p.catch(() => {});
+    } catch {
+      /* ignore */
+    }
+  }
+
+  toggleFullscreen() {
+    if (this.isFullscreen) this.exitFullscreen();
+    else this.enterFullscreen();
   }
 
   /** Menus disable movement/look without ending the session. */
@@ -208,14 +312,19 @@ export class Input {
   _initPointer() {
     document.addEventListener('pointerlockchange', () => {
       this.locked = document.pointerLockElement === this.canvas;
-      if (!this.locked) {
+      if (this.locked) {
+        clearTimeout(this._lockTimer);
+        this.lookMode = LOOK_LOCK;
+        this.lockUnavailable = false;
+      } else {
         this.keys.clear();
         this.pressed.break = false;
         this.pressed.place = false;
       }
     });
-    document.addEventListener('pointerlockerror', () => this._lockFailed());
+    document.addEventListener('pointerlockerror', () => this._lockVerifyFailed());
 
+    // Locked look: raw deltas straight from the driver.
     document.addEventListener('mousemove', (e) => {
       if (!this.locked || !this.enabled) return;
       this.usingTouch = false;
@@ -223,18 +332,39 @@ export class Input {
       this.mouseDY += e.movementY;
     });
 
-    // Clicking with a real mouse/trackpad during a touch session grabs the
-    // pointer: on an iPad you can tap to start and then click the Magic
-    // Keyboard's trackpad to switch to mouse look.
+    // Free look: no lock, so derive deltas from cursor movement ourselves.
+    // movementX/Y is unreliable outside pointer lock, client coords are not.
+    document.addEventListener('pointermove', (e) => {
+      if (e.pointerType === 'touch') return;
+      this.usingTouch = false;
+      const p = this.pointer;
+      if (this.lookMode === LOOK_FREE && this.sessionActive && this.enabled && p.seen) {
+        this.mouseDX += e.clientX - p.x;
+        this.mouseDY += e.clientY - p.y;
+      }
+      p.x = e.clientX;
+      p.y = e.clientY;
+      p.seen = true;
+      p.inside = true;
+    });
+    // Leaving the window must not leave the edge-turn running forever.
+    document.addEventListener('pointerout', (e) => {
+      if (!e.relatedTarget && e.pointerType !== 'touch') this.pointer.inside = false;
+    });
+    window.addEventListener('blur', () => { this.pointer.inside = false; });
+
+    // Clicking with a real mouse/trackpad during a touch session takes over.
     this.canvas.addEventListener('pointerdown', (e) => {
       if (e.pointerType === 'touch') return;
       this.usingTouch = false;
-      if (!this.locked && this.enabled && this.active) this.requestLock();
+      if (!this.locked && !this.lockUnavailable && this.enabled && this.sessionActive) {
+        this.requestLock();
+      }
     });
 
-    // Break / place with the mouse while the pointer is locked.
+    // Break / place. Works in every mouse mode, not just when locked.
     this.canvas.addEventListener('mousedown', (e) => {
-      if (!this.locked || !this.enabled) return;
+      if (!this.sessionActive || !this.enabled || this.lookMode === LOOK_TOUCH) return;
       e.preventDefault();
       if (e.button === 0) {
         this.pressed.break = true;
@@ -255,8 +385,34 @@ export class Input {
 
     window.addEventListener('wheel', (e) => {
       if (!this.active || !this.enabled || e.deltaY === 0) return;
-      this.onAction('scroll', e.deltaY > 0 ? 1 : -1);
+      this.onAction(e.shiftKey ? 'zoom' : 'scroll', e.deltaY > 0 ? 1 : -1);
     }, { passive: true });
+  }
+
+  /**
+   * Extra look movement from parking the cursor near a screen edge.
+   * Only used in free-look, where the cursor physically cannot travel
+   * further. Returns the same units as a mouse delta.
+   */
+  edgeLook(dt) {
+    const p = this.pointer;
+    if (this.lookMode !== LOOK_FREE || !this.sessionActive || !this.enabled) return null;
+    if (!p.seen || !p.inside) return null;
+
+    const w = window.innerWidth;
+    const h = window.innerHeight;
+    const zoneX = w * EDGE_ZONE;
+    const zoneY = h * EDGE_ZONE;
+    let dx = 0;
+    let dy = 0;
+    if (p.x < zoneX) dx = -(1 - p.x / zoneX);
+    else if (p.x > w - zoneX) dx = 1 - (w - p.x) / zoneX;
+    if (p.y < zoneY) dy = -(1 - p.y / zoneY);
+    else if (p.y > h - zoneY) dy = 1 - (h - p.y) / zoneY;
+    if (dx === 0 && dy === 0) return null;
+    // ease in so the turn starts gently instead of snapping
+    const ease = (v) => Math.sign(v) * v * v;
+    return { dx: ease(dx) * EDGE_SPEED * dt, dy: ease(dy) * EDGE_SPEED * dt };
   }
 
   // ------------------------------------------------------------------ touch
@@ -269,8 +425,9 @@ export class Input {
       'touchstart',
       (e) => {
         this.usingTouch = true;
+        if (this.sessionActive) this.lookMode = LOOK_TOUCH;
         e.preventDefault();
-        if (!this.touchStarted || !this.enabled) return;
+        if (!this.sessionActive || !this.enabled) return;
         for (const t of e.changedTouches) {
           if (t.clientX < window.innerWidth * 0.45 && !this.touch.joy) {
             this.touch.joy = { id: t.identifier, ox: t.clientX, oy: t.clientY, x: t.clientX, y: t.clientY };
@@ -407,21 +564,20 @@ export class Input {
     if (!this.enabled) {
       this.mouseDX = this.mouseDY = 0;
       this.touch.look.dx = this.touch.look.dy = 0;
-      return { dx, dy };
+      return { dx, dy, touch: false };
     }
-    if (this.locked) {
-      dx += this.mouseDX;
-      dy += this.mouseDY;
-      this.mouseDX = 0;
-      this.mouseDY = 0;
-    }
-    if (this.touchStarted) {
+    dx += this.mouseDX;
+    dy += this.mouseDY;
+    this.mouseDX = 0;
+    this.mouseDY = 0;
+    const touch = this.lookMode === LOOK_TOUCH;
+    if (touch) {
       dx += this.touch.look.dx;
       dy += this.touch.look.dy;
       this.touch.look.dx = 0;
       this.touch.look.dy = 0;
     }
-    return { dx, dy, touch: !this.locked };
+    return { dx, dy, touch };
   }
 
   /**
