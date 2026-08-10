@@ -40,7 +40,19 @@ export const FOV_SNEAK = 60;
 
 // World
 export const WORLD_SIZE = 128; // blocks per side (x and z)
-export const WORLD_LAYERS = 4; // y = 0..3 (bedrock, dirt, dirt, grass)
-export const SPAWN = { x: WORLD_SIZE / 2 + 0.5, y: WORLD_LAYERS + 0.01, z: WORLD_SIZE / 2 + 0.5 };
+export const GROUND_LAYERS = 4; // generated terrain: bedrock, dirt, dirt, grass
+export const WORLD_LAYERS = 32; // total buildable height (y = 0..31)
+export const CHUNK_SIZE = 32; // mesher granularity in x/z (full column height)
+export const SPAWN = { x: WORLD_SIZE / 2 + 0.5, y: GROUND_LAYERS + 0.01, z: WORLD_SIZE / 2 + 0.5 };
 
 export const BLOCK_SIZE = 1;
+
+// Interaction
+export const REACH = 5; // blocks the player can break/place at (creative reach)
+
+// Camera perspectives (F5 / V cycles through these, like Minecraft)
+export const VIEW_FIRST = 0;
+export const VIEW_THIRD_BACK = 1;
+export const VIEW_THIRD_FRONT = 2;
+export const VIEW_NAMES = ['First person', 'Third person (back)', 'Third person (front)'];
+export const THIRD_PERSON_DISTANCE = 4; // blocks behind/in front of the head

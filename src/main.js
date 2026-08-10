@@ -1,21 +1,32 @@
 // Minecraft browser clone — entry point.
 // Game loop: fixed 120 Hz physics (Minecraft-accurate movement constants),
 // render at display refresh rate. Performance features:
-//   - face-culled voxel meshes (few thousand quads instead of hundreds of thousands)
+//   - face-culled voxel meshes, chunked so edits re-mesh 1/16th of the world
 //   - adaptive render resolution: drops pixel scale when FPS is low, raises it again when headroom returns
 //   - high-performance GPU preference, no MSAA
 
 import * as THREE from '../vendor/three.module.min.js';
-import { World } from './world.js';
+import { World, AIR, BEDROCK } from './world.js';
+import { WorldRenderer, buildSingleBlockGeometry } from './blocks.js';
 import { Player } from './player.js';
 import { Input } from './input.js';
 import { Hud } from './hud.js';
+import { Inventory } from './inventory.js';
+import { InventoryUI } from './inventory-ui.js';
+import { ViewController } from './view.js';
+import { createPlayerModel } from './player-model.js';
+import { raycastVoxel, blockIntersectsPlayer } from './raycast.js';
 import { createSky, FOG_COLOR } from './sky.js';
-import { PHYSICS_DT, FOV_BASE, FOV_SPRINT, FOV_SNEAK, SPEED_WALK } from './constants.js';
+import { BLOCK_DEFS } from './textures.js';
+import {
+  PHYSICS_DT, FOV_BASE, FOV_SPRINT, FOV_SNEAK, SPEED_WALK,
+  PLAYER_WIDTH, PLAYER_HEIGHT, PLAYER_EYE, REACH,
+} from './constants.js';
 import { clamp, lerp } from './utils.js';
 
 const MOUSE_SENSITIVITY = 0.0024;
 const TOUCH_SENSITIVITY = 0.006;
+const USE_REPEAT = 0.22; // seconds between repeats while a mouse button is held
 
 // ---------------- error / loading overlays ----------------
 const fatalEl = document.getElementById('fatal');
@@ -51,18 +62,37 @@ const renderer = new THREE.WebGLRenderer({
 });
 const DPR_CAP = Math.min(window.devicePixelRatio || 1, 2);
 let pixelRatio = DPR_CAP;
-renderer.setPixelRatio(pixelRatio);
-renderer.setSize(window.innerWidth, window.innerHeight);
-renderer.shadowMap.enabled = true;
-renderer.shadowMap.type = THREE.PCFSoftShadowMap;
-renderer.toneMapping = THREE.ACESFilmicToneMapping;
-renderer.toneMappingExposure = 1.05;
 
 const scene = new THREE.Scene();
 scene.fog = new THREE.Fog(FOG_COLOR, 35, 95);
 
-const camera = new THREE.PerspectiveCamera(FOV_BASE, window.innerWidth / window.innerHeight, 0.1, 1000);
+const camera = new THREE.PerspectiveCamera(FOV_BASE, 1, 0.1, 1000);
 camera.rotation.order = 'YXZ';
+scene.add(camera); // so the first-person held block (a camera child) renders
+
+/** iPad Safari changes innerHeight as browser chrome slides away — re-measure. */
+function viewportSize() {
+  const vv = window.visualViewport;
+  return {
+    w: Math.max(1, Math.round(vv?.width ?? window.innerWidth)),
+    h: Math.max(1, Math.round(vv?.height ?? window.innerHeight)),
+  };
+}
+
+function applyResolution() {
+  const { w, h } = viewportSize();
+  renderer.setPixelRatio(pixelRatio);
+  renderer.setSize(w, h, false);
+  canvas.style.width = `${w}px`;
+  canvas.style.height = `${h}px`;
+  camera.aspect = w / h;
+  camera.updateProjectionMatrix();
+}
+applyResolution();
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFShadowMap; // PCFSoft is deprecated in r185
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.05;
 
 // ---------------- lights ----------------
 const hemi = new THREE.HemisphereLight(0xbfd9ff, 0x7a6a52, 0.85);
@@ -85,26 +115,229 @@ sun.shadow.normalBias = 0.12;
 scene.add(sun);
 scene.add(sun.target);
 
-// ---------------- world / player / input / hud / sky ----------------
+// ---------------- world / player / input / hud ----------------
 const world = new World();
-for (const mesh of world.buildMeshes().values()) scene.add(mesh);
+const worldRenderer = new WorldRenderer(world, scene);
 
 const player = new Player(world);
 const input = new Input(canvas);
 const hud = new Hud();
 const sky = createSky(scene);
 
-if (input.touchMode) document.body.classList.add('touch');
+const inventory = new Inventory();
+inventory.fillStarterKit(BLOCK_DEFS.map((b) => b.id));
+const invUI = new InventoryUI(inventory, (open) => onInventoryToggle(open));
+
+const view = new ViewController();
+const playerModel = createPlayerModel();
+scene.add(playerModel.group);
+playerModel.group.visible = false;
+
+// ---------------- block targeting ----------------
+const highlight = new THREE.LineSegments(
+  new THREE.EdgesGeometry(new THREE.BoxGeometry(1.002, 1.002, 1.002)),
+  new THREE.LineBasicMaterial({ color: 0x000000, transparent: true, opacity: 0.45 })
+);
+highlight.visible = false;
+scene.add(highlight);
+
+let target = null; // { x, y, z, nx, ny, nz } from the last frame
+
+// ---------------- first-person held block ----------------
+const HELD_DIST = 0.62; // metres in front of the camera
+const HELD_SIZE = 0.26; // fraction of the screen height the block takes up
+const heldGeometry = buildSingleBlockGeometry();
+const heldMesh = new THREE.Mesh(heldGeometry, new THREE.MeshLambertMaterial());
+heldMesh.rotation.set(0.12, -0.6, 0.1);
+heldMesh.visible = false;
+heldMesh.frustumCulled = false;
+camera.add(heldMesh);
+
+// Held blocks get the same emissive trick as the avatar so the face pointing
+// at the player is never pitch black when the sun is behind them.
+const heldMaterials = new Map();
+function heldMaterialFor(id) {
+  let mat = heldMaterials.get(id);
+  if (!mat) {
+    const { map } = worldRenderer.materialFor(id);
+    mat = new THREE.MeshLambertMaterial({ map, emissiveMap: map, emissive: 0x5a5a5a });
+    heldMaterials.set(id, mat);
+  }
+  return mat;
+}
+
+let heldId = -1;
+let heldSwing = 0;
+
+function refreshHeldItem() {
+  const id = inventory.selectedId();
+  if (id !== heldId) {
+    heldId = id;
+    if (id) heldMesh.material = heldMaterialFor(id);
+  }
+  heldMesh.visible = view.isFirstPerson && heldId > 0;
+}
+
+/**
+ * Size and pin the held block to the bottom-right corner whatever the aspect
+ * ratio or FOV is — an iPad in portrait has a much narrower frustum than a
+ * laptop, so fixed offsets would push the block off screen.
+ */
+function positionHeldItem(swingT) {
+  const halfH = Math.tan((camera.fov * Math.PI) / 360) * HELD_DIST;
+  const halfW = halfH * camera.aspect;
+  // Size against the shorter axis so a portrait tablet doesn't get a block
+  // that swallows the bottom of the screen.
+  const r = HELD_SIZE * Math.min(halfH, halfW * 0.95);
+  heldMesh.scale.setScalar(r / 0.85);
+  heldMesh.position.set(
+    halfW - r * 1.2 - swingT * r * 0.5,
+    -halfH + r * 0.7 - swingT * r * 1.1,
+    -HELD_DIST + swingT * 0.08
+  );
+  heldMesh.rotation.x = 0.12 + swingT * 0.8;
+}
+
+function swingHand() {
+  heldSwing = 1;
+  playerModel.swingArm();
+}
+
+// ---------------- interaction ----------------
+function breakBlock() {
+  if (!target) return;
+  const id = world.get(target.x, target.y, target.z);
+  if (id === AIR) return;
+  if (id === BEDROCK) {
+    hud.showStatus('Bedrock cannot be broken');
+    swingHand();
+    return;
+  }
+  world.setBlock(target.x, target.y, target.z, AIR);
+  const left = inventory.add(id, 1);
+  if (left > 0) hud.showStatus('Inventory full');
+  invUI.render();
+  refreshHeldItem();
+  swingHand();
+}
+
+function placeBlock() {
+  if (!target) return;
+  const stack = inventory.selectedStack();
+  if (!stack) {
+    hud.showStatus('Nothing in hand');
+    return;
+  }
+  const bx = target.x + target.nx;
+  const by = target.y + target.ny;
+  const bz = target.z + target.nz;
+  if (!world.inBounds(bx, by, bz) || world.isSolid(bx, by, bz)) return;
+  if (blockIntersectsPlayer(bx, by, bz, player.pos, PLAYER_WIDTH, PLAYER_HEIGHT)) return;
+  world.setBlock(bx, by, bz, stack.id);
+  inventory.consumeSelected(1);
+  invUI.render();
+  refreshHeldItem();
+  swingHand();
+}
+
+/** Middle click / pick block: select the targeted block in the hotbar. */
+function pickBlock() {
+  if (!target) return;
+  const id = world.get(target.x, target.y, target.z);
+  if (!id) return;
+  for (let i = 0; i < 9; i++) {
+    if (inventory.get(i)?.id === id) {
+      invUI.selectSlot(i);
+      return;
+    }
+  }
+  inventory.set(inventory.selected, { id, count: 1 });
+  invUI.render();
+  invUI.flashName();
+}
+
+// ---------------- menus / pausing ----------------
+function onInventoryToggle(open) {
+  input.setEnabled(!open);
+  hud.setCrosshairVisible(!open);
+  if (open) {
+    input.releasePointerOnly();
+  } else if (!input.usingTouch && !hud.overlayVisible) {
+    input.requestLock();
+  }
+  refreshHeldItem();
+}
+
+function pause() {
+  input.release();
+  hud.showOverlay('paused', input.usingTouch ? 'Tap to resume' : 'Click to resume');
+}
+
+let hasPlayed = false;
+
+function startPlaying(source) {
+  input.start(source);
+  if (input.active) {
+    hasPlayed = true;
+    hud.hideOverlay();
+  }
+}
+
+function cycleView() {
+  view.cycle();
+  hud.showStatus(view.name);
+  playerModel.group.visible = !view.isFirstPerson;
+  refreshHeldItem();
+}
+
+input.onAction = (name, arg) => {
+  if (name === 'lockfailed') {
+    if (!input.active) {
+      hud.showOverlay(
+        hasPlayed ? 'paused' : 'title',
+        input.hasTouch
+          ? "Couldn't grab the mouse — tap the screen to play with touch controls."
+          : "Couldn't grab the mouse. Click the screen to try again."
+      );
+    }
+    return;
+  }
+  // While paused, keys do nothing — a click or any non-Esc key resumes.
+  if (hud.overlayVisible) return;
+  switch (name) {
+    case 'inventory':
+      invUI.toggle();
+      break;
+    case 'escape':
+      if (invUI.isOpen) invUI.close();
+      else pause();
+      break;
+    case 'view':
+      cycleView();
+      break;
+    case 'debug':
+      hud.toggleDebug();
+      break;
+    case 'slot':
+      if (!invUI.isOpen) invUI.selectSlot(arg);
+      break;
+    case 'scroll':
+      if (!invUI.isOpen) invUI.scrollSelection(arg);
+      break;
+    case 'break':
+      if (!invUI.isOpen) breakBlock();
+      break;
+    case 'place':
+      if (!invUI.isOpen) placeBlock();
+      break;
+    case 'pick':
+      if (!invUI.isOpen) pickBlock();
+      break;
+  }
+};
 
 // ---------------- adaptive resolution ----------------
 let resTimer = 0;
-
-function applyResolution() {
-  renderer.setPixelRatio(pixelRatio);
-  renderer.setSize(window.innerWidth, window.innerHeight);
-  camera.aspect = window.innerWidth / window.innerHeight;
-  camera.updateProjectionMatrix();
-}
 
 function setShadowMapSize(size) {
   if (shadowMapSize === size) return;
@@ -119,18 +352,18 @@ function setShadowMapSize(size) {
 // ---------------- game state ----------------
 let prevSprinting = false;
 let prevSneaking = false;
+let eyeOffset = 0; // smooth sneak crouch
+let breakRepeat = 0;
+let placeRepeat = 0;
 
 // ---------------- fixed-timestep loop ----------------
 let acc = 0;
 let lastTime = performance.now();
-
-// fps tracking
 let fpsSmooth = 60;
 let frameMsSmooth = 16;
 
 function step(dt) {
-  const moveInput = input.getMovementInput();
-  player.update(dt, moveInput);
+  player.update(dt, input.getMovementInput());
 }
 
 function frame(now) {
@@ -139,21 +372,22 @@ function frame(now) {
   const frameDt = Math.min((now - lastTime) / 1000, 0.25);
   lastTime = now;
 
-  // fps smoothing
   const instFps = 1 / Math.max(frameDt, 1e-4);
   fpsSmooth += (instFps - fpsSmooth) * 0.06;
   frameMsSmooth += (frameDt * 1000 - frameMsSmooth) * 0.06;
 
+  const playing = input.active && input.enabled;
+
   // ---- look (mouse or touch drag) ----
-  if (input.active) {
-    const { dx, dy } = input.consumeLook();
-    const sens = input.touchMode ? TOUCH_SENSITIVITY : MOUSE_SENSITIVITY;
+  if (playing) {
+    const { dx, dy, touch } = input.consumeLook();
+    const sens = touch ? TOUCH_SENSITIVITY : MOUSE_SENSITIVITY;
     player.yaw -= dx * sens;
     player.pitch = clamp(player.pitch - dy * sens, -Math.PI / 2 + 0.01, Math.PI / 2 - 0.01);
   }
 
-  // ---- physics (paused while the mouse is released / before start) ----
-  if (input.active) {
+  // ---- physics (paused while the mouse is released / a menu is open) ----
+  if (playing) {
     acc += frameDt;
     let steps = 0;
     while (acc >= PHYSICS_DT && steps < 8) {
@@ -166,8 +400,22 @@ function frame(now) {
     acc = 0;
   }
 
+  // ---- held mouse button auto-repeat ----
+  if (playing) {
+    breakRepeat = input.pressed.break ? breakRepeat + frameDt : 0;
+    if (breakRepeat >= USE_REPEAT) {
+      breakRepeat = 0;
+      breakBlock();
+    }
+    placeRepeat = input.pressed.place ? placeRepeat + frameDt : 0;
+    if (placeRepeat >= USE_REPEAT) {
+      placeRepeat = 0;
+      placeBlock();
+    }
+  }
+
   // ---- adaptive resolution ----
-  if (input.active) {
+  if (playing) {
     resTimer += frameDt;
     if (fpsSmooth < 48 && pixelRatio > 1 && resTimer > 2.5) {
       pixelRatio = Math.max(1, pixelRatio - 0.25);
@@ -185,49 +433,79 @@ function frame(now) {
   }
 
   // ---- status messages on mode changes ----
-  if (input.active) {
+  if (playing) {
     if (player.sprinting && !prevSprinting) hud.showStatus('Sprinting');
-    if (!player.sprinting && prevSprinting) hud.showStatus('Sprinting stopped');
     if (player.sneaking && !prevSneaking) hud.showStatus('Sneaking');
-    if (!player.sneaking && prevSneaking) hud.showStatus('Sneaking stopped');
     prevSprinting = player.sprinting;
     prevSneaking = player.sneaking;
   }
 
   // ---- camera ----
-  camera.rotation.y = player.yaw;
-  camera.rotation.x = player.pitch;
-
-  const eye = player.eyePos;
   const fovTarget = player.sprinting ? FOV_SPRINT : player.sneaking ? FOV_SNEAK : FOV_BASE;
   camera.fov += (fovTarget - camera.fov) * Math.min(1, frameDt * 10);
   camera.updateProjectionMatrix();
 
-  // head bob
+  // head bob (first person only)
   const speedFactor = clamp(player.horizontalSpeed / SPEED_WALK, 0, 1.35);
   player.bobPhase = (player.bobPhase || 0) + player.horizontalSpeed * frameDt * 2.1;
-  const bobAmp = player.onGround ? (player.sprinting ? 0.085 : 0.055) * speedFactor : 0;
-  const bobY = Math.sin(player.bobPhase) * bobAmp;
-  const bobX = Math.cos(player.bobPhase * 0.5) * bobAmp * 0.6;
-  player.bobY = lerp(player.bobY || 0, bobY, Math.min(1, frameDt * 12));
-  player.bobX = lerp(player.bobX || 0, bobX, Math.min(1, frameDt * 12));
+  const bobTarget = view.isFirstPerson && player.onGround
+    ? (player.sprinting ? 0.085 : 0.055) * speedFactor
+    : 0;
+  player.bobY = lerp(player.bobY || 0, Math.sin(player.bobPhase) * bobTarget, Math.min(1, frameDt * 12));
+  player.bobX = lerp(player.bobX || 0, Math.cos(player.bobPhase * 0.5) * bobTarget * 0.6, Math.min(1, frameDt * 12));
 
+  eyeOffset = lerp(eyeOffset, player.sneaking ? 0.16 : 0, Math.min(1, frameDt * 12));
   const right = player.rightVector();
-  camera.position.set(
-    eye.x + right.x * player.bobX,
-    eye.y + player.bobY,
-    eye.z + right.z * player.bobX
-  );
+  const eye = {
+    x: player.pos.x + right.x * player.bobX,
+    y: player.pos.y + PLAYER_EYE - eyeOffset + player.bobY,
+    z: player.pos.z + right.z * player.bobX,
+  };
+  view.apply(camera, world, eye, player.yaw, player.pitch);
+
+  // ---- avatar ----
+  playerModel.group.visible = !view.isFirstPerson;
+  if (!view.isFirstPerson) {
+    playerModel.update({
+      dt: frameDt,
+      pos: player.pos,
+      yaw: player.yaw,
+      pitch: player.pitch,
+      speed: player.horizontalSpeed,
+      onGround: player.onGround,
+      sneaking: player.sneaking,
+    });
+  }
+
+  // ---- held block: corner placement + use swing ----
+  if (heldSwing > 0) heldSwing = Math.max(0, heldSwing - frameDt * 4.5);
+  positionHeldItem(heldSwing > 0 ? Math.sin((1 - heldSwing) * Math.PI) : 0);
+
+  // ---- block targeting ----
+  if (playing) {
+    const dir = player.lookDirection();
+    target = raycastVoxel(world, eye, dir, REACH);
+    highlight.visible = Boolean(target);
+    if (target) highlight.position.set(target.x + 0.5, target.y + 0.5, target.z + 0.5);
+  } else {
+    target = null;
+    highlight.visible = false;
+  }
+
+  // ---- world edits ----
+  worldRenderer.flushDirty();
 
   // ---- sun / sky follow player ----
   sun.position.set(player.pos.x + 60, 105, player.pos.z + 40);
   sun.target.position.copy(player.pos);
   sky.update(frameDt, player.pos);
 
+  // ---- input mode: show the touch UI only while a finger is being used ----
+  document.body.classList.toggle('touch', input.usingTouch);
+
   // ---- debug overlay ----
   const px = Math.floor(player.pos.x);
   const pz = Math.floor(player.pos.z);
-  const blockUnder = world.get(px, world.heightAt(px, pz), pz);
   hud.updateDebug({
     pos: player.pos,
     pitchDeg: (player.pitch * 180) / Math.PI,
@@ -235,11 +513,14 @@ function frame(now) {
     speed: player.horizontalSpeed,
     mode: player.sneaking ? 'Sneaking' : player.sprinting ? 'Sprinting' : 'Walking',
     onGround: player.onGround,
-    blockUnder,
+    blockUnder: world.get(px, world.heightAt(px, pz), pz),
+    target,
+    targetId: target ? world.get(target.x, target.y, target.z) : 0,
+    view: view.name,
     fps: Math.round(fpsSmooth),
     frameMs: frameMsSmooth,
     pixelScale: pixelRatio,
-    touch: input.touchMode,
+    inputMode: input.locked ? 'mouse (locked)' : input.usingTouch ? 'touch' : 'keyboard',
   });
 
   renderer.render(scene, camera);
@@ -248,32 +529,32 @@ function frame(now) {
   if (firstFrame) {
     firstFrame = false;
     loadingEl.classList.add('hidden');
+    hud.showOverlay('title');
+    invUI.flashName();
   }
 }
 
 // ---------------- overlay / pointer lock / start ----------------
-hud.overlayEl.addEventListener('click', () => {
-  input.start();
-  if (input.touchMode) hud.hideOverlay();
+hud.overlayEl.addEventListener('pointerdown', (e) => {
+  e.preventDefault();
+  startPlaying(e.pointerType === 'touch' ? 'touch' : 'mouse');
 });
+
 document.addEventListener('pointerlockchange', () => {
   if (input.locked) {
     hud.hideOverlay();
-  } else if (!input.touchMode) {
-    hud.showOverlay();
+  } else if (!invUI.isOpen && !input.usingTouch) {
+    hud.showOverlay('paused', 'Click to resume');
   }
 });
 
-// Start with any key too (Magic Keyboard on iPad, or just convenience):
-// the overlay is visible, so a keypress is an explicit user gesture.
-window.addEventListener('keydown', () => {
-  if (hud.overlayEl.classList.contains('hidden')) return;
-  input.start();
-  hud.hideOverlay();
+// Start with a key too (Magic Keyboard on iPad, or just convenience): the
+// overlay is visible, so a keypress is an explicit user gesture. Escape is
+// excluded — it is the key that just paused the game.
+window.addEventListener('keydown', (e) => {
+  if (!hud.overlayVisible || e.code === 'Escape' || e.metaKey || e.altKey || e.ctrlKey) return;
+  startPlaying('key');
 });
-
-// debug toggle button (touch devices have no F3 key)
-document.getElementById('btn-debug').addEventListener('click', () => hud.toggleDebug());
 
 // WebGL context lost (iOS reclaims memory in background tabs, etc.)
 canvas.addEventListener('webglcontextlost', (e) => {
@@ -283,6 +564,9 @@ canvas.addEventListener('webglcontextlost', (e) => {
 
 // ---------------- resize ----------------
 window.addEventListener('resize', applyResolution);
+window.addEventListener('orientationchange', () => setTimeout(applyResolution, 250));
+window.visualViewport?.addEventListener('resize', applyResolution);
 
 // ---------------- go ----------------
+refreshHeldItem();
 requestAnimationFrame(frame);
