@@ -9,7 +9,7 @@ import * as THREE from '../vendor/three.module.min.js';
 import { World, AIR, BEDROCK } from './world.js';
 import { WorldRenderer, buildSingleBlockGeometry } from './blocks.js';
 import { Player } from './player.js';
-import { Input } from './input.js';
+import { Input, LOOK_FREE, LOOK_TOUCH } from './input.js';
 import { Hud } from './hud.js';
 import { Inventory } from './inventory.js';
 import { InventoryUI } from './inventory-ui.js';
@@ -18,15 +18,19 @@ import { createPlayerModel } from './player-model.js';
 import { raycastVoxel, blockIntersectsPlayer } from './raycast.js';
 import { createSky, FOG_COLOR } from './sky.js';
 import { BLOCK_DEFS } from './textures.js';
+import { settings, setSetting, LIMITS } from './settings.js';
+import * as savegame from './savegame.js';
 import {
-  PHYSICS_DT, FOV_BASE, FOV_SPRINT, FOV_SNEAK, SPEED_WALK,
+  PHYSICS_DT, SPEED_WALK,
   PLAYER_WIDTH, PLAYER_HEIGHT, PLAYER_EYE, REACH,
 } from './constants.js';
 import { clamp, lerp } from './utils.js';
 
-const MOUSE_SENSITIVITY = 0.0024;
+const MOUSE_SENSITIVITY = 0.0024; // multiplied by the player's setting
 const TOUCH_SENSITIVITY = 0.006;
-const USE_REPEAT = 0.22; // seconds between repeats while a mouse button is held
+const USE_REPEAT = 0.22; // seconds between repeats while a use button is held
+const SAVE_DEBOUNCE = 2000; // ms after an edit before writing to localStorage
+const SAVE_INTERVAL = 20000; // ms between position-only saves
 
 // ---------------- error / loading overlays ----------------
 const fatalEl = document.getElementById('fatal');
@@ -66,7 +70,7 @@ let pixelRatio = DPR_CAP;
 const scene = new THREE.Scene();
 scene.fog = new THREE.Fog(FOG_COLOR, 35, 95);
 
-const camera = new THREE.PerspectiveCamera(FOV_BASE, 1, 0.1, 1000);
+const camera = new THREE.PerspectiveCamera(settings.fov, 1, 0.1, 1000);
 camera.rotation.order = 'YXZ';
 scene.add(camera); // so the first-person held block (a camera child) renders
 
@@ -115,20 +119,39 @@ sun.shadow.normalBias = 0.12;
 scene.add(sun);
 scene.add(sun.target);
 
-// ---------------- world / player / input / hud ----------------
+// ---------------- world / saved game ----------------
 const world = new World();
+const inventory = new Inventory();
+const view = new ViewController();
+const restored = savegame.load(world);
+
+if (restored) {
+  world.applyEdits(restored.edits);
+  if (restored.inventory.slots.length === inventory.slots.length) {
+    restored.inventory.slots.forEach((stack, i) => inventory.set(i, stack));
+    inventory.select(restored.inventory.selected);
+  }
+  view.set(restored.view);
+} else {
+  inventory.fillStarterKit(BLOCK_DEFS.map((b) => b.id));
+}
+
+// Meshes are built after the saved edits are applied, so a restored world
+// comes up already built instead of re-meshing every chunk on the first frame.
 const worldRenderer = new WorldRenderer(world, scene);
 
 const player = new Player(world);
+if (restored?.player) {
+  player.pos.set(restored.player.x, restored.player.y, restored.player.z);
+  player.yaw = restored.player.yaw ?? player.yaw;
+  player.pitch = restored.player.pitch ?? player.pitch;
+}
+
 const input = new Input(canvas);
 const hud = new Hud();
 const sky = createSky(scene);
-
-const inventory = new Inventory();
-inventory.fillStarterKit(BLOCK_DEFS.map((b) => b.id));
 const invUI = new InventoryUI(inventory, (open) => onInventoryToggle(open));
 
-const view = new ViewController();
 const playerModel = createPlayerModel();
 scene.add(playerModel.group);
 playerModel.group.visible = false;
@@ -136,7 +159,7 @@ playerModel.group.visible = false;
 // ---------------- block targeting ----------------
 const highlight = new THREE.LineSegments(
   new THREE.EdgesGeometry(new THREE.BoxGeometry(1.002, 1.002, 1.002)),
-  new THREE.LineBasicMaterial({ color: 0x000000, transparent: true, opacity: 0.45 })
+  new THREE.LineBasicMaterial({ color: 0x000000, transparent: true, opacity: 0.55 })
 );
 highlight.visible = false;
 scene.add(highlight);
@@ -203,6 +226,26 @@ function swingHand() {
   playerModel.swingArm();
 }
 
+// ---------------- saving ----------------
+let saveNeeded = false;
+let lastSaveAt = performance.now();
+/** Set while resetting: reloading fires pagehide, which would re-save the
+ *  world we just deleted and make "Reset world" do nothing. */
+let savingDisabled = false;
+
+function doSave() {
+  if (savingDisabled) return;
+  savegame.save({ world, inventory, player, viewMode: view.mode });
+  saveNeeded = false;
+  lastSaveAt = performance.now();
+}
+
+// Backgrounding a tab on iPadOS can discard it outright, so flush on the way out.
+window.addEventListener('pagehide', () => doSave());
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'hidden') doSave();
+});
+
 // ---------------- interaction ----------------
 function breakBlock() {
   if (!target) return;
@@ -219,6 +262,7 @@ function breakBlock() {
   invUI.render();
   refreshHeldItem();
   swingHand();
+  saveNeeded = true;
 }
 
 function placeBlock() {
@@ -238,6 +282,7 @@ function placeBlock() {
   invUI.render();
   refreshHeldItem();
   swingHand();
+  saveNeeded = true;
 }
 
 /** Middle click / pick block: select the targeted block in the hotbar. */
@@ -254,6 +299,7 @@ function pickBlock() {
   inventory.set(inventory.selected, { id, count: 1 });
   invUI.render();
   invUI.flashName();
+  saveNeeded = true;
 }
 
 // ---------------- menus / pausing ----------------
@@ -262,15 +308,17 @@ function onInventoryToggle(open) {
   hud.setCrosshairVisible(!open);
   if (open) {
     input.releasePointerOnly();
-  } else if (!input.usingTouch && !hud.overlayVisible) {
-    input.requestLock();
+  } else if (!hud.overlayVisible) {
+    input.resumePointer();
+    saveNeeded = true;
   }
   refreshHeldItem();
 }
 
 function pause() {
   input.release();
-  hud.showOverlay('paused', input.usingTouch ? 'Tap to resume' : 'Click to resume');
+  doSave();
+  hud.showPause(input);
 }
 
 let hasPlayed = false;
@@ -288,22 +336,24 @@ function cycleView() {
   hud.showStatus(view.name);
   playerModel.group.visible = !view.isFirstPerson;
   refreshHeldItem();
+  saveNeeded = true;
 }
 
 input.onAction = (name, arg) => {
-  if (name === 'lockfailed') {
-    if (!input.active) {
-      hud.showOverlay(
-        hasPlayed ? 'paused' : 'title',
-        input.hasTouch
-          ? "Couldn't grab the mouse — tap the screen to play with touch controls."
-          : "Couldn't grab the mouse. Click the screen to try again."
-      );
+  if (name === 'lookmode') {
+    // The pointer lock never engaged (iPadOS Safari does this silently).
+    // Tell the player which mode they got instead of leaving them guessing.
+    if (arg === LOOK_FREE) {
+      hud.showStatus('Mouse look on — move the cursor, edges keep turning');
     }
+    hud.refreshLookMode(input);
     return;
   }
-  // While paused, keys do nothing — a click or any non-Esc key resumes.
-  if (hud.overlayVisible) return;
+  if (name === 'fullscreen') {
+    input.toggleFullscreen();
+    return;
+  }
+  if (hud.overlayVisible) return; // paused: the menu owns the input
   switch (name) {
     case 'inventory':
       invUI.toggle();
@@ -323,6 +373,9 @@ input.onAction = (name, arg) => {
       break;
     case 'scroll':
       if (!invUI.isOpen) invUI.scrollSelection(arg);
+      break;
+    case 'zoom':
+      if (!view.isFirstPerson) hud.showStatus(`Camera distance ${view.zoom(arg).toFixed(1)}`);
       break;
     case 'break':
       if (!invUI.isOpen) breakBlock();
@@ -378,12 +431,19 @@ function frame(now) {
 
   const playing = input.active && input.enabled;
 
-  // ---- look (mouse or touch drag) ----
+  // ---- look (mouse, free-look cursor, or touch drag) ----
   if (playing) {
     const { dx, dy, touch } = input.consumeLook();
-    const sens = touch ? TOUCH_SENSITIVITY : MOUSE_SENSITIVITY;
-    player.yaw -= dx * sens;
-    player.pitch = clamp(player.pitch - dy * sens, -Math.PI / 2 + 0.01, Math.PI / 2 - 0.01);
+    const edge = input.edgeLook(frameDt);
+    const sens = (touch ? TOUCH_SENSITIVITY * settings.touchSensitivity
+      : MOUSE_SENSITIVITY * settings.sensitivity);
+    const invert = settings.invertY ? -1 : 1;
+    player.yaw -= (dx + (edge?.dx ?? 0)) * sens;
+    player.pitch = clamp(
+      player.pitch - (dy + (edge?.dy ?? 0)) * sens * invert,
+      -Math.PI / 2 + 0.01,
+      Math.PI / 2 - 0.01
+    );
   }
 
   // ---- physics (paused while the mouse is released / a menu is open) ----
@@ -400,7 +460,7 @@ function frame(now) {
     acc = 0;
   }
 
-  // ---- held mouse button auto-repeat ----
+  // ---- held use button auto-repeat ----
   if (playing) {
     breakRepeat = input.pressed.break ? breakRepeat + frameDt : 0;
     if (breakRepeat >= USE_REPEAT) {
@@ -441,7 +501,8 @@ function frame(now) {
   }
 
   // ---- camera ----
-  const fovTarget = player.sprinting ? FOV_SPRINT : player.sneaking ? FOV_SNEAK : FOV_BASE;
+  const fovBase = settings.fov;
+  const fovTarget = player.sprinting ? fovBase + 14 : player.sneaking ? fovBase - 10 : fovBase;
   camera.fov += (fovTarget - camera.fov) * Math.min(1, frameDt * 10);
   camera.updateProjectionMatrix();
 
@@ -461,19 +522,22 @@ function frame(now) {
     y: player.pos.y + PLAYER_EYE - eyeOffset + player.bobY,
     z: player.pos.z + right.z * player.bobX,
   };
-  view.apply(camera, world, eye, player.yaw, player.pitch);
+  view.apply(camera, world, eye, player.yaw, player.pitch, frameDt);
 
   // ---- avatar ----
-  playerModel.group.visible = !view.isFirstPerson;
-  if (!view.isFirstPerson) {
+  playerModel.group.visible = !view.isFirstPerson && view.avatarOpacity > 0.02;
+  if (playerModel.group.visible) {
+    playerModel.setOpacity(view.avatarOpacity);
     playerModel.update({
       dt: frameDt,
       pos: player.pos,
+      vel: player.vel,
       yaw: player.yaw,
       pitch: player.pitch,
       speed: player.horizontalSpeed,
       onGround: player.onGround,
       sneaking: player.sneaking,
+      sprinting: player.sprinting,
     });
   }
 
@@ -495,13 +559,18 @@ function frame(now) {
   // ---- world edits ----
   worldRenderer.flushDirty();
 
+  // ---- autosave ----
+  if (saveNeeded && now - lastSaveAt > SAVE_DEBOUNCE) doSave();
+  else if (playing && now - lastSaveAt > SAVE_INTERVAL) doSave();
+
   // ---- sun / sky follow player ----
   sun.position.set(player.pos.x + 60, 105, player.pos.z + 40);
   sun.target.position.copy(player.pos);
   sky.update(frameDt, player.pos);
 
-  // ---- input mode: show the touch UI only while a finger is being used ----
+  // ---- input mode: touch UI and cursor visibility ----
   document.body.classList.toggle('touch', input.usingTouch);
+  document.body.classList.toggle('nocursor', playing && input.lookMode === LOOK_FREE);
 
   // ---- debug overlay ----
   const px = Math.floor(player.pos.x);
@@ -520,7 +589,8 @@ function frame(now) {
     fps: Math.round(fpsSmooth),
     frameMs: frameMsSmooth,
     pixelScale: pixelRatio,
-    inputMode: input.locked ? 'mouse (locked)' : input.usingTouch ? 'touch' : 'keyboard',
+    inputMode: input.lookModeLabel,
+    edits: world.edits.size,
   });
 
   renderer.render(scene, camera);
@@ -529,36 +599,60 @@ function frame(now) {
   if (firstFrame) {
     firstFrame = false;
     loadingEl.classList.add('hidden');
-    hud.showOverlay('title');
+    hud.showTitle(input, Boolean(restored));
     invUI.flashName();
   }
 }
 
-// ---------------- overlay / pointer lock / start ----------------
+// ---------------- overlay / menu wiring ----------------
 hud.overlayEl.addEventListener('pointerdown', (e) => {
+  // Clicks on the menu itself operate the menu; the backdrop starts the game.
+  if (e.target.closest('.panel')) return;
   e.preventDefault();
   startPlaying(e.pointerType === 'touch' ? 'touch' : 'mouse');
+});
+
+hud.bindMenu({
+  onResume: (pointerType) => startPlaying(pointerType === 'touch' ? 'touch' : 'mouse'),
+  onFullscreen: () => input.toggleFullscreen(),
+  onRetryLock: () => {
+    input.retryLock();
+    startPlaying('mouse');
+  },
+  onReset: () => {
+    savingDisabled = true;
+    savegame.clear();
+    location.reload();
+  },
+  onSetting: (key, value) => {
+    setSetting(key, value);
+    if (key === 'fov') camera.fov = settings.fov;
+  },
 });
 
 document.addEventListener('pointerlockchange', () => {
   if (input.locked) {
     hud.hideOverlay();
-  } else if (!invUI.isOpen && !input.usingTouch) {
-    hud.showOverlay('paused', 'Click to resume');
+    hud.refreshLookMode(input);
+  } else if (!invUI.isOpen && input.sessionActive && input.lookMode !== LOOK_FREE && input.lookMode !== LOOK_TOUCH) {
+    // Esc (or the browser) dropped the lock while playing with a locked mouse.
+    pause();
   }
 });
 
-// Start with a key too (Magic Keyboard on iPad, or just convenience): the
-// overlay is visible, so a keypress is an explicit user gesture. Escape is
-// excluded — it is the key that just paused the game.
+// Start with a key too (Magic Keyboard on iPad, or just convenience). Escape
+// is excluded — it is the key that just paused the game — and so are keys
+// aimed at the menu's own controls.
 window.addEventListener('keydown', (e) => {
   if (!hud.overlayVisible || e.code === 'Escape' || e.metaKey || e.altKey || e.ctrlKey) return;
+  if (e.target instanceof HTMLElement && e.target.closest('input, button, select, summary')) return;
   startPlaying('key');
 });
 
 // WebGL context lost (iOS reclaims memory in background tabs, etc.)
 canvas.addEventListener('webglcontextlost', (e) => {
   e.preventDefault();
+  doSave();
   showFatal('The graphics context was lost (often caused by low memory). Tap Reload to continue.');
 });
 
@@ -566,7 +660,13 @@ canvas.addEventListener('webglcontextlost', (e) => {
 window.addEventListener('resize', applyResolution);
 window.addEventListener('orientationchange', () => setTimeout(applyResolution, 250));
 window.visualViewport?.addEventListener('resize', applyResolution);
+document.addEventListener('fullscreenchange', () => {
+  hud.refreshLookMode(input);
+  setTimeout(applyResolution, 60);
+});
 
 // ---------------- go ----------------
+hud.initSettings(settings, LIMITS);
 refreshHeldItem();
+playerModel.group.visible = !view.isFirstPerson;
 requestAnimationFrame(frame);

@@ -56,3 +56,6 @@ export const VIEW_THIRD_BACK = 1;
 export const VIEW_THIRD_FRONT = 2;
 export const VIEW_NAMES = ['First person', 'Third person (back)', 'Third person (front)'];
 export const THIRD_PERSON_DISTANCE = 4; // blocks behind/in front of the head
+export const THIRD_PERSON_MIN = 1.5;
+export const THIRD_PERSON_MAX = 8;
+export const SHOULDER_OFFSET = 0.45; // camera sits off to the side of the head
