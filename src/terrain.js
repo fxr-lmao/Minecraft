@@ -17,8 +17,21 @@
 //      flattens into desert, snow only on ground the mountain weight
 //      actually raised.
 
+import { WORLD_MIN_Y, WORLD_MAX_Y, toLayer } from './constants.js';
+
 /** Columns at or below this height get sand regardless of biome. */
 export const SAND_LEVEL = 4;
+
+/**
+ * Stone turns to deepslate below here. The boundary is jittered per column so
+ * it reads as a ragged transition rather than a drawn line, the same way
+ * Minecraft fades stone into deepslate over a few layers.
+ */
+export const DEEPSLATE_LEVEL = 4;
+const DEEPSLATE_FADE = 8; // how many layers the jitter spreads over
+
+/** The floor is ragged for a few layers, like Minecraft's bedrock. */
+const BEDROCK_FADE = 4;
 
 // block ids (see textures.js BLOCK_DEFS)
 export const GRASS = 1;
@@ -29,6 +42,7 @@ export const BEDROCK = 8;
 export const SNOW = 9;
 export const LOG = 10;
 export const LEAVES = 11;
+export const DEEPSLATE = 12;
 export const AIR = 0;
 
 export const BIOMES = ['plains', 'forest', 'desert', 'mountains'];
@@ -62,6 +76,36 @@ function valueNoise(x, z, seed) {
   const u = smooth(xf);
   const v = smooth(zf);
   return a * (1 - u) * (1 - v) + b * u * (1 - v) + c * (1 - u) * v + d * u * v;
+}
+
+/** 3D integer hash -> [0, 1). */
+export function hash3(ix, iy, iz, seed) {
+  let h = Math.imul(ix, 374761393) + Math.imul(iy, 1442695041)
+    + Math.imul(iz, 668265263) + Math.imul(seed, 362437);
+  h = Math.imul(h ^ (h >>> 13), 1274126177);
+  return ((h ^ (h >>> 16)) >>> 0) / 4294967296;
+}
+
+/** Value noise in 3D, sampled at a continuous point. */
+function valueNoise3(x, y, z, seed) {
+  const xi = Math.floor(x);
+  const yi = Math.floor(y);
+  const zi = Math.floor(z);
+  const u = smooth(x - xi);
+  const v = smooth(y - yi);
+  const w = smooth(z - zi);
+  let acc = 0;
+  for (let dz = 0; dz <= 1; dz++) {
+    const wz = dz ? w : 1 - w;
+    for (let dy = 0; dy <= 1; dy++) {
+      const wy = dy ? v : 1 - v;
+      for (let dx = 0; dx <= 1; dx++) {
+        const wx = dx ? u : 1 - u;
+        acc += hash3(xi + dx, yi + dy, zi + dz, seed) * wx * wy * wz;
+      }
+    }
+  }
+  return acc;
 }
 
 /** Fractal noise: 3 octaves, each half the amplitude and double the frequency. */
@@ -127,7 +171,15 @@ const SHAPE = {
  * is blended, so the terrain flows continuously across biome borders.
  */
 export function surfaceHeight(x, z, seed) {
-  const w = biomeWeights(x, z, seed);
+  return surfaceHeightWith(x, z, seed, biomeWeights(x, z, seed));
+}
+
+/**
+ * The same thing when the caller already has the weights. Chunk generation
+ * needs both for every column, and computing them twice was a third of its
+ * cost — the weights are four octaves of noise.
+ */
+export function surfaceHeightWith(x, z, seed, w) {
   const detail = (fbm(x * 0.06, z * 0.06, seed) - 0.5) * 2; // -1..1
   const hills = (fbm(x * 0.022, z * 0.022, seed + 331) - 0.5) * 2;
   // fBm clusters around its midpoint; push the hill term outwards so the
@@ -161,40 +213,132 @@ export function surfaceBlocks(h, w) {
   return { top: GRASS, filler: DIRT };
 }
 
+// ------------------------------------------------------------------ caves
+//
+// Evaluating 3D noise per block is far too slow — a chunk is 144k cells — so
+// the noise is sampled on a lattice every CAVE_STEP blocks and interpolated
+// between, which is the same trick Minecraft uses for its own cave noise.
+// Lattice points sit on world coordinates, so tunnels line up exactly across
+// chunk borders no matter which chunk is generated first.
+//
+// Two independent fields are carved where *both* sit near their midpoint.
+// The intersection of two iso-surfaces is a line rather than a volume, and
+// that is what turns blobby noise into winding tunnels.
+
+export const CAVE_STEP = 4; // lattice spacing, in blocks
+export const CAVE_CEILING_DEPTH = 3; // rock kept between a cave and the sky
+const CAVE_FREQ = 0.031; // tunnel scale
+const CAVE_THRESHOLD = 0.08; // how close to the midpoint gets carved
+const CAVE_CEILING = CAVE_CEILING_DEPTH;
+const CAVE_SQUASH = 1.7; // >1 flattens tunnels into wider, lower passages
+
+/** One cave field at a lattice point. */
+function caveField(gx, gy, gz, seed, which) {
+  const f = CAVE_FREQ * CAVE_STEP;
+  return valueNoise3(
+    gx * f, gy * f * CAVE_SQUASH, gz * f,
+    seed + (which ? 7717 : 2281)
+  );
+}
+
+const lerp = (a, b, t) => a + (b - a) * t;
+
+/** Is (x, y, z) inside a cave? The slow path — used one cell at a time. */
+export function caveAt(x, y, z, seed) {
+  const gx = Math.floor(x / CAVE_STEP);
+  const gy = Math.floor(y / CAVE_STEP);
+  const gz = Math.floor(z / CAVE_STEP);
+  const tx = x / CAVE_STEP - gx;
+  const ty = y / CAVE_STEP - gy;
+  const tz = z / CAVE_STEP - gz;
+  for (let which = 0; which < 2; which++) {
+    const c = (dx, dy, dz) => caveField(gx + dx, gy + dy, gz + dz, seed, which);
+    const v = lerp(
+      lerp(lerp(c(0, 0, 0), c(1, 0, 0), tx), lerp(c(0, 0, 1), c(1, 0, 1), tx), tz),
+      lerp(lerp(c(0, 1, 0), c(1, 1, 0), tx), lerp(c(0, 1, 1), c(1, 1, 1), tx), tz),
+      ty
+    );
+    if (Math.abs(v - 0.5) >= CAVE_THRESHOLD) return false;
+  }
+  return true;
+}
+
+// ------------------------------------------------------------- stone types
+
+/** The y below which this column's stone is deepslate. */
+export function deepslateTop(x, z, seed) {
+  return DEEPSLATE_LEVEL - Math.floor(hash2(x, z, seed + 6421) * DEEPSLATE_FADE);
+}
+
+/** Bedrock is solid at the very bottom and ragged for a few layers above. */
+function isBedrock(x, y, z, seed) {
+  if (y <= WORLD_MIN_Y) return true;
+  const above = y - WORLD_MIN_Y;
+  if (above >= BEDROCK_FADE) return false;
+  return hash3(x, y, z, seed + 8863) < 1 - above / BEDROCK_FADE;
+}
+
+/** Stone, or deepslate if this is deep enough. */
+function rockAt(x, y, z, seed) {
+  return y <= deepslateTop(x, z, seed) ? DEEPSLATE : STONE;
+}
+
 /** Which block sits at (x, y, z) in freshly generated terrain (no trees). */
 export function generatedBlock(x, y, z, seed) {
-  if (y === 0) return BEDROCK;
+  if (y < WORLD_MIN_Y || y > WORLD_MAX_Y) return y < WORLD_MIN_Y ? BEDROCK : AIR;
+  if (isBedrock(x, y, z, seed)) return BEDROCK;
   const h = surfaceHeight(x, z, seed);
   if (y > h) return AIR;
+  if (y <= h - CAVE_CEILING && caveAt(x, y, z, seed)) return AIR;
   const w = biomeWeights(x, z, seed);
   const { top, filler } = surfaceBlocks(h, w);
   if (y === h) return top;
   if (y >= h - 3) return filler;
-  return STONE;
+  return rockAt(x, y, z, seed);
 }
 
-/** Fill a column of `blocks` from bedrock up to the surface at height `h`. */
-function fillColumn(blocks, col, area, h, top, filler) {
-  for (let y = 0; y <= h; y++) {
+/**
+ * Fill a column from the bedrock floor up to the surface at height `h`.
+ * Indices are layers (y - WORLD_MIN_Y) so they stay non-negative.
+ */
+function fillColumn(blocks, col, area, wx, wz, h, top, filler, seed) {
+  const dsTop = deepslateTop(wx, wz, seed);
+  const hi = toLayer(h);
+  for (let layer = 0; layer <= hi; layer++) {
+    const y = layer + WORLD_MIN_Y;
     let id;
-    if (y === 0) id = BEDROCK;
+    if (isBedrock(wx, y, wz, seed)) id = BEDROCK;
     else if (y === h) id = top;
     else if (y >= h - 3) id = filler;
-    else id = STONE;
-    blocks[y * area + col] = id;
+    else id = y <= dsTop ? DEEPSLATE : STONE;
+    blocks[layer * area + col] = id;
   }
 }
 
 /**
  * Superflat generation: every column the same height. Used by the headless
  * tests, where hills would make "walk forward for five seconds" untestable.
+ * No caves — the point of it is ground you can predict.
  */
-export function generateFlatChunk(blocks, heights, size, height, surfaceY) {
+export function generateFlatChunk(blocks, heights, surface, size, height, surfaceY) {
   blocks.fill(0);
-  const h = Math.max(0, Math.min(surfaceY, height - 1));
+  const h = Math.max(WORLD_MIN_Y, Math.min(surfaceY, WORLD_MAX_Y));
   const area = size * size;
-  for (let col = 0; col < area; col++) fillColumn(blocks, col, area, h, GRASS, DIRT);
-  heights.fill(h);
+  const hi = toLayer(h);
+  for (let col = 0; col < area; col++) {
+    for (let layer = 0; layer <= hi; layer++) {
+      const y = layer + WORLD_MIN_Y;
+      let id;
+      if (y <= WORLD_MIN_Y) id = BEDROCK;
+      else if (y === h) id = GRASS;
+      else if (y >= h - 3) id = DIRT;
+      else id = y <= DEEPSLATE_LEVEL ? DEEPSLATE : STONE;
+      blocks[layer * area + col] = id;
+    }
+  }
+  // Solid all the way down, so the first air is the layer above the surface.
+  heights.fill(hi + 1);
+  surface.fill(hi);
   return h;
 }
 
@@ -238,14 +382,15 @@ export function carveTree(blocks, tx, tz, trunk, x0, z0, size, height, seed) {
   const area = size * size;
   const groundY = surfaceHeight(tx, tz, seed);
   const topY = groundY + trunk;
-  let maxY = 0;
+  let maxY = WORLD_MIN_Y;
 
   const put = (x, y, z, id, overwrite) => {
-    if (y < 1 || y >= height) return;
+    const layer = toLayer(y);
+    if (layer < 1 || layer >= height) return;
     const lx = x - x0;
     const lz = z - z0;
     if (lx < 0 || lx >= size || lz < 0 || lz >= size) return;
-    const i = y * area + lz * size + lx;
+    const i = layer * area + lz * size + lx;
     if (!overwrite && blocks[i] !== AIR) return;
     blocks[i] = id;
     if (y > maxY) maxY = y;
@@ -278,27 +423,32 @@ export function carveTree(blocks, tx, tz, trunk, x0, z0, size, height, seed) {
  * column's terrain surface and returns the highest solid y; the mesher uses
  * both to skip the buried rock below and the empty sky above.
  */
-export function generateChunk(blocks, heights, chunkX, chunkZ, size, height, seed) {
+export function generateChunk(blocks, heights, surface, chunkX, chunkZ, size, height, seed) {
   blocks.fill(0);
-  let maxY = 0;
+  let maxY = WORLD_MIN_Y;
   const area = size * size;
   const x0 = chunkX * size;
   const z0 = chunkZ * size;
+  const ground = new Int16Array(area); // world y, before trees or caves
 
   for (let lz = 0; lz < size; lz++) {
     for (let lx = 0; lx < size; lx++) {
       const wx = x0 + lx;
       const wz = z0 + lz;
-      const h = Math.min(surfaceHeight(wx, wz, seed), height - 1);
-      const { top, filler } = surfaceBlocks(h, biomeWeights(wx, wz, seed));
+      const weights = biomeWeights(wx, wz, seed);
+      const h = Math.min(surfaceHeightWith(wx, wz, seed, weights), WORLD_MAX_Y);
+      const { top, filler } = surfaceBlocks(h, weights);
       const col = lz * size + lx;
-      fillColumn(blocks, col, area, h, top, filler);
-      // Terrain columns are solid from bedrock to here, which lets the
-      // mesher skip everything buried underneath.
-      heights[col] = h;
+      fillColumn(blocks, col, area, wx, wz, h, top, filler, seed);
+      ground[col] = h;
+      surface[col] = toLayer(h);
+      // Nothing is hollow yet, so the first air sits just above the surface.
+      heights[col] = toLayer(h) + 1;
       if (h > maxY) maxY = h;
     }
   }
+
+  carveCaves(blocks, heights, ground, x0, z0, size, area, seed);
 
   // Trees rooted just outside the chunk still drop leaves inside it, so the
   // scan is widened by the canopy radius.
@@ -311,6 +461,119 @@ export function generateChunk(blocks, heights, chunkX, chunkZ, size, height, see
     }
   }
   return maxY;
+}
+
+/**
+ * Hollow out the tunnels, and record how deep each column is now hollow.
+ *
+ * `heights[col]` is the layer below which the column is guaranteed solid —
+ * the mesher trusts it to skip buried rock without checking. Caves are
+ * exactly what invalidates that, so the lowest carved layer is written back.
+ */
+function carveCaves(blocks, heights, ground, x0, z0, size, area, seed) {
+  // Lattice covering the chunk plus one point past each edge, from the
+  // bedrock fade up to the highest column that can be carved at all.
+  let maxCarveY = WORLD_MIN_Y;
+  for (let col = 0; col < area; col++) {
+    if (ground[col] - CAVE_CEILING > maxCarveY) maxCarveY = ground[col] - CAVE_CEILING;
+  }
+  const minCarveY = WORLD_MIN_Y + BEDROCK_FADE;
+  if (maxCarveY < minCarveY) return;
+
+  const g0x = Math.floor(x0 / CAVE_STEP);
+  const g0z = Math.floor(z0 / CAVE_STEP);
+  const g0y = Math.floor(minCarveY / CAVE_STEP);
+  const nx = Math.floor(size / CAVE_STEP) + 2;
+  const nz = nx;
+  // +3, not +2: g0y floors the *bottom* of the range, so the top cell can sit
+  // one lattice cell higher than the span alone suggests, and it still needs
+  // its upper corner.
+  const ny = Math.floor((maxCarveY - minCarveY) / CAVE_STEP) + 3;
+
+  const fieldA = new Float32Array(nx * ny * nz);
+  const fieldB = new Float32Array(nx * ny * nz);
+  for (let iz = 0; iz < nz; iz++) {
+    for (let iy = 0; iy < ny; iy++) {
+      for (let ix = 0; ix < nx; ix++) {
+        const i = (iz * ny + iy) * nx + ix;
+        fieldA[i] = caveField(g0x + ix, g0y + iy, g0z + iz, seed, 0);
+        fieldB[i] = caveField(g0x + ix, g0y + iy, g0z + iz, seed, 1);
+      }
+    }
+  }
+
+  // Interpolating all three axes per block was the whole cost of generation.
+  // Within one column the x/z weights never change, so each lattice level
+  // collapses to a single number and a block is one lerp between two of them.
+  //
+  // Those two numbers also bound every block in the cell: the interpolation
+  // cannot leave the range they span. When both sit outside the carving band
+  // on the same side, the four blocks between them are skipped untouched —
+  // and that rejects most of the underground before it costs anything.
+  const LO = 0.5 - CAVE_THRESHOLD;
+  const HI = 0.5 + CAVE_THRESHOLD;
+  const layerStride = nx * ny;
+
+  const bilinear = (field, ix, iy, iz, tx, tz) => {
+    const i = (iz * ny + iy) * nx + ix;
+    const j = i + layerStride; // the same point one lattice step in z
+    return lerp(
+      lerp(field[i], field[i + 1], tx),
+      lerp(field[j], field[j + 1], tx),
+      tz
+    );
+  };
+  const spans = (a, b) => !((a > HI && b > HI) || (a < LO && b < LO));
+
+  for (let lz = 0; lz < size; lz++) {
+    const wz = z0 + lz;
+    const gz = Math.floor(wz / CAVE_STEP);
+    const iz = gz - g0z;
+    const tz = wz / CAVE_STEP - gz;
+    for (let lx = 0; lx < size; lx++) {
+      const wx = x0 + lx;
+      const gx = Math.floor(wx / CAVE_STEP);
+      const ix = gx - g0x;
+      const tx = wx / CAVE_STEP - gx;
+      const col = lz * size + lx;
+      const ceiling = ground[col] - CAVE_CEILING;
+
+      let y = minCarveY;
+      while (y <= ceiling) {
+        const gy = Math.floor(y / CAVE_STEP);
+        const iy = gy - g0y;
+        // Last y still inside this lattice cell.
+        const yStop = Math.min(ceiling, (gy + 1) * CAVE_STEP - 1);
+        if (iy < 0 || iy + 1 >= ny) {
+          y = yStop + 1;
+          continue;
+        }
+        const a0 = bilinear(fieldA, ix, iy, iz, tx, tz);
+        const a1 = bilinear(fieldA, ix, iy + 1, iz, tx, tz);
+        if (!spans(a0, a1)) {
+          y = yStop + 1;
+          continue;
+        }
+        const b0 = bilinear(fieldB, ix, iy, iz, tx, tz);
+        const b1 = bilinear(fieldB, ix, iy + 1, iz, tx, tz);
+        if (!spans(b0, b1)) {
+          y = yStop + 1;
+          continue;
+        }
+        for (; y <= yStop; y++) {
+          const ty = y / CAVE_STEP - gy;
+          const a = a0 + (a1 - a0) * ty;
+          if (a < LO || a > HI) continue;
+          const b = b0 + (b1 - b0) * ty;
+          if (b < LO || b > HI) continue;
+
+          const layer = toLayer(y);
+          blocks[layer * area + col] = AIR;
+          if (layer < heights[col]) heights[col] = layer;
+        }
+      }
+    }
+  }
 }
 
 /**

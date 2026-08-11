@@ -36,6 +36,18 @@ export const LOOK_TOUCH = 'touch';
 /** How long to wait before deciding requestPointerLock() silently failed. */
 const LOCK_VERIFY_MS = 400;
 
+/**
+ * A refused lock is not always a permanent one. Browsers impose a cooldown
+ * after the *user* exits a lock with Esc — Chrome rejects a new request for
+ * about a second — so the very common "Esc, then click Play again" refuses
+ * once and would succeed a moment later. Falling back to free look on that
+ * first refusal stranded the player in the fallback for the rest of the
+ * session, which read as "the mouse stopped locking after the first time".
+ *
+ * So a refusal is retried on a rising delay, and only the last one gives up.
+ */
+const LOCK_RETRY_MS = [250, 600, 1200];
+
 const KEYMAP = {
   KeyW: 'forward',
   KeyA: 'left',
@@ -122,6 +134,8 @@ export class Input {
     this._joyBase = document.getElementById('joy-base');
     this._joyKnob = document.getElementById('joy-knob');
     this._lockTimer = null;
+    this._retryTimer = null;
+    this._lockAttempt = 0;
 
     this._initKeyboard();
     this._initPointer();
@@ -209,10 +223,12 @@ export class Input {
     // almost certainly an iPad with the Magic Keyboard: going fullscreen on
     // this same gesture is what makes Safari willing to lock the pointer.
     if (this.hasTouch) this.enterFullscreen();
-    this.requestLock();
     // The session starts either way — if the lock never engages we play in
     // free-look mode rather than stranding the player on the title screen.
+    // It is set *before* asking, because a synchronous refusal checks it to
+    // decide whether retrying is still worth it.
     this.sessionActive = true;
+    this.requestLock();
   }
 
   requestLock() {
@@ -221,8 +237,14 @@ export class Input {
       this.nativeHost.lock();
       return;
     }
+    this._lockAttempt = 0;
+    this._attemptLock();
+  }
+
+  _attemptLock() {
+    clearTimeout(this._retryTimer);
     if (!this.pointerLockSupported) {
-      this._lockVerifyFailed();
+      this._giveUpOnLock();
       return;
     }
     this.lookMode = LOOK_LOCK;
@@ -248,10 +270,31 @@ export class Input {
     this.requestLock();
   }
 
-  /** The lock did not engage — play with cursor-movement look instead. */
+  /**
+   * A lock attempt did not take. Try again on a rising delay before deciding
+   * the browser will never grant one — a refusal right after Esc is a
+   * cooldown, not a verdict.
+   */
   _lockVerifyFailed() {
     clearTimeout(this._lockTimer);
     if (this.locked) return;
+    const delay = LOCK_RETRY_MS[this._lockAttempt];
+    if (delay === undefined || !this.sessionActive) {
+      this._giveUpOnLock();
+      return;
+    }
+    this._lockAttempt++;
+    clearTimeout(this._retryTimer);
+    this._retryTimer = setTimeout(() => {
+      if (!this.locked && this.sessionActive) this._attemptLock();
+    }, delay);
+  }
+
+  /** Out of retries — play with cursor-movement look instead. */
+  _giveUpOnLock() {
+    clearTimeout(this._lockTimer);
+    clearTimeout(this._retryTimer);
+    if (this.locked || this.lockUnavailable) return; // announce it once
     this.lockUnavailable = true;
     this.lookMode = this.usingTouch ? LOOK_TOUCH : LOOK_FREE;
     this.onAction('lookmode', this.lookMode);
@@ -260,6 +303,7 @@ export class Input {
   /** Release the mouse (Esc) — the game pauses. */
   release() {
     clearTimeout(this._lockTimer);
+    clearTimeout(this._retryTimer);
     if (this.nativeHost) this.nativeHost.unlock();
     else if (this.locked && document.exitPointerLock) document.exitPointerLock();
     this.sessionActive = false;
@@ -271,6 +315,7 @@ export class Input {
   /** Release the pointer without ending the session (opening a menu). */
   releasePointerOnly() {
     clearTimeout(this._lockTimer);
+    clearTimeout(this._retryTimer);
     if (this.nativeHost) this.nativeHost.unlock();
     else if (this.locked && document.exitPointerLock) document.exitPointerLock();
   }
@@ -384,6 +429,8 @@ export class Input {
       this.locked = document.pointerLockElement === this.canvas;
       if (this.locked) {
         clearTimeout(this._lockTimer);
+        clearTimeout(this._retryTimer);
+        this._lockAttempt = 0;
         this.lookMode = LOOK_LOCK;
         this.lockUnavailable = false;
       } else {

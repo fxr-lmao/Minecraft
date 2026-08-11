@@ -42,7 +42,21 @@ export const FOV_SNEAK = 60;
 
 // World — infinite in x/z, streamed as chunks
 export const CHUNK_SIZE = 32; // blocks per chunk side
-export const WORLD_HEIGHT = 64; // buildable height (y = 0..63)
+/**
+ * Vertical range, Minecraft-style: the world extends well below y = 0 for
+ * caves, and well above the terrain for building. Bedrock seals the floor at
+ * WORLD_MIN_Y and nothing can be placed above WORLD_MAX_Y.
+ *
+ * Block arrays and mesh vertices are indexed by *layer* (y - WORLD_MIN_Y,
+ * always 0..WORLD_HEIGHT-1) so they stay non-negative and still fit in a
+ * byte; `y` on its own always means the world coordinate the player sees.
+ */
+export const WORLD_MIN_Y = -70;
+export const WORLD_MAX_Y = 70; // highest placeable block (the build limit)
+export const WORLD_HEIGHT = WORLD_MAX_Y - WORLD_MIN_Y + 1; // 141 layers
+/** Convert a world y to its layer index, and back. */
+export const toLayer = (y) => y - WORLD_MIN_Y;
+export const fromLayer = (layer) => layer + WORLD_MIN_Y;
 export const WORLD_SEED = 1337;
 // Render distance in chunks (a chunk is CHUNK_SIZE blocks across).
 export const RENDER_DISTANCE_MIN = 2;
@@ -57,6 +71,13 @@ export const RENDER_DISTANCE_DEFAULT = 4;
  * dropping and rebuilding them is far cheaper than keeping them.
  */
 export const DATA_RADIUS = 6;
+/**
+ * How close a chunk must be for its caves to be meshed at all. Beyond this
+ * only the terrain shell is built — the underside of the world is sealed, so
+ * there is nothing down there anyone can see. This is what stops caves from
+ * doubling the geometry at every render distance.
+ */
+export const DEEP_RADIUS = 5;
 
 export const BLOCK_SIZE = 1;
 

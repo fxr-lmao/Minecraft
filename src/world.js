@@ -1,6 +1,7 @@
 // Infinite chunked world.
 //
-// The world is a Map of 32x32x64 chunks generated on demand from a seed.
+// The world is a Map of 32x32x141 chunks (y from -70 to 70) generated on
+// demand from a seed.
 // There is no border: walk in any direction and chunks appear. Chunks far
 // from the player are evicted to keep memory flat, which is safe because
 // generation is deterministic and player edits live in a separate map keyed
@@ -11,12 +12,14 @@
 // synchronously (a fraction of a millisecond). Rendering is separate and
 // only meshes chunks inside the render distance.
 
-import { CHUNK_SIZE, WORLD_HEIGHT, WORLD_SEED } from './constants.js';
+import {
+  CHUNK_SIZE, WORLD_HEIGHT, WORLD_MIN_Y, WORLD_MAX_Y, WORLD_SEED, toLayer,
+} from './constants.js';
 import {
   generateChunk, generateFlatChunk, findSpawn, biomeWeights, dominantBiome,
 } from './terrain.js';
 
-export { GRASS, DIRT, STONE, SAND, BEDROCK, AIR } from './terrain.js';
+export { GRASS, DIRT, STONE, SAND, BEDROCK, DEEPSLATE, AIR } from './terrain.js';
 import { BEDROCK, AIR } from './terrain.js';
 
 const AREA = CHUNK_SIZE * CHUNK_SIZE;
@@ -34,21 +37,33 @@ class Chunk {
     this.cz = cz;
     this.blocks = new Uint8Array(CHUNK_CELLS);
     /**
-     * Terrain surface per column: everything from bedrock up to this height
-     * is solid, so the mesher can skip it. An edit that could punch a hole
-     * resets its column to 0, forcing a full scan of that column only.
+     * Per column, the *layer* below which the column is guaranteed solid, so
+     * the mesher can skip everything underneath without looking. Caves are
+     * exactly what invalidates that, so generation lowers it to the deepest
+     * carved layer. An edit that could punch a hole resets its column to 0,
+     * forcing a full scan of that column only.
      */
     this.heights = new Uint8Array(AREA);
+    /**
+     * Layer of each column's terrain surface. The mesher uses it to build
+     * only the terrain shell for distant chunks: caves never break through
+     * to the sky, so their walls cannot be seen from outside and are not
+     * worth the geometry until you are close enough to go in.
+     */
+    this.surface = new Uint8Array(AREA);
+    /** Set once the player changes anything here — see `surface`. */
+    this.edited = false;
     this.maxY = flat === null
-      ? generateChunk(this.blocks, this.heights, cx, cz, CHUNK_SIZE, WORLD_HEIGHT, seed)
-      : generateFlatChunk(this.blocks, this.heights, CHUNK_SIZE, WORLD_HEIGHT, flat);
+      ? generateChunk(this.blocks, this.heights, this.surface, cx, cz, CHUNK_SIZE, WORLD_HEIGHT, seed)
+      : generateFlatChunk(this.blocks, this.heights, this.surface, CHUNK_SIZE, WORLD_HEIGHT, flat);
     /** Bumped whenever the contents change, so meshes know they are stale. */
     this.revision = 0;
     this.lastUsed = 0;
   }
 
+  /** `y` is a world coordinate; block arrays are indexed by layer. */
   index(lx, y, lz) {
-    return y * AREA + lz * CHUNK_SIZE + lx;
+    return toLayer(y) * AREA + lz * CHUNK_SIZE + lx;
   }
 }
 
@@ -65,6 +80,8 @@ export class World {
     this.chunkSize = CHUNK_SIZE;
     this.layers = WORLD_HEIGHT;
     this.height = WORLD_HEIGHT;
+    this.minY = WORLD_MIN_Y;
+    this.maxY = WORLD_MAX_Y;
     /** key -> Chunk */
     this.chunks = new Map();
     /** "x,y,z" -> block id, every edit the player has made. */
@@ -106,10 +123,11 @@ export class World {
     if (!bucket) return;
     for (const [packed, id] of bucket) {
       const { x, y, z } = unpack(packed);
-      if (y < 0 || y >= WORLD_HEIGHT) continue;
+      if (y < WORLD_MIN_Y || y > WORLD_MAX_Y) continue;
       c.blocks[c.index(x - x0, y, z - z0)] = id;
       if (id !== AIR && y > c.maxY) c.maxY = y;
       c.heights[(z - z0) * CHUNK_SIZE + (x - x0)] = 0;
+      c.edited = true;
     }
   }
 
@@ -134,15 +152,15 @@ export class World {
   // -------------------------------------------------------------- blocks
 
   get(x, y, z) {
-    if (y < 0) return BEDROCK; // sealed below, so you cannot dig out
-    if (y >= WORLD_HEIGHT) return AIR;
+    if (y < WORLD_MIN_Y) return BEDROCK; // sealed below, so you cannot dig out
+    if (y > WORLD_MAX_Y) return AIR;
     const c = this.chunk(toChunk(x), toChunk(z));
     return c.blocks[c.index(toLocal(x), y, toLocal(z))];
   }
 
   /** True when the coordinate can hold a block at all. */
   inBounds(x, y, z) {
-    return y >= 0 && y < WORLD_HEIGHT;
+    return y >= WORLD_MIN_Y && y <= WORLD_MAX_Y;
   }
 
   isSolid(x, y, z) {
@@ -164,6 +182,7 @@ export class World {
     if (id !== AIR && y > c.maxY) c.maxY = y;
     // This column may now have a gap in it; make the mesher scan it in full.
     c.heights[toLocal(z) * CHUNK_SIZE + toLocal(x)] = 0;
+    c.edited = true;
     c.revision++;
 
     this._recordEdit(x, y, z, id);
@@ -197,7 +216,7 @@ export class World {
   applyEdits(edits) {
     let applied = 0;
     for (const { x, y, z, id } of edits) {
-      if (y < 0 || y >= WORLD_HEIGHT) continue;
+      if (y < WORLD_MIN_Y || y > WORLD_MAX_Y) continue;
       this._recordEdit(x, y, z, id);
       const key = chunkKey(toChunk(x), toChunk(z));
       const c = this.chunks.get(key);
@@ -205,6 +224,7 @@ export class World {
         c.blocks[c.index(toLocal(x), y, toLocal(z))] = id;
         if (id !== AIR && y > c.maxY) c.maxY = y;
         c.heights[toLocal(z) * CHUNK_SIZE + toLocal(x)] = 0;
+        c.edited = true;
         this.dirtyChunks.add(key);
       }
       applied++;
@@ -231,15 +251,15 @@ export class World {
     return list;
   }
 
-  /** Height of the top solid block at (x, z); -1 if the column is empty. */
+  /** Height of the top solid block at (x, z); below the world if empty. */
   heightAt(x, z) {
     const c = this.chunk(toChunk(x), toChunk(z));
     const lx = toLocal(x);
     const lz = toLocal(z);
-    for (let y = Math.min(c.maxY, WORLD_HEIGHT - 1); y >= 0; y--) {
+    for (let y = Math.min(c.maxY, WORLD_MAX_Y); y >= WORLD_MIN_Y; y--) {
       if (c.blocks[c.index(lx, y, lz)] !== AIR) return y;
     }
-    return -1;
+    return WORLD_MIN_Y - 1;
   }
 
   /** Which biome dominates a column — shown on the debug screen. */

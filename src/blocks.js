@@ -17,7 +17,8 @@
 
 import * as THREE from '../vendor/three.module.min.js';
 import { getAtlasTexture, getBlockDefById, ATLAS_TILES, atlasTile } from './textures.js';
-import { CHUNK_SIZE, WORLD_HEIGHT } from './constants.js';
+import { CHUNK_SIZE, WORLD_HEIGHT, WORLD_MIN_Y, DEEP_RADIUS, toLayer, fromLayer } from './constants.js';
+import { CAVE_CEILING_DEPTH } from './terrain.js';
 
 const CHUNK_AREA = CHUNK_SIZE * CHUNK_SIZE;
 import { toLocal, toChunk, chunkKey } from './world.js';
@@ -65,20 +66,46 @@ function growScratch() {
   sUv = new Uint16Array(capQuads * 12);
 }
 
-export function meshChunk(world, cx, cz) {
+/**
+ * How much rock below the shallowest neighbouring surface still gets meshed
+ * in shell mode. Caves stop CAVE_CEILING_DEPTH below the surface, so a couple
+ * of layers past that is enough to guarantee no visible face is skipped.
+ */
+const SHELL_MARGIN = CAVE_CEILING_DEPTH + 2;
+
+/**
+ * Build one chunk's geometry.
+ *
+ * `deep` decides whether cave walls are included. Caves never break through
+ * to the sky — generation leaves rock above every one of them — so the
+ * terrain shell is watertight and nothing underground can be seen from
+ * outside it. Distant chunks therefore skip it entirely, which halves both
+ * the geometry and the time spent building it. Chunks the player has edited
+ * are always built deep, because a pit they dug themselves *is* a hole in
+ * that shell.
+ */
+export function meshChunk(world, cx, cz, deep = true) {
   const chunk = world.chunk(cx, cz);
+  const shell = !deep && !chunk.edited;
+  const surface = chunk.surface;
   const x0 = cx * CHUNK_SIZE;
   const z0 = cz * CHUNK_SIZE;
   let vi3 = 0; // write cursor into sPos / sNrm
   let vi2 = 0; // write cursor into sUv
   let overflow = false;
-  const top = Math.min(chunk.maxY + 1, WORLD_HEIGHT - 1);
+  // Everything in here counts in layers (y - WORLD_MIN_Y), which keeps the
+  // vertex positions non-negative and inside a byte.
+  const top = Math.min(toLayer(chunk.maxY) + 1, WORLD_HEIGHT - 1);
   const heights = chunk.heights;
 
   // Iterating column-by-column lets us skip the buried rock: everything
   // below the *lowest* of a column's four neighbours is enclosed on all
   // sides and can never show a face. On mountain chunks that is 40 layers
   // of stone per column, and scanning it was costing ~25 ms a chunk.
+  //
+  // `heights` is what makes this safe once caves exist: generation lowers a
+  // column's entry to the deepest layer it hollowed out, so a tunnel below
+  // is never skipped over.
   for (let lz = 0; lz < CHUNK_SIZE; lz++) {
     for (let lx = 0; lx < CHUNK_SIZE; lx++) {
       const col = lz * CHUNK_SIZE + lx;
@@ -94,6 +121,18 @@ export function meshChunk(world, cx, cz) {
           );
           // A neighbour reset to 0 by an edit falls back to a full scan.
           if (lowest > 0) yStart = Math.max(0, Math.min(gt, lowest) - 1);
+        }
+        if (shell) {
+          // Down to the *lowest* neighbouring surface, not this column's:
+          // a cliff face is exposed all the way down to the ground beside
+          // it, and cutting it off at this column's own surface would punch
+          // a hole in the wall.
+          const s = Math.min(
+            surface[col],
+            surface[col - 1], surface[col + 1],
+            surface[col - CHUNK_SIZE], surface[col + CHUNK_SIZE]
+          );
+          yStart = Math.max(yStart, s - SHELL_MARGIN);
         }
       }
 
@@ -114,7 +153,7 @@ export function meshChunk(world, cx, cz) {
             const nz = lz + d[2];
             neighbour = (nx >= 0 && nx < CHUNK_SIZE && nz >= 0 && nz < CHUNK_SIZE)
               ? chunk.blocks[ny * CHUNK_AREA + nz * CHUNK_SIZE + nx]
-              : world.get(wx + d[0], ny, wz + d[2]);
+              : world.get(wx + d[0], fromLayer(ny), wz + d[2]);
           }
           if (neighbour !== 0) continue;
 
@@ -147,7 +186,7 @@ export function meshChunk(world, cx, cz) {
 
   if (overflow) {
     growScratch();
-    return meshChunk(world, cx, cz);
+    return meshChunk(world, cx, cz, deep);
   }
 
   return {
@@ -256,7 +295,9 @@ export class WorldRenderer {
       this.queue = wanted;
     }
 
-    // drop meshes that are now out of range
+    // drop meshes that are now out of range, and rebuild the ones that just
+    // crossed the deep radius in either direction — walking towards a chunk
+    // has to bring its caves in, and walking away has to give the memory back
     for (const [key, mesh] of this.meshes) {
       const [mx, mz] = key.split(',').map(Number);
       const dx = mx - cx;
@@ -265,6 +306,8 @@ export class WorldRenderer {
         this.scene.remove(mesh);
         mesh.geometry.dispose();
         this.meshes.delete(key);
+      } else if (mesh.userData.deep !== this._deepAt(mx, mz)) {
+        this.world.markDirty(mx, mz);
       }
     }
   }
@@ -293,9 +336,17 @@ export class WorldRenderer {
     this.stats.meshes = this.meshes.size;
   }
 
+  /** Chunks this close to the player get their caves meshed. */
+  _deepAt(cx, cz) {
+    const dx = cx - this.centre.cx;
+    const dz = cz - this.centre.cz;
+    return dx * dx + dz * dz <= DEEP_RADIUS * DEEP_RADIUS;
+  }
+
   buildChunk(cx, cz) {
     const key = chunkKey(cx, cz);
-    const buf = meshChunk(this.world, cx, cz);
+    const deep = this._deepAt(cx, cz);
+    const buf = meshChunk(this.world, cx, cz, deep);
     const existing = this.meshes.get(key);
     if (buf.pos.length === 0) {
       if (existing) {
@@ -309,14 +360,18 @@ export class WorldRenderer {
     if (existing) {
       existing.geometry.dispose();
       existing.geometry = geo;
+      existing.userData.deep = deep;
       return;
     }
     const mesh = new THREE.Mesh(geo, this.material);
     mesh.castShadow = true;
     mesh.receiveShadow = true;
-    mesh.position.set(buf.x0, 0, buf.z0); // vertices are chunk-local
+    // Vertices are chunk-local and layer-indexed, so the mesh carries both
+    // the horizontal chunk origin and the world's floor.
+    mesh.position.set(buf.x0, WORLD_MIN_Y, buf.z0);
     mesh.matrixAutoUpdate = false; // chunks never move
     mesh.updateMatrix();
+    mesh.userData.deep = deep;
     this.meshes.set(key, mesh);
     this.scene.add(mesh);
   }

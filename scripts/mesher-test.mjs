@@ -3,13 +3,37 @@
 import { World, GRASS, AIR } from '../src/world.js';
 import { meshChunk, tileU, FACES } from '../src/blocks.js';
 import { atlasTile, ATLAS_TILES } from '../src/textures.js';
-import { CHUNK_SIZE } from '../src/constants.js';
+import { CHUNK_SIZE, WORLD_HEIGHT, WORLD_MIN_Y, WORLD_SEED } from '../src/constants.js';
 
 const results = [];
 const assert = (name, cond, detail) =>
   results.push([name, Boolean(cond), detail !== undefined ? String(detail) : '']);
 
 const quads = (buf) => buf.pos.length / 18; // 6 verts x 3 floats
+
+// "block x,y,z + face index" for every quad in a buffer, recovered from the
+// quad's normal and its lowest corner.
+const NORMAL_FACE = { '1,0,0': 0, '-1,0,0': 1, '0,1,0': 2, '0,-1,0': 3, '0,0,1': 4, '0,0,-1': 5 };
+function faceSet(buf) {
+  const out = new Set();
+  for (let q = 0; q < buf.pos.length; q += 18) {
+    const f = NORMAL_FACE[`${buf.n[q]},${buf.n[q + 1]},${buf.n[q + 2]}`];
+    let x = Infinity;
+    let y = Infinity;
+    let z = Infinity;
+    for (let v = 0; v < 18; v += 3) {
+      x = Math.min(x, buf.pos[q + v]);
+      y = Math.min(y, buf.pos[q + v + 1]);
+      z = Math.min(z, buf.pos[q + v + 2]);
+    }
+    // A +x face sits on the far side of its block, likewise +y and +z.
+    if (f === 0) x -= 1;
+    if (f === 2) y -= 1;
+    if (f === 4) z -= 1;
+    out.add(`${x},${y},${z},${f}`);
+  }
+  return out;
+}
 const withNormal = (buf, n) => {
   let c = 0;
   for (let i = 0; i < buf.n.length; i += 3) {
@@ -78,13 +102,100 @@ const withNormal = (buf, n) => {
   const w = new World(1, { flat: 3 });
   const buf = meshChunk(w, -3, -2);
   assert('negative chunks mesh', quads(buf) === CHUNK_SIZE * CHUNK_SIZE, quads(buf));
-  // Vertices are chunk-local (so they fit in a byte); the chunk origin comes
-  // back alongside them and is what the mesh gets positioned at.
-  assert('vertices are chunk-local', buf.pos.every((v) => v >= 0 && v <= CHUNK_SIZE + 1));
+  // Vertices are chunk-local horizontally and layer-indexed vertically, so
+  // all three fit in a byte; the mesh is positioned at the chunk origin and
+  // the world floor to put them back where they belong.
+  let localXZ = true;
+  let localY = true;
+  for (let i = 0; i < buf.pos.length; i += 3) {
+    if (buf.pos[i] > CHUNK_SIZE || buf.pos[i + 2] > CHUNK_SIZE) localXZ = false;
+    if (buf.pos[i + 1] > WORLD_HEIGHT) localY = false;
+  }
+  assert('vertices are chunk-local horizontally', localXZ);
+  assert('vertices are layer-indexed vertically', localY);
+  assert('the flat surface meshes at its layer', buf.pos[1] === 3 - WORLD_MIN_Y + 1,
+    buf.pos[1]);
   assert('the chunk origin is returned', buf.x0 === -3 * CHUNK_SIZE && buf.z0 === -2 * CHUNK_SIZE,
     `${buf.x0},${buf.z0}`);
   assert('positions are packed as bytes', buf.pos instanceof Uint8Array);
   assert('normals are packed as signed bytes', buf.n instanceof Int8Array);
+}
+
+// Shell meshing: distant chunks skip their caves. That is only safe if every
+// face you could actually see is still built, so this checks it directly —
+// flood-fill the air that reaches the outside, then require every face
+// touching it to be present in the shell mesh.
+{
+  const w = new World(WORLD_SEED);
+  const cx = 2;
+  const cz = 3;
+  const chunk = w.chunk(cx, cz);
+  const deepFaces = faceSet(meshChunk(w, cx, cz, true));
+  const shellFaces = faceSet(meshChunk(w, cx, cz, false));
+
+  assert('shell mesh is a subset of the deep one',
+    [...shellFaces].every((f) => deepFaces.has(f)));
+  assert('shell mesh is smaller (there are caves down there)',
+    shellFaces.size < deepFaces.size, `${shellFaces.size} < ${deepFaces.size}`);
+
+  // Air connected to the sky — that, and only that, is what a player outside
+  // the terrain can see into. The chunk's own sides are treated as closed:
+  // cave air touching them is not "outside", it is just the same cave
+  // continuing into the neighbour.
+  const S = CHUNK_SIZE;
+  const outside = new Uint8Array(S * S * WORLD_HEIGHT);
+  const idx = (x, y, z) => (y * S + z) * S + x;
+  const solid = (x, y, z) => chunk.blocks[y * S * S + z * S + x] !== 0;
+  const stack = [];
+  for (let z = 0; z < S; z++) {
+    for (let x = 0; x < S; x++) {
+      const y = WORLD_HEIGHT - 1;
+      if (!solid(x, y, z)) {
+        outside[idx(x, y, z)] = 1;
+        stack.push(x, y, z);
+      }
+    }
+  }
+  const STEPS = [[1, 0, 0], [-1, 0, 0], [0, 1, 0], [0, -1, 0], [0, 0, 1], [0, 0, -1]];
+  while (stack.length) {
+    const z = stack.pop();
+    const y = stack.pop();
+    const x = stack.pop();
+    for (const [dx, dy, dz] of STEPS) {
+      const nx = x + dx;
+      const ny = y + dy;
+      const nz = z + dz;
+      if (nx < 0 || nx >= S || nz < 0 || nz >= S || ny < 0 || ny >= WORLD_HEIGHT) continue;
+      if (outside[idx(nx, ny, nz)] || solid(nx, ny, nz)) continue;
+      outside[idx(nx, ny, nz)] = 1;
+      stack.push(nx, ny, nz);
+    }
+  }
+
+  let visible = 0;
+  let missing = 0;
+  for (let y = 0; y < WORLD_HEIGHT; y++) {
+    for (let z = 0; z < S; z++) {
+      for (let x = 0; x < S; x++) {
+        if (!solid(x, y, z)) continue;
+        for (let f = 0; f < STEPS.length; f++) {
+          const [dx, dy, dz] = STEPS[f];
+          const nx = x + dx;
+          const ny = y + dy;
+          const nz = z + dz;
+          if (nx < 0 || nx >= S || nz < 0 || nz >= S || ny < 0 || ny >= WORLD_HEIGHT) continue;
+          if (!outside[idx(nx, ny, nz)]) continue;
+          visible++;
+          if (!shellFaces.has(`${x},${y},${z},${f}`)) missing++;
+        }
+      }
+    }
+  }
+  assert('the flood fill actually found the outside', visible > 1000, visible);
+  assert('no visible face is missing from the shell mesh', missing === 0,
+    `${missing} of ${visible}`);
+  assert('the caves it skipped are real geometry',
+    deepFaces.size - shellFaces.size > 500, deepFaces.size - shellFaces.size);
 }
 
 // Atlas UVs
