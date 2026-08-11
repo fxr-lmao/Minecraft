@@ -8,7 +8,7 @@
     "dev": "vite",
     "build": "vite build",
     "preview": "vite preview",
-    "test": "node scripts/physics-test.mjs && node scripts/world-test.mjs && node scripts/mesher-test.mjs && node scripts/inventory-test.mjs && node scripts/raycast-test.mjs && node scripts/systems-test.mjs"
+    "test": "node scripts/physics-test.mjs && node scripts/world-test.mjs && node scripts/mesher-test.mjs && node scripts/inventory-test.mjs && node scripts/raycast-test.mjs && node scripts/systems-test.mjs && node scripts/native-test.mjs"
   },
   "dependencies": {
     "three": "^0.185.1",

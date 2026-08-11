@@ -52,6 +52,18 @@ The Magic Keyboard has no function keys, which is why the camera is on `V`, full
 - **With fingers**: tap to start. The left half of the screen is a virtual joystick, the right half looks around, and the on-screen buttons cover jump, sprint, sneak, break, place, view, inventory, debug and pause.
 - Both work in the same session — the on-screen buttons hide as soon as you touch the keyboard and come back when you touch the screen.
 
+## Play it as an iPad app (with a real mouse lock)
+
+`ipad-app/` is a small Swift Playgrounds project that puts the game on the Home
+Screen and gives it the one thing Safari won't: a genuine pointer lock, plus raw
+trackpad deltas from `GCMouse`. It builds **on the iPad itself** — no Mac, no
+developer account, no seven-day expiry.
+
+It contains no copy of the game. It loads the live GitHub Pages build in a
+`WKWebView` and handles only the pointer natively, so every push updates the app
+with nothing to reinstall. See [`ipad-app/README.md`](ipad-app/README.md) for the
+install steps and the JS ↔ Swift contract; the web half is `src/native.js`.
+
 ## Run locally
 
 ```bash
@@ -76,7 +88,7 @@ All paths are relative and `.nojekyll` is present, so the game works from a proj
 npm test
 ```
 
-203 headless checks across six suites: Minecraft movement speeds, jump height, wall collision and auto jump; infinite-world chunking (negative coordinates, generation, eviction, edits surviving a regenerate); the mesher (face culling, chunk seams, atlas UVs); the inventory model; block targeting; and the save/settings/camera systems.
+240 headless checks across seven suites: Minecraft movement speeds, jump height, wall collision and auto jump; infinite-world chunking (negative coordinates, generation, eviction, edits surviving a regenerate); the mesher (face culling, chunk seams, atlas UVs); the inventory model; block targeting; the save/settings/camera systems; and the native iPad bridge (that a browser is unaffected by it, and that under a host the pointer-lock machinery is bypassed rather than run alongside).
 
 The tests run on a superflat world (`new World(seed, { flat: 3 })`) so that "walk forward for five seconds" has a deterministic answer.
 
@@ -86,7 +98,7 @@ Caves and ores, trees, more block types, crafting, sounds.
 
 ## Known limits
 
-- Free look can't recentre the cursor the way pointer lock does, so turning relies on the screen-edge zone. It is a fallback, not a replacement — use fullscreen and the retry button to get a real lock where the browser allows it.
+- Free look can't recentre the cursor the way pointer lock does, so turning relies on the screen-edge zone. It is a fallback, not a replacement — use fullscreen and the retry button to get a real lock where the browser allows it, or the [iPad app](ipad-app/README.md), which gets one from UIKit.
 - Saves live in this browser's localStorage: a different browser, or clearing site data, means a fresh world.
 - The world is infinite horizontally but 64 blocks tall, and there are no caves or ores yet — terrain is a surface heightmap.
 - Render distance is not free. Voxel data stays flat, but chunk *geometry* is roughly 0.12 MB per chunk and the chunk count grows with the square of the distance:

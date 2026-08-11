@@ -15,6 +15,7 @@ import { World, AIR, BEDROCK, toChunk } from './world.js';
 import { WorldRenderer, buildSingleBlockGeometry } from './blocks.js';
 import { Player } from './player.js';
 import { Input, LOOK_FREE, LOOK_TOUCH } from './input.js';
+import { installNativeBridge } from './native.js';
 import { Hud } from './hud.js';
 import { Inventory } from './inventory.js';
 import { InventoryUI } from './inventory-ui.js';
@@ -182,6 +183,9 @@ if (restored?.player) {
 }
 
 const input = new Input(canvas);
+// No-op in a browser; in the native iPad wrapper it hands pointer lock and
+// raw trackpad deltas over to UIKit/GCMouse. See src/native.js and ipad-app/.
+installNativeBridge(input);
 const hud = new Hud();
 const sky = createSky(scene);
 const invUI = new InventoryUI(inventory, (open) => onInventoryToggle(open));
