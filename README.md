@@ -2,11 +2,13 @@
 
 A from-scratch Minecraft-style game built with [Three.js](https://threejs.org/) — no external assets, everything (block textures, the player skin, the sky and clouds) is procedurally generated. It runs on GitHub Pages with no build step.
 
-## Status (alpha 0.5)
+## Status (alpha 0.6)
 
-- **Infinite world** — procedurally generated hills, valleys and sandy lowlands streamed in 32×32 chunks as you walk, in every direction, forever. Chunks are generated from a seed and thrown away behind you, so memory stays flat however far you go
-- **Render distance** — 2 to 7 chunks (64–224 blocks) in the settings, with fog tuned to the distance so terrain fades out instead of ending at a visible edge
+- **Infinite world with four biomes** — plains, forest, desert and snow-capped mountains, streamed in 32×32 chunks as you walk, in every direction, forever. Biomes are blended weights rather than a hard choice, so a mountain range ramps down into the plains beside it instead of ending in a cliff, and the ground cover changes exactly where the shape does
+- **Forests have trees** — oak logs and leaves, generated deterministically so canopies cross chunk borders intact and regrow identically when a chunk is reloaded
+- **Render distance up to 40 chunks (1280 blocks)** in the settings, with fog tuned to the distance so terrain fades out instead of ending at a visible edge. The slider shows what each setting costs
 - **One draw call per chunk** — every block face shares a single texture atlas with hand-built mipmaps, so a chunk is one mesh regardless of how many block types it contains. Chunk builds are spread over frames on a 4 ms budget, so streaming never hitches
+- **Flat memory** — block data is only kept within 6 chunks of you; the meshes reach much further. Walking with a 24-chunk render distance holds the same 11 MB of voxel data as a 4-chunk one, because regenerating a chunk (0.03 ms) is cheaper than remembering it
 - **Dig and build anywhere** — break and place blocks; bedrock is indestructible so you can't fall out of the world
 - **Auto jump** — hops single blocks so hilly terrain doesn't mean holding space (toggleable, like Bedrock)
 - **Inventory** — 9 hotbar slots ("in hand") plus a 9 × 3 grid, with stacking to 64, pick-up/drop, right-click half-stacks and shift-click transfers. Broken blocks go into it, placed blocks come out of it
@@ -74,7 +76,7 @@ All paths are relative and `.nojekyll` is present, so the game works from a proj
 npm test
 ```
 
-183 headless checks across six suites: Minecraft movement speeds, jump height, wall collision and auto jump; infinite-world chunking (negative coordinates, generation, eviction, edits surviving a regenerate); the mesher (face culling, chunk seams, atlas UVs); the inventory model; block targeting; and the save/settings/camera systems.
+203 headless checks across six suites: Minecraft movement speeds, jump height, wall collision and auto jump; infinite-world chunking (negative coordinates, generation, eviction, edits surviving a regenerate); the mesher (face culling, chunk seams, atlas UVs); the inventory model; block targeting; and the save/settings/camera systems.
 
 The tests run on a superflat world (`new World(seed, { flat: 3 })`) so that "walk forward for five seconds" has a deterministic answer.
 
@@ -87,3 +89,13 @@ Caves and ores, trees, more block types, crafting, sounds.
 - Free look can't recentre the cursor the way pointer lock does, so turning relies on the screen-edge zone. It is a fallback, not a replacement — use fullscreen and the retry button to get a real lock where the browser allows it.
 - Saves live in this browser's localStorage: a different browser, or clearing site data, means a fresh world.
 - The world is infinite horizontally but 64 blocks tall, and there are no caves or ores yet — terrain is a surface heightmap.
+- Render distance is not free. Voxel data stays flat, but chunk *geometry* is roughly 0.12 MB per chunk and the chunk count grows with the square of the distance:
+
+  | Distance | Blocks | Chunks | Geometry | Draw calls |
+  | --- | --- | --- | --- | --- |
+  | 8 | 256 | 225 | 22 MB | ~88 |
+  | 16 | 512 | 861 | ~100 MB | ~290 |
+  | 24 | 768 | 1930 | ~220 MB | ~600 |
+  | 40 | 1280 | 5027 | ~600 MB | ~1600 |
+
+  For reference, Minecraft's own maximum render distance is 32 of its 16-block chunks — 512 blocks, which is 16 here. Past ~20 the draw-call count, not the memory, is what costs you frames.

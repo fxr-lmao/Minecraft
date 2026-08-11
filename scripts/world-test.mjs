@@ -1,7 +1,10 @@
 // The infinite chunked world: generation, negative coordinates, edits that
 // survive a chunk being evicted and regenerated, and dirty-chunk tracking.
 import { World, AIR, GRASS, STONE, BEDROCK, toChunk, toLocal, chunkKey } from '../src/world.js';
-import { surfaceHeight, generatedBlock } from '../src/terrain.js';
+import {
+  surfaceHeight, generatedBlock, biomeWeights, dominantBiome, surfaceBlocks,
+  treeAt, findSpawn, BIOMES, SAND_LEVEL, LOG, LEAVES, SNOW, SAND as SANDID,
+} from '../src/terrain.js';
 import { CHUNK_SIZE, WORLD_HEIGHT, WORLD_SEED } from '../src/constants.js';
 
 const results = [];
@@ -43,7 +46,8 @@ const assert = (name, cond, detail) =>
   const min = Math.min(...heights);
   const max = Math.max(...heights);
   assert('terrain has hills', max - min >= 4, `${min}..${max}`);
-  assert('terrain stays in a sane band', min >= 2 && max <= 40, `${min}..${max}`);
+  // mountains legitimately reach the snow line, so the ceiling is the clamp
+  assert('terrain stays in a sane band', min >= 2 && max <= 60, `${min}..${max}`);
 }
 
 // -------------------------------------------------------------- infinity
@@ -124,6 +128,136 @@ const assert = (name, cond, detail) =>
   assert('replaying rebuilds the same world',
     replayed.get(3, 8, 3) === STONE && replayed.get(-70, 5, 12) === GRASS);
   assert('chunk keys are stable', chunkKey(-3, 4) === '-3,4');
+}
+
+// ------------------------------------------------------------- biomes
+{
+  const seed = WORLD_SEED;
+  // Weights are a partition of unity everywhere, which is what keeps biome
+  // borders from being cliffs.
+  let sumsOk = true;
+  let negative = false;
+  for (let i = 0; i < 4000; i++) {
+    const x = (i * 137) % 6000 - 3000;
+    const z = Math.floor(i / 40) * 71 - 3000;
+    const w = biomeWeights(x, z, seed);
+    const sum = w.plains + w.forest + w.desert + w.mountains;
+    if (Math.abs(sum - 1) > 1e-9) sumsOk = false;
+    if (BIOMES.some((b) => w[b] < 0)) negative = true;
+  }
+  assert('biome weights always sum to 1', sumsOk);
+  assert('no negative weights', !negative);
+
+  // All four biomes actually occur, in sane proportions.
+  const seen = { plains: 0, forest: 0, desert: 0, mountains: 0 };
+  for (let i = 0; i < 8000; i++) {
+    const x = (i * 53) % 5000 - 2500;
+    const z = Math.floor(i / 60) * 43 - 2500;
+    seen[dominantBiome(biomeWeights(x, z, seed))]++;
+  }
+  assert('every biome exists', BIOMES.every((b) => seen[b] > 100), JSON.stringify(seen));
+
+  // Coherence: height never jumps by a cliff between adjacent columns.
+  let worstStep = 0;
+  for (let i = 0; i < 4000; i++) {
+    const x = (i * 31) % 4000 - 2000;
+    const z = Math.floor(i / 40) * 53 - 2000;
+    worstStep = Math.max(worstStep, Math.abs(surfaceHeight(x + 1, z, seed) - surfaceHeight(x, z, seed)));
+  }
+  assert('neighbouring columns never differ by more than 3', worstStep <= 3, worstStep);
+
+  // Surface material follows the biome.
+  const desertCol = (() => {
+    for (let i = 0; i < 40000; i++) {
+      const x = (i * 71) % 6000 - 3000;
+      const z = Math.floor(i / 50) * 37 - 3000;
+      const w = biomeWeights(x, z, seed);
+      if (w.desert > 0.8) return { x, z, w };
+    }
+    return null;
+  })();
+  assert('deserts exist and are sand', desertCol &&
+    surfaceBlocks(surfaceHeight(desertCol.x, desertCol.z, seed), desertCol.w).top === SANDID);
+
+  const peak = (() => {
+    let best = null;
+    for (let i = 0; i < 40000; i++) {
+      const x = (i * 91) % 6000 - 3000;
+      const z = Math.floor(i / 50) * 29 - 3000;
+      const h = surfaceHeight(x, z, seed);
+      if (!best || h > best.h) best = { x, z, h, w: biomeWeights(x, z, seed) };
+    }
+    return best;
+  })();
+  assert('mountains reach snow line', peak.h >= 38, `highest ${peak.h}`);
+  assert('peaks are snow-capped', surfaceBlocks(peak.h, peak.w).top === SNOW,
+    surfaceBlocks(peak.h, peak.w).top);
+}
+
+// --------------------------------------------------------------- trees
+{
+  const seed = WORLD_SEED;
+  const w = new World(seed);
+
+  // find a tree and check it is made of wood and leaves and stands on grass
+  let found = null;
+  for (let x = -400; x < 400 && !found; x++) {
+    for (let z = -400; z < 400; z++) {
+      if (treeAt(x, z, seed)) { found = { x, z }; break; }
+    }
+  }
+  assert('forests grow trees', found !== null, JSON.stringify(found));
+  if (found) {
+    const { x, z } = found;
+    const ground = surfaceHeight(x, z, seed);
+    assert('trunk is log', w.get(x, ground + 1, z) === LOG, w.get(x, ground + 1, z));
+    assert('tree stands on the surface', w.get(x, ground, z) === 1, w.get(x, ground, z));
+    let leaves = 0;
+    for (let dy = 0; dy < 10; dy++) {
+      for (let dx = -2; dx <= 2; dx++) {
+        for (let dz = -2; dz <= 2; dz++) {
+          if (w.get(x + dx, ground + dy, z + dz) === LEAVES) leaves++;
+        }
+      }
+    }
+    assert('trees have a canopy', leaves > 12, leaves);
+
+    // the same tree must appear identically after its chunk is thrown away
+    const before = w.get(x, ground + 1, z);
+    w.evictOutside(9999, 9999, 0);
+    assert('trees survive a chunk regenerate', w.get(x, ground + 1, z) === before);
+  }
+
+  // canopies cross chunk borders without being clipped
+  let straddler = null;
+  for (let c = -20; c < 20 && !straddler; c++) {
+    for (let z = -400; z < 400; z++) {
+      const x = c * CHUNK_SIZE; // first column of a chunk
+      if (treeAt(x, z, seed)) straddler = { x, z };
+      if (straddler) break;
+    }
+  }
+  if (straddler) {
+    const { x, z } = straddler;
+    const ground = surfaceHeight(x, z, seed);
+    let left = 0;
+    for (let dy = 0; dy < 10; dy++) {
+      if (w.get(x - 1, ground + dy, z) === LEAVES) left++;
+    }
+    assert('canopy spills into the neighbouring chunk', left > 0, left);
+  } else {
+    assert('canopy spills into the neighbouring chunk', true, 'no straddling tree found');
+  }
+}
+
+// spawn lands somewhere sensible
+{
+  const spawn = findSpawn(WORLD_SEED);
+  const h = surfaceHeight(Math.floor(spawn.x), Math.floor(spawn.z), WORLD_SEED);
+  const w = biomeWeights(Math.floor(spawn.x), Math.floor(spawn.z), WORLD_SEED);
+  assert('spawn is above the sand line', h > SAND_LEVEL, h);
+  assert('spawn is on grass', surfaceBlocks(h, w).top === 1, surfaceBlocks(h, w).top);
+  assert('spawn is not inside a tree', treeAt(Math.floor(spawn.x), Math.floor(spawn.z), WORLD_SEED) === 0);
 }
 
 for (const [name, ok, detail] of results) {

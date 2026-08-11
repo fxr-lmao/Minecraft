@@ -78,8 +78,13 @@ const withNormal = (buf, n) => {
   const w = new World(1, { flat: 3 });
   const buf = meshChunk(w, -3, -2);
   assert('negative chunks mesh', quads(buf) === CHUNK_SIZE * CHUNK_SIZE, quads(buf));
-  const minX = Math.min(...buf.pos.filter((_, i) => i % 3 === 0));
-  assert('their vertices are in world space', minX === -3 * CHUNK_SIZE, minX);
+  // Vertices are chunk-local (so they fit in a byte); the chunk origin comes
+  // back alongside them and is what the mesh gets positioned at.
+  assert('vertices are chunk-local', buf.pos.every((v) => v >= 0 && v <= CHUNK_SIZE + 1));
+  assert('the chunk origin is returned', buf.x0 === -3 * CHUNK_SIZE && buf.z0 === -2 * CHUNK_SIZE,
+    `${buf.x0},${buf.z0}`);
+  assert('positions are packed as bytes', buf.pos instanceof Uint8Array);
+  assert('normals are packed as signed bytes', buf.n instanceof Int8Array);
 }
 
 // Atlas UVs
@@ -95,12 +100,17 @@ const withNormal = (buf, n) => {
   const grassTop = atlasTile(1, 1);
   const lo = tileU(grassTop, 0);
   const hi = tileU(grassTop, 1);
+  // UVs are stored as normalised 16-bit ints, so a texel of slack is expected
+  const tol = 2 / 65535;
   let inside = true;
   for (let i = 0; i < buf.uv.length; i += 2) {
-    if (buf.uv[i] < lo - 1e-9 || buf.uv[i] > hi + 1e-9) inside = false;
-    if (buf.uv[i + 1] < -1e-9 || buf.uv[i + 1] > 1 + 1e-9) inside = false;
+    const u = buf.uv[i] / 65535;
+    const v = buf.uv[i + 1] / 65535;
+    if (u < lo - tol || u > hi + tol) inside = false;
+    if (v < -tol || v > 1 + tol) inside = false;
   }
   assert('every UV lands inside the grass-top tile', inside);
+  assert('UVs are packed as 16-bit ints', buf.uv instanceof Uint16Array);
 }
 
 // The face table itself (winding + tile column) is still sane.

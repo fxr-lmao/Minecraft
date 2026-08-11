@@ -46,11 +46,17 @@ export const WORLD_HEIGHT = 64; // buildable height (y = 0..63)
 export const WORLD_SEED = 1337;
 // Render distance in chunks (a chunk is CHUNK_SIZE blocks across).
 export const RENDER_DISTANCE_MIN = 2;
-export const RENDER_DISTANCE_MAX = 7;
+export const RENDER_DISTANCE_MAX = 40;
 export const RENDER_DISTANCE_DEFAULT = 4;
-/** Keep chunks in memory a little beyond what is drawn, so turning around
- *  doesn't re-generate everything. */
-export const KEEP_DISTANCE_EXTRA = 2;
+/**
+ * How far block data is kept in memory, in chunks. Meshes reach out to the
+ * render distance, but the *voxel data* behind them is only needed for
+ * collision and for meshing, both of which happen near the player. Keeping
+ * data on a small radius is what stops a 40-chunk render distance from
+ * holding 300 MB of block arrays: regenerating a chunk costs 0.03 ms, so
+ * dropping and rebuilding them is far cheaper than keeping them.
+ */
+export const DATA_RADIUS = 6;
 
 export const BLOCK_SIZE = 1;
 

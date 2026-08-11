@@ -12,7 +12,9 @@
 // only meshes chunks inside the render distance.
 
 import { CHUNK_SIZE, WORLD_HEIGHT, WORLD_SEED } from './constants.js';
-import { generateChunk, generateFlatChunk, findSpawn } from './terrain.js';
+import {
+  generateChunk, generateFlatChunk, findSpawn, biomeWeights, dominantBiome,
+} from './terrain.js';
 
 export { GRASS, DIRT, STONE, SAND, BEDROCK, AIR } from './terrain.js';
 import { BEDROCK, AIR } from './terrain.js';
@@ -31,9 +33,15 @@ class Chunk {
     this.cx = cx;
     this.cz = cz;
     this.blocks = new Uint8Array(CHUNK_CELLS);
+    /**
+     * Terrain surface per column: everything from bedrock up to this height
+     * is solid, so the mesher can skip it. An edit that could punch a hole
+     * resets its column to 0, forcing a full scan of that column only.
+     */
+    this.heights = new Uint8Array(AREA);
     this.maxY = flat === null
-      ? generateChunk(this.blocks, cx, cz, CHUNK_SIZE, WORLD_HEIGHT, seed)
-      : generateFlatChunk(this.blocks, CHUNK_SIZE, WORLD_HEIGHT, flat);
+      ? generateChunk(this.blocks, this.heights, cx, cz, CHUNK_SIZE, WORLD_HEIGHT, seed)
+      : generateFlatChunk(this.blocks, this.heights, CHUNK_SIZE, WORLD_HEIGHT, flat);
     /** Bumped whenever the contents change, so meshes know they are stale. */
     this.revision = 0;
     this.lastUsed = 0;
@@ -101,6 +109,7 @@ export class World {
       if (y < 0 || y >= WORLD_HEIGHT) continue;
       c.blocks[c.index(x - x0, y, z - z0)] = id;
       if (id !== AIR && y > c.maxY) c.maxY = y;
+      c.heights[(z - z0) * CHUNK_SIZE + (x - x0)] = 0;
     }
   }
 
@@ -153,6 +162,8 @@ export class World {
     if (c.blocks[i] === id) return false;
     c.blocks[i] = id;
     if (id !== AIR && y > c.maxY) c.maxY = y;
+    // This column may now have a gap in it; make the mesher scan it in full.
+    c.heights[toLocal(z) * CHUNK_SIZE + toLocal(x)] = 0;
     c.revision++;
 
     this._recordEdit(x, y, z, id);
@@ -193,6 +204,7 @@ export class World {
       if (c) {
         c.blocks[c.index(toLocal(x), y, toLocal(z))] = id;
         if (id !== AIR && y > c.maxY) c.maxY = y;
+        c.heights[toLocal(z) * CHUNK_SIZE + toLocal(x)] = 0;
         this.dirtyChunks.add(key);
       }
       applied++;
@@ -228,6 +240,11 @@ export class World {
       if (c.blocks[c.index(lx, y, lz)] !== AIR) return y;
     }
     return -1;
+  }
+
+  /** Which biome dominates a column — shown on the debug screen. */
+  biomeAt(x, z) {
+    return this.flat !== null ? 'superflat' : dominantBiome(biomeWeights(x, z, this.seed));
   }
 
   /** A safe standing height for (x, z). */

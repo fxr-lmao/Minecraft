@@ -48,8 +48,8 @@ export class Hud {
   showTitle(input, restored) {
     this.titleEl.textContent = 'MINECRAFT';
     this.subtitleEl.textContent = restored
-      ? 'browser clone · alpha 0.5 · world restored'
-      : 'browser clone · alpha 0.5';
+      ? 'browser clone · alpha 0.6 · world restored'
+      : 'browser clone · alpha 0.6';
     this.resumeEl.textContent = 'Play';
     this.overlayEl.classList.remove('hidden');
     this.refreshLookMode(input);
@@ -98,8 +98,15 @@ export class Hud {
       ['sensitivity', 'set-sens', 'out-sens', (v) => `${Number(v).toFixed(2)}×`],
       ['touchSensitivity', 'set-touch', 'out-touch', (v) => `${Number(v).toFixed(2)}×`],
       ['fov', 'set-fov', 'out-fov', (v) => `${Math.round(v)}°`],
-      ['renderDistance', 'set-distance', 'out-distance',
-        (v) => `${Math.round(v)} chunks · ${Math.round(v) * CHUNK_SIZE} blocks`],
+      ['renderDistance', 'set-distance', 'out-distance', (v) => {
+        const n = Math.round(v);
+        // Chunk data stays flat however far you look, but geometry does not:
+        // it is roughly 0.12 MB per chunk, and the chunk count grows with the
+        // square of the distance.
+        const mb = Math.round(Math.PI * n * n * 0.12);
+        const warn = n >= 20 ? '  ⚠ heavy' : '';
+        return `${n} chunks · ${n * CHUNK_SIZE} blocks · ~${mb} MB${warn}`;
+      }],
     ];
     for (const [key, inputId, outId, fmt] of this._settingInputs) {
       const el = document.getElementById(inputId);
@@ -156,10 +163,10 @@ export class Hud {
       ? `${blockName(info.targetId)} @ ${info.target.x} ${info.target.y} ${info.target.z}`
       : 'none';
     const lines = [
-      `Minecraft [browser clone] alpha 0.5`,
+      `Minecraft [browser clone] alpha 0.6`,
       ``,
       `XYZ: ${info.pos.x.toFixed(3)} / ${info.pos.y.toFixed(3)} / ${info.pos.z.toFixed(3)}`,
-      `Block: ${blockName(info.blockUnder)}`,
+      `Block: ${blockName(info.blockUnder)}  ·  Biome: ${info.biome}`,
       `Chunk: ${info.chunk}  (${CHUNK_SIZE}x${CHUNK_SIZE})`,
       `Facing: ${CARDINALS[idx]} (${((dir + 360) % 360).toFixed(1)} / ${info.pitchDeg.toFixed(1)})`,
       `Looking at: ${target}`,
@@ -172,7 +179,8 @@ export class Hud {
       `Draw calls: ${info.calls}  ·  ${(info.tris / 1000).toFixed(1)}k tris`,
       `Pixel scale: ${info.pixelScale.toFixed(2)}x  ·  Input: ${info.inputMode}`,
       `Render distance: ${info.renderDistance} chunks (${info.renderDistance * CHUNK_SIZE} blocks)`,
-      `Chunks: ${info.meshes} drawn, ${info.queued} queued, ${info.loaded} in memory`,
+      `Chunks: ${info.meshes} meshed, ${info.queued} queued, ${info.loaded} data in memory`,
+      `Memory: ${info.geometryMB.toFixed(0)} MB geometry + ${info.dataMB.toFixed(0)} MB blocks`,
       `World: infinite, height ${WORLD_HEIGHT}, ${info.edits} edits saved`,
     ];
     this.debugEl.textContent = lines.join('\n');

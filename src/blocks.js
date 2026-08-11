@@ -18,6 +18,8 @@
 import * as THREE from '../vendor/three.module.min.js';
 import { getAtlasTexture, getBlockDefById, ATLAS_TILES, atlasTile } from './textures.js';
 import { CHUNK_SIZE, WORLD_HEIGHT } from './constants.js';
+
+const CHUNK_AREA = CHUNK_SIZE * CHUNK_SIZE;
 import { toLocal, toChunk, chunkKey } from './world.js';
 
 export const FACES = [
@@ -47,24 +49,59 @@ export function tileU(tile, u) {
  * no THREE, no DOM — so it is unit-testable in Node.
  * Returns { pos, uv, n } with 6 vertices per quad, in world coordinates.
  */
+// Scratch buffers reused by every chunk. Pushing onto plain arrays cost
+// ~180k calls and ~20 ms per chunk; writing straight into typed memory and
+// copying out once at the end is an order of magnitude faster and allocates
+// nothing per chunk.
+let capQuads = 16384;
+let sPos = new Uint8Array(capQuads * 18);
+let sNrm = new Int8Array(capQuads * 18);
+let sUv = new Uint16Array(capQuads * 12);
+
+function growScratch() {
+  capQuads *= 2;
+  sPos = new Uint8Array(capQuads * 18);
+  sNrm = new Int8Array(capQuads * 18);
+  sUv = new Uint16Array(capQuads * 12);
+}
+
 export function meshChunk(world, cx, cz) {
   const chunk = world.chunk(cx, cz);
-  const pos = [];
-  const uv = [];
-  const n = [];
   const x0 = cx * CHUNK_SIZE;
   const z0 = cz * CHUNK_SIZE;
+  let vi3 = 0; // write cursor into sPos / sNrm
+  let vi2 = 0; // write cursor into sUv
+  let overflow = false;
   const top = Math.min(chunk.maxY + 1, WORLD_HEIGHT - 1);
+  const heights = chunk.heights;
 
-  // Neighbour chunks are read through world.get so faces on a chunk seam are
-  // culled correctly against the chunk next door.
-  for (let y = 0; y <= top; y++) {
-    for (let lz = 0; lz < CHUNK_SIZE; lz++) {
-      for (let lx = 0; lx < CHUNK_SIZE; lx++) {
-        const id = chunk.blocks[chunk.index(lx, y, lz)];
+  // Iterating column-by-column lets us skip the buried rock: everything
+  // below the *lowest* of a column's four neighbours is enclosed on all
+  // sides and can never show a face. On mountain chunks that is 40 layers
+  // of stone per column, and scanning it was costing ~25 ms a chunk.
+  for (let lz = 0; lz < CHUNK_SIZE; lz++) {
+    for (let lx = 0; lx < CHUNK_SIZE; lx++) {
+      const col = lz * CHUNK_SIZE + lx;
+      let yStart = 0;
+      // Edge columns have a neighbour in another chunk, so they are scanned
+      // in full — 12% of columns, not worth reaching across for.
+      if (lx > 0 && lx < CHUNK_SIZE - 1 && lz > 0 && lz < CHUNK_SIZE - 1) {
+        const gt = heights[col];
+        if (gt > 0) {
+          const lowest = Math.min(
+            heights[col - 1], heights[col + 1],
+            heights[col - CHUNK_SIZE], heights[col + CHUNK_SIZE]
+          );
+          // A neighbour reset to 0 by an edit falls back to a full scan.
+          if (lowest > 0) yStart = Math.max(0, Math.min(gt, lowest) - 1);
+        }
+      }
+
+      const wx = x0 + lx;
+      const wz = z0 + lz;
+      for (let y = yStart; y <= top; y++) {
+        const id = chunk.blocks[y * CHUNK_AREA + col];
         if (id === 0) continue;
-        const wx = x0 + lx;
-        const wz = z0 + lz;
         for (let f = 0; f < 6; f++) {
           const d = DIRS[f];
           const ny = y + d[1];
@@ -76,27 +113,53 @@ export function meshChunk(world, cx, cz) {
             const nx = lx + d[0];
             const nz = lz + d[2];
             neighbour = (nx >= 0 && nx < CHUNK_SIZE && nz >= 0 && nz < CHUNK_SIZE)
-              ? chunk.blocks[chunk.index(nx, ny, nz)]
+              ? chunk.blocks[ny * CHUNK_AREA + nz * CHUNK_SIZE + nx]
               : world.get(wx + d[0], ny, wz + d[2]);
           }
           if (neighbour !== 0) continue;
 
+          if (vi3 + 18 > sPos.length) { overflow = true; break; }
           const face = FACES[f];
           const tile = atlasTile(id, face.col);
           for (const vi of TRI_VERTICES) {
             const v = face.v[vi];
             const t = face.uv[vi];
-            pos.push(wx + v[0], y + v[1], wz + v[2]);
-            uv.push(tileU(tile, t[0]), t[1]);
-            n.push(face.n[0], face.n[1], face.n[2]);
+            // Positions are chunk-local so they fit in a byte; the mesh is
+            // placed at the chunk origin instead.
+            sPos[vi3] = lx + v[0];
+            sPos[vi3 + 1] = y + v[1];
+            sPos[vi3 + 2] = lz + v[2];
+            sNrm[vi3] = face.n[0];
+            sNrm[vi3 + 1] = face.n[1];
+            sNrm[vi3 + 2] = face.n[2];
+            vi3 += 3;
+            sUv[vi2] = tileU(tile, t[0]) * 65535;
+            sUv[vi2 + 1] = t[1] * 65535;
+            vi2 += 2;
           }
         }
+        if (overflow) break;
       }
+      if (overflow) break;
     }
+    if (overflow) break;
   }
-  return { pos, uv, n };
+
+  if (overflow) {
+    growScratch();
+    return meshChunk(world, cx, cz);
+  }
+
+  return {
+    pos: sPos.slice(0, vi3),
+    n: sNrm.slice(0, vi3),
+    uv: sUv.slice(0, vi2), // 16-bit normalised: divide by 65535 for 0..1
+    x0,
+    z0,
+  };
 }
 
+/** Full-precision geometry, for the single cube held in the hand. */
 function buildGeometry(buf) {
   const geo = new THREE.BufferGeometry();
   geo.setAttribute('position', new THREE.Float32BufferAttribute(buf.pos, 3));
@@ -104,6 +167,28 @@ function buildGeometry(buf) {
   geo.setAttribute('normal', new THREE.Float32BufferAttribute(buf.n, 3));
   geo.computeBoundingSphere(); // needed for frustum culling to work
   return geo;
+}
+
+/**
+ * Chunk geometry, packed small. Positions are chunk-local integers (0..32 in
+ * x/z, 0..64 in y) so they fit in a byte, normals are just -1/0/1, and UVs
+ * only need 16 bits. That is 10 bytes per vertex instead of 32 — at a render
+ * distance of 40 chunks the difference is hundreds of megabytes of GPU
+ * memory, which is the whole reason such a distance is usable at all.
+ */
+function buildChunkGeometry(buf) {
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.Uint8BufferAttribute(buf.pos, 3));
+  geo.setAttribute('normal', new THREE.Int8BufferAttribute(buf.n, 3));
+  geo.setAttribute('uv', new THREE.Uint16BufferAttribute(buf.uv, 2, true));
+  geo.computeBoundingSphere(); // needed for frustum culling to work
+  return geo;
+}
+
+/** Bytes of vertex data a chunk geometry occupies (for the debug screen). */
+export function geometryBytes(geo) {
+  const count = geo.getAttribute('position')?.count ?? 0;
+  return count * (3 + 3 + 4);
 }
 
 /**
@@ -220,7 +305,7 @@ export class WorldRenderer {
       }
       return;
     }
-    const geo = buildGeometry(buf);
+    const geo = buildChunkGeometry(buf);
     if (existing) {
       existing.geometry.dispose();
       existing.geometry = geo;
@@ -229,15 +314,30 @@ export class WorldRenderer {
     const mesh = new THREE.Mesh(geo, this.material);
     mesh.castShadow = true;
     mesh.receiveShadow = true;
+    mesh.position.set(buf.x0, 0, buf.z0); // vertices are chunk-local
     mesh.matrixAutoUpdate = false; // chunks never move
     mesh.updateMatrix();
     this.meshes.set(key, mesh);
     this.scene.add(mesh);
   }
 
-  /** True once every chunk in range has a mesh (used by the loading screen). */
+  /** Rough GPU vertex memory across every live chunk mesh, in MB. */
+  get geometryMB() {
+    let bytes = 0;
+    for (const mesh of this.meshes.values()) bytes += geometryBytes(mesh.geometry);
+    return bytes / (1024 * 1024);
+  }
+
+  /**
+   * True once the chunks *around the player* are meshed. The loading screen
+   * waits on this rather than the whole queue: at a 40-chunk render distance
+   * the full queue is several thousand chunks and takes ten seconds, but the
+   * handful you can actually touch are done almost immediately, and the rest
+   * streams in behind the fog while you play.
+   */
   get ready() {
-    return this.queue.length === 0;
+    const next = this.queue[0];
+    return !next || next.d > 4; // d is the squared chunk distance
   }
 }
 
