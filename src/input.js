@@ -21,6 +21,11 @@
 //
 // Entering fullscreen first measurably improves the odds of a real lock on
 // iPadOS, so a touch-capable device tries that on the same user gesture.
+//
+// A fourth possibility sits outside those three: when the game runs inside the
+// native iPad wrapper (ipad-app/), a real pointer lock is available from UIKit
+// and raw deltas come from GCMouse. attachNativeHost() switches to it — the
+// host owns the lock, so none of the browser's lock machinery runs.
 
 import { clamp } from './utils.js';
 
@@ -84,6 +89,10 @@ export class Input {
     this.lookMode = LOOK_LOCK;
     /** True once a lock attempt was verified as failed; stops auto-retrying. */
     this.lockUnavailable = false;
+    /** Native wrapper, if any: { lock(), unlock() }. See native.js. */
+    this.nativeHost = null;
+    /** True while the native host reports the pointer captured. */
+    this.nativeLocked = false;
 
     this.hasTouch =
       typeof window !== 'undefined' &&
@@ -129,7 +138,50 @@ export class Input {
   get lookModeLabel() {
     if (this.lookMode === LOOK_TOUCH) return 'touch';
     if (this.lookMode === LOOK_FREE) return 'mouse (free look)';
+    if (this.nativeHost) return this.nativeLocked ? 'mouse (native lock)' : 'mouse (native)';
     return this.locked ? 'mouse (locked)' : 'mouse';
+  }
+
+  // -------------------------------------------------------------- native host
+
+  /**
+   * Run under the native iPad wrapper. The host captures the pointer through
+   * UIKit and pushes raw deltas in, so the browser lock — and the free-look
+   * fallback that exists only to survive Safari refusing it — are both unused.
+   */
+  attachNativeHost(host) {
+    this.nativeHost = host;
+    this.lockUnavailable = false;
+    this.lookMode = LOOK_LOCK;
+  }
+
+  /** The host captured or released the pointer. */
+  setNativeLocked(on) {
+    this.nativeLocked = Boolean(on);
+    if (this.nativeLocked) this.lookMode = LOOK_LOCK;
+    this.onAction('lookmode', this.lookMode);
+  }
+
+  /** Raw mouse delta from GCMouse, already in browser sign convention. */
+  nativeLook(dx, dy) {
+    if (!this.enabled || !this.sessionActive) return;
+    this.usingTouch = false;
+    this.mouseDX += dx;
+    this.mouseDY += dy;
+  }
+
+  /** Mouse button from GCMouse: 0 left, 1 middle, 2 right. */
+  nativeButton(index, down) {
+    if (!this.sessionActive || !this.enabled) return;
+    if (index === 0) {
+      this.pressed.break = down;
+      if (down) this.onAction('break');
+    } else if (index === 2) {
+      this.pressed.place = down;
+      if (down) this.onAction('place');
+    } else if (index === 1 && down) {
+      this.onAction('pick');
+    }
   }
 
   // ------------------------------------------------------------- lifecycle
@@ -146,6 +198,13 @@ export class Input {
       return;
     }
     this.usingTouch = false;
+    // The native wrapper is already fullscreen and its lock never fails, so
+    // it skips the Safari workarounds entirely.
+    if (this.nativeHost) {
+      this.requestLock();
+      this.sessionActive = true;
+      return;
+    }
     // A touch-capable device that is being driven by a keyboard/trackpad is
     // almost certainly an iPad with the Magic Keyboard: going fullscreen on
     // this same gesture is what makes Safari willing to lock the pointer.
@@ -157,6 +216,11 @@ export class Input {
   }
 
   requestLock() {
+    if (this.nativeHost) {
+      this.lookMode = LOOK_LOCK;
+      this.nativeHost.lock();
+      return;
+    }
     if (!this.pointerLockSupported) {
       this._lockVerifyFailed();
       return;
@@ -196,7 +260,8 @@ export class Input {
   /** Release the mouse (Esc) — the game pauses. */
   release() {
     clearTimeout(this._lockTimer);
-    if (this.locked && document.exitPointerLock) document.exitPointerLock();
+    if (this.nativeHost) this.nativeHost.unlock();
+    else if (this.locked && document.exitPointerLock) document.exitPointerLock();
     this.sessionActive = false;
     this.keys.clear();
     this.pressed.break = false;
@@ -206,11 +271,16 @@ export class Input {
   /** Release the pointer without ending the session (opening a menu). */
   releasePointerOnly() {
     clearTimeout(this._lockTimer);
-    if (this.locked && document.exitPointerLock) document.exitPointerLock();
+    if (this.nativeHost) this.nativeHost.unlock();
+    else if (this.locked && document.exitPointerLock) document.exitPointerLock();
   }
 
   /** Re-acquire the pointer after a menu closes. */
   resumePointer() {
+    if (this.nativeHost) {
+      this.requestLock();
+      return;
+    }
     if (this.lookMode === LOOK_TOUCH || this.lockUnavailable) return;
     this.requestLock();
   }
@@ -355,7 +425,7 @@ export class Input {
 
     // Clicking with a real mouse/trackpad during a touch session takes over.
     this.canvas.addEventListener('pointerdown', (e) => {
-      if (e.pointerType === 'touch') return;
+      if (e.pointerType === 'touch' || this.nativeLocked) return;
       this.usingTouch = false;
       if (!this.locked && !this.lockUnavailable && this.enabled && this.sessionActive) {
         this.requestLock();
@@ -363,7 +433,10 @@ export class Input {
     });
 
     // Break / place. Works in every mouse mode, not just when locked.
+    // While the native host holds the pointer, clicks arrive through the
+    // bridge instead — taking both would break and place twice per click.
     this.canvas.addEventListener('mousedown', (e) => {
+      if (this.nativeLocked) return;
       if (!this.sessionActive || !this.enabled || this.lookMode === LOOK_TOUCH) return;
       e.preventDefault();
       if (e.button === 0) {
