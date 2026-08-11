@@ -2,8 +2,8 @@
 // Runs on a superflat world (surface at y=3, so the player stands at y=4):
 // generated hills would make "walk forward for five seconds" untestable.
 import { Player } from '../src/player.js';
-import { World, GRASS } from '../src/world.js';
-import { PHYSICS_DT } from '../src/constants.js';
+import { World, GRASS, AIR } from '../src/world.js';
+import { PHYSICS_DT, WORLD_MIN_Y } from '../src/constants.js';
 
 const world = new World(1, { flat: 3 });
 
@@ -248,6 +248,49 @@ const assert = (name, cond, detail) => {
   assert('no hopping on flat ground', maxY < 4.02, maxY.toFixed(3));
   assert('flat sprint still hits full speed', Math.abs(p3.horizontalSpeed - 5.612) < 0.02,
     p3.horizontalSpeed.toFixed(3));
+}
+
+// Mining down must not teleport you back to the surface.
+//
+// The fall-out-of-the-world backstop was a hard-coded y = -32, from when the
+// world floor was y = 0. Once the world reached -70 that number sat in the
+// middle of the caves, so digging past it respawned you at the top.
+{
+  const deep = new World(1, { flat: 3 });
+  const idle = { forward: 0, strafe: 0, jump: false, sprint: false, sneak: false };
+  const spawnY = new Player(deep).pos.y;
+
+  // A superflat world is solid rock all the way down, so mine a shaft first —
+  // exactly what a player does to get down there.
+  const SHAFT_FLOOR = -50;
+  for (let y = SHAFT_FLOOR; y <= 3; y++) deep.setBlock(0, y, 0, AIR);
+
+  // Standing on the shaft floor, well past the old -32 threshold.
+  // The lowest carved block is SHAFT_FLOOR, so the solid block under it is at
+  // SHAFT_FLOOR - 1 and the player's feet rest at SHAFT_FLOOR.
+  const p = new Player(deep);
+  p.pos.set(0.5, SHAFT_FLOOR, 0.5);
+  p.vel.set(0, 0, 0);
+  for (let i = 0; i < 240; i++) p.update(PHYSICS_DT, idle);
+  assert('standing below -32 does not respawn you', p.pos.y < -40, p.pos.y.toFixed(2));
+  assert('...and you are on the shaft floor',
+    p.onGround && Math.abs(p.pos.y - SHAFT_FLOOR) < 0.01, p.pos.y.toFixed(3));
+
+  // Falling down the shaft past -32 — the exact reported symptom.
+  const q = new Player(deep);
+  q.pos.set(0.5, 3.5, 0.5);
+  q.vel.set(0, 0, 0);
+  for (let i = 0; i < 600; i++) q.update(PHYSICS_DT, idle);
+  assert('falling past -32 does not teleport you to the surface',
+    q.pos.y < -32 && Math.abs(q.pos.y - spawnY) > 1, q.pos.y.toFixed(2));
+  assert('you land at the bottom of the shaft instead',
+    q.onGround && Math.abs(q.pos.y - SHAFT_FLOOR) < 0.01, q.pos.y.toFixed(3));
+
+  // The backstop still exists for anything that ends up under the floor.
+  const r = new Player(deep);
+  r.pos.set(0.5, WORLD_MIN_Y - 20, 0.5);
+  r.update(PHYSICS_DT, idle);
+  assert('under the floor still respawns', Math.abs(r.pos.y - r.spawn.y) < 1e-6, r.pos.y.toFixed(2));
 }
 
 console.log(results.join('\n'));
