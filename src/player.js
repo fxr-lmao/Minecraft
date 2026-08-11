@@ -15,13 +15,20 @@ import {
   SPEED_WALK, SPEED_SNEAK, AIR_WALK,
   DRAG_GROUND, DRAG_AIR,
   PLAYER_WIDTH, PLAYER_HEIGHT, PLAYER_EYE,
+  WORLD_MIN_Y,
 } from './constants.js';
 import { lookVector } from './view.js';
 
 const HALF = PLAYER_WIDTH / 2;
 const EPS = 1e-4;
 const TERMINAL_FALL = 78.4; // blocks/s (Minecraft's fall terminal velocity)
-const FALL_RESPAWN_Y = -32;
+/**
+ * Backstop for falling out of the world. It must sit *below* the bedrock
+ * floor, never at a depth the player can legitimately dig to — this was a
+ * hard-coded -32 from when the world bottomed out at y = 0, which meant that
+ * mining down past -32 teleported you back to the surface.
+ */
+const FALL_RESPAWN_Y = WORLD_MIN_Y - 16;
 
 export class Player {
   constructor(world) {
@@ -149,8 +156,8 @@ export class Player {
     }
 
     // The world is infinite: no border to clamp against. Falling out is
-    // still impossible (bedrock seals y = 0), but keep the respawn as a
-    // backstop in case anything ever puts the player under the floor.
+    // still impossible (bedrock seals WORLD_MIN_Y), but keep the respawn as
+    // a backstop in case anything ever puts the player under the floor.
     if (this.pos.y < FALL_RESPAWN_Y) {
       this.respawn();
     }
