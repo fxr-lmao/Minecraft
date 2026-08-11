@@ -9,6 +9,8 @@
 // Pure functions here (encode/decode/parse) are unit-tested in Node; the
 // localStorage wrapper around them is not.
 
+import { WORLD_MIN_Y, WORLD_MAX_Y } from './constants.js';
+
 const KEY = 'mc-clone.save.v1'; // same slot; the payload carries its version
 const VERSION = 2;
 /** Refuse to persist absurd saves rather than blowing the storage quota. */
@@ -31,7 +33,10 @@ export function decodeEdits(flat) {
   for (let i = 0; i + 3 < flat.length; i += 4) {
     const [x, y, z, id] = flat.slice(i, i + 4);
     if (![x, y, z, id].every(Number.isInteger)) continue;
-    if (id < 0 || id > 255 || y < 0) continue;
+    // y is absolute and the world extends below zero, so only the real
+    // vertical bounds may reject an edit — `y < 0` used to, and would now
+    // silently drop everything anyone built underground.
+    if (id < 0 || id > 255 || y < WORLD_MIN_Y || y > WORLD_MAX_Y) continue;
     out.push({ x, y, z, id });
   }
   return out;

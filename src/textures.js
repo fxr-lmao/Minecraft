@@ -127,6 +127,19 @@ function stoneFace(rand) {
   return noiseCanvas(rand, 0x7f7f7f, { speckles: 40, blotches: 3 });
 }
 
+// Deepslate: darker and cooler than stone, with fine vertical banding so the
+// switch is obvious the moment you dig past it.
+function deepslateFace(rand) {
+  const cv = noiseCanvas(rand, 0x3c3f44, { speckles: 55, blotches: 5, blotchColor: 0x2a2c30 });
+  const ctx = cv.getContext('2d');
+  ctx.fillStyle = 'rgba(28,30,34,0.5)';
+  for (let i = 0; i < 5; i++) {
+    const x = Math.floor(rand() * TEX_SIZE);
+    ctx.fillRect(x, Math.floor(rand() * TEX_SIZE), 1, 3 + Math.floor(rand() * 6));
+  }
+  return cv;
+}
+
 function cobbleFace(rand) {
   return noiseCanvas(rand, 0x8a8a8a, { speckles: 60, blotches: 10, blotchColor: 0x5a5a5a });
 }
@@ -293,6 +306,7 @@ export const BLOCK_DEFS = [
   { id: 9, name: 'Snow Block', side: snowFace, top: snowFace, bottom: snowFace },
   { id: 10, name: 'Oak Log', side: logSideFace, top: logTopFace, bottom: logTopFace },
   { id: 11, name: 'Leaves', side: leavesFace, top: leavesFace, bottom: leavesFace },
+  { id: 12, name: 'Deepslate', side: deepslateFace, top: deepslateFace, bottom: deepslateFace },
 ];
 
 /** Blocks offered in the starting hotbar (9 slots, so not every block). */

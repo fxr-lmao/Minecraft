@@ -2,13 +2,17 @@
 
 A from-scratch Minecraft-style game built with [Three.js](https://threejs.org/) — no external assets, everything (block textures, the player skin, the sky and clouds) is procedurally generated. It runs on GitHub Pages with no build step.
 
-## Status (alpha 0.6)
+## Status (alpha 0.7)
 
 - **Infinite world with four biomes** — plains, forest, desert and snow-capped mountains, streamed in 32×32 chunks as you walk, in every direction, forever. Biomes are blended weights rather than a hard choice, so a mountain range ramps down into the plains beside it instead of ending in a cliff, and the ground cover changes exactly where the shape does
+- **Minecraft's vertical range** — the world runs from **y = −70 to y = 70**: bedrock (ragged, like the real thing) at the bottom, 70 blocks of headroom to build into at the top
+- **Caves** — winding tunnels through the whole underground, carved where two 3D noise fields cross. The noise is sampled on a 4-block lattice and interpolated, which is what Minecraft does too, and what makes them smooth rather than speckled. They line up exactly across chunk borders
+- **Deepslate below y ≈ 4** — stone gives way to deepslate on a boundary jittered per column, so it reads as a transition rather than a drawn line
 - **Forests have trees** — oak logs and leaves, generated deterministically so canopies cross chunk borders intact and regrow identically when a chunk is reloaded
 - **Render distance up to 40 chunks (1280 blocks)** in the settings, with fog tuned to the distance so terrain fades out instead of ending at a visible edge. The slider shows what each setting costs
 - **One draw call per chunk** — every block face shares a single texture atlas with hand-built mipmaps, so a chunk is one mesh regardless of how many block types it contains. Chunk builds are spread over frames on a 4 ms budget, so streaming never hitches
-- **Flat memory** — block data is only kept within 6 chunks of you; the meshes reach much further. Walking with a 24-chunk render distance holds the same 11 MB of voxel data as a 4-chunk one, because regenerating a chunk (0.03 ms) is cheaper than remembering it
+- **Flat memory** — block data is only kept within 6 chunks of you; the meshes reach much further. Walking with a 24-chunk render distance holds the same voxel data as a 4-chunk one, because regenerating a chunk is cheaper than remembering it
+- **Caves cost nothing at a distance** — they never break through to the sky, so the terrain shell above them is watertight and none of that geometry can be seen from outside it. Only chunks within 5 of you get their caves built; everything further is the shell alone, which is *less* geometry than before caves existed. Chunks you have dug into are always built in full, because a pit you made yourself is a real hole in that shell
 - **Dig and build anywhere** — break and place blocks; bedrock is indestructible so you can't fall out of the world
 - **Auto jump** — hops single blocks so hilly terrain doesn't mean holding space (toggleable, like Bedrock)
 - **Inventory** — 9 hotbar slots ("in hand") plus a 9 × 3 grid, with stacking to 64, pick-up/drop, right-click half-stacks and shift-click transfers. Broken blocks go into it, placed blocks come out of it
@@ -88,26 +92,34 @@ All paths are relative and `.nojekyll` is present, so the game works from a proj
 npm test
 ```
 
-240 headless checks across seven suites: Minecraft movement speeds, jump height, wall collision and auto jump; infinite-world chunking (negative coordinates, generation, eviction, edits surviving a regenerate); the mesher (face culling, chunk seams, atlas UVs); the inventory model; block targeting; the save/settings/camera systems; and the native iPad bridge (that a browser is unaffected by it, and that under a host the pointer-lock machinery is bypassed rather than run alongside).
+270 headless checks across seven suites: Minecraft movement speeds, jump height, wall collision and auto jump; infinite-world chunking (negative coordinates, generation, eviction, edits surviving a regenerate), caves and the deepslate transition; the mesher (face culling, chunk seams, atlas UVs); the inventory model; block targeting; the save/settings/camera systems; and pointer lock plus the native iPad bridge.
+
+Two of them are worth calling out because they guard optimisations that would otherwise fail silently:
+
+- **The shell mesh is proved complete.** Distant chunks skip their cave geometry. The test flood-fills the air connected to the sky, then asserts that every single face touching it is present in the shell mesh — so the shortcut can never leave a visible hole.
+- **Both cave code paths are cross-checked.** Chunk generation interpolates a precomputed noise lattice; `generatedBlock` interpolates the same lattice one cell at a time. The test asserts they agree block for block, because a drift between them would show up as a seam.
 
 The tests run on a superflat world (`new World(seed, { flat: 3 })`) so that "walk forward for five seconds" has a deterministic answer.
 
 ## What's next
 
-Caves and ores, trees, more block types, crafting, sounds.
+Cave entrances, ores, water and lava, more block types, crafting, sounds.
 
 ## Known limits
 
 - Free look can't recentre the cursor the way pointer lock does, so turning relies on the screen-edge zone. It is a fallback, not a replacement — use fullscreen and the retry button to get a real lock where the browser allows it, or the [iPad app](ipad-app/README.md), which gets one from UIKit.
 - Saves live in this browser's localStorage: a different browser, or clearing site data, means a fresh world.
-- The world is infinite horizontally but 64 blocks tall, and there are no caves or ores yet — terrain is a surface heightmap.
+- **Caves never break through to the surface.** You find them by digging, not by walking into a hole in a hillside. That is not an accident: it is what makes the terrain shell watertight, which is what lets distant chunks skip their cave geometry entirely. Adding entrances means flagging the chunks that have one so they are always built in full — worth doing, but it is a change to the optimisation, not a tweak to the noise.
+- No ores yet, and no water or lava — a cave is air.
 - Render distance is not free. Voxel data stays flat, but chunk *geometry* is roughly 0.12 MB per chunk and the chunk count grows with the square of the distance:
 
   | Distance | Blocks | Chunks | Geometry | Draw calls |
   | --- | --- | --- | --- | --- |
-  | 8 | 256 | 225 | 22 MB | ~88 |
-  | 16 | 512 | 861 | ~100 MB | ~290 |
-  | 24 | 768 | 1930 | ~220 MB | ~600 |
-  | 40 | 1280 | 5027 | ~600 MB | ~1600 |
+  | 8 | 256 | 225 | ~25 MB | ~88 |
+  | 16 | 512 | 861 | ~95 MB | ~290 |
+  | 24 | 768 | 1930 | ~215 MB | ~600 |
+  | 40 | 1280 | 5027 | ~560 MB | ~1600 |
 
   For reference, Minecraft's own maximum render distance is 32 of its 16-block chunks — 512 blocks, which is 16 here. Past ~20 the draw-call count, not the memory, is what costs you frames.
+
+  Caves barely move these numbers, which is the point of the shell/deep split: a shell chunk is ~111 KB and a chunk with its caves built is ~365 KB, but only the ~80 chunks nearest you are ever the second kind.

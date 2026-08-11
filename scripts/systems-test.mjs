@@ -46,8 +46,13 @@ const assert = (name, cond, detail) =>
   assert('null save rejected', parseSnapshot(null) === null);
   assert('unknown version rejected', parseSnapshot({ ...snap, version: 99 }) === null);
 
-  const dirty = parseSnapshot({ ...snap, edits: [1, 2, 3, 999, 4, -5, 6, 1, 7, 8, 9, 2] });
-  assert('malformed edits dropped', dirty.edits.length === 1 && dirty.edits[0].id === 2,
+  // 999 is not a block id and -500 is below the world; y = -5 is a perfectly
+  // ordinary underground block now that the world reaches -70, and dropping
+  // it would quietly delete everything anyone built in a cave.
+  const dirty = parseSnapshot({ ...snap, edits: [1, 2, 3, 999, 4, -500, 6, 1, 7, 8, 9, 2, 3, -5, 3, 4] });
+  assert('underground edits survive', dirty.edits.some((e) => e.y === -5 && e.id === 4),
+    JSON.stringify(dirty.edits));
+  assert('malformed edits dropped', dirty.edits.length === 2 && dirty.edits[0].id === 2,
     JSON.stringify(dirty.edits));
 
   const junkInv = parseSnapshot(

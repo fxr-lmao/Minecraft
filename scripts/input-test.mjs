@@ -1,12 +1,16 @@
-// The native iPad bridge (src/native.js + the native path through Input).
+// Pointer-lock behaviour, and the native iPad bridge.
 //
-// None of this can be exercised in a browser, and the Swift half cannot be
-// compiled or run here at all, so these tests pin down the JS side of the
-// contract: that a plain browser is completely unaffected, and that under a
-// host the pointer-lock machinery is bypassed rather than run in parallel.
+// Two things are pinned down here. First, that a refused lock is retried
+// rather than treated as a verdict — browsers refuse for a second after the
+// user presses Esc, and giving up on that refusal left the mouse in free look
+// for the rest of the session. Second, the native bridge contract: a plain
+// browser is completely unaffected by it, and under a host the browser's lock
+// machinery is bypassed rather than run in parallel with UIKit's.
 
 import { Input, LOOK_LOCK, LOOK_FREE } from '../src/input.js';
 import { installNativeBridge, nativeHandler } from '../src/native.js';
+
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 const results = [];
 const assert = (name, cond, detail) =>
@@ -91,8 +95,8 @@ function teardown() {
   assert('browser start requests a real lock', canvas.lockRequested === 1, canvas.lockRequested);
   assert('session is active', input.active);
 
-  // ...and the silent-failure fallback still fires.
-  input._lockVerifyFailed();
+  // ...and the silent-failure fallback still fires once the retries run out.
+  input._giveUpOnLock();
   assert('still falls back to free look', input.lookMode === LOOK_FREE, input.lookMode);
 
   input.locked = true;
@@ -191,6 +195,68 @@ function teardown() {
   const input = new Input(canvas);
   assert('flag without a handler is ignored', installNativeBridge(input) === null);
   assert('no host attached', input.nativeHost === null);
+  teardown();
+}
+
+// --------------------------------------------------- the lock retry ladder
+{
+  const { canvas, doc } = installDom({ native: false });
+  const input = new Input(canvas);
+  const modes = [];
+  input.onAction = (name, arg) => { if (name === 'lookmode') modes.push(arg); };
+
+  input.start('key');
+  assert('the first attempt is made immediately', canvas.lockRequested === 1);
+
+  // The browser refuses (Esc cooldown). That must not be the end of it.
+  input._lockVerifyFailed();
+  assert('a refusal does not fall back yet', input.lookMode === LOOK_LOCK, input.lookMode);
+  assert('...and does not mark the lock unavailable', input.lockUnavailable === false);
+  assert('...and reports no mode change', modes.length === 0, JSON.stringify(modes));
+
+  await sleep(400);
+  assert('it retries on its own', canvas.lockRequested === 2, canvas.lockRequested);
+
+  // Suppose the retry succeeds: the ladder resets for next time.
+  doc.pointerLockElement = canvas;
+  doc.fire('pointerlockchange', {});
+  assert('a successful lock is reported', input.locked === true);
+  assert('the retry counter resets', input._lockAttempt === 0);
+
+  teardown();
+}
+
+// A browser that refuses every single time still ends up in free look.
+{
+  const { canvas } = installDom({ native: false });
+  const input = new Input(canvas);
+  const modes = [];
+  input.onAction = (name, arg) => { if (name === 'lookmode') modes.push(arg); };
+
+  input.start('key');
+  for (let i = 0; i < 6; i++) {
+    input._lockVerifyFailed();
+    await sleep(1400);
+  }
+  assert('it gives up eventually', input.lookMode === LOOK_FREE, input.lookMode);
+  assert('and says so once', modes.filter((m) => m === LOOK_FREE).length === 1,
+    JSON.stringify(modes));
+  assert('the retries were bounded', canvas.lockRequested <= 5, canvas.lockRequested);
+  teardown();
+}
+
+// Pausing must stop a retry in flight, or it would grab the mouse back while
+// the pause menu is open.
+{
+  const { canvas } = installDom({ native: false });
+  const input = new Input(canvas);
+  input.start('key');
+  input._lockVerifyFailed();
+  input.release();
+  const before = canvas.lockRequested;
+  await sleep(400);
+  assert('a pending retry is cancelled by pausing', canvas.lockRequested === before,
+    `${before} -> ${canvas.lockRequested}`);
   teardown();
 }
 

@@ -1,11 +1,16 @@
 // The infinite chunked world: generation, negative coordinates, edits that
 // survive a chunk being evicted and regenerated, and dirty-chunk tracking.
-import { World, AIR, GRASS, STONE, BEDROCK, toChunk, toLocal, chunkKey } from '../src/world.js';
+import {
+  World, AIR, GRASS, STONE, DEEPSLATE, BEDROCK, toChunk, toLocal, chunkKey,
+} from '../src/world.js';
 import {
   surfaceHeight, generatedBlock, biomeWeights, dominantBiome, surfaceBlocks,
   treeAt, findSpawn, BIOMES, SAND_LEVEL, LOG, LEAVES, SNOW, SAND as SANDID,
+  deepslateTop, DEEPSLATE_LEVEL,
 } from '../src/terrain.js';
-import { CHUNK_SIZE, WORLD_HEIGHT, WORLD_SEED } from '../src/constants.js';
+import {
+  CHUNK_SIZE, WORLD_HEIGHT, WORLD_MIN_Y, WORLD_MAX_Y, WORLD_SEED,
+} from '../src/constants.js';
 
 const results = [];
 const assert = (name, cond, detail) =>
@@ -27,10 +32,11 @@ const assert = (name, cond, detail) =>
 // ------------------------------------------------------------- generation
 {
   const w = new World(WORLD_SEED);
-  assert('bedrock at the bottom', w.get(5, 0, 5) === BEDROCK, w.get(5, 0, 5));
-  assert('air well above the surface', w.get(5, WORLD_HEIGHT - 1, 5) === AIR);
-  assert('above the world is air', w.get(5, WORLD_HEIGHT + 10, 5) === AIR);
-  assert('below the world is sealed', w.get(5, -1, 5) === BEDROCK);
+  assert('bedrock at the floor', w.get(5, WORLD_MIN_Y, 5) === BEDROCK, w.get(5, WORLD_MIN_Y, 5));
+  assert('air at the build limit', w.get(5, WORLD_MAX_Y, 5) === AIR);
+  assert('above the world is air', w.get(5, WORLD_MAX_Y + 10, 5) === AIR);
+  assert('below the world is sealed', w.get(5, WORLD_MIN_Y - 1, 5) === BEDROCK);
+  assert('the world spans 141 layers', WORLD_HEIGHT === 141, WORLD_HEIGHT);
 
   const h = w.heightAt(12, 34);
   assert('heightAt agrees with the terrain function',
@@ -73,8 +79,9 @@ const assert = (name, cond, detail) =>
   assert('block is there', w.get(5, 10, 5) === GRASS, w.get(5, 10, 5));
   assert('edit recorded', w.edits.size === 1, w.edits.size);
   assert('breaking works', w.setBlock(5, 3, 5, AIR) && w.get(5, 3, 5) === AIR);
-  assert('edits above the world are refused', w.setBlock(5, WORLD_HEIGHT, 5, GRASS) === false);
-  assert('edits below the world are refused', w.setBlock(5, -1, 5, GRASS) === false);
+  assert('edits above the build limit are refused', w.setBlock(5, WORLD_MAX_Y + 1, 5, GRASS) === false);
+  assert('edits below the floor are refused', w.setBlock(5, WORLD_MIN_Y - 1, 5, GRASS) === false);
+  assert('the build limit itself is buildable', w.setBlock(5, WORLD_MAX_Y, 5, GRASS) === true);
 }
 
 // edits survive eviction: the chunk is thrown away and regenerated
@@ -258,6 +265,87 @@ const assert = (name, cond, detail) =>
   assert('spawn is above the sand line', h > SAND_LEVEL, h);
   assert('spawn is on grass', surfaceBlocks(h, w).top === 1, surfaceBlocks(h, w).top);
   assert('spawn is not inside a tree', treeAt(Math.floor(spawn.x), Math.floor(spawn.z), WORLD_SEED) === 0);
+}
+
+// ---------------------------------------------------------------- caves
+{
+  const w = new World(WORLD_SEED);
+
+  // There are caves, and they are underground rather than everywhere.
+  let cave = 0;
+  let deep = 0;
+  for (let x = 0; x < 64; x++) {
+    for (let z = 0; z < 64; z++) {
+      for (let y = -60; y < 0; y += 2) {
+        deep++;
+        if (w.get(x, y, z) === AIR) cave++;
+      }
+    }
+  }
+  const fraction = cave / deep;
+  assert('caves exist underground', fraction > 0.02, `${(fraction * 100).toFixed(1)}%`);
+  assert('caves do not hollow out the world', fraction < 0.25, `${(fraction * 100).toFixed(1)}%`);
+
+  // A cave crossing a chunk border must line up from both sides. Chunk 0 and
+  // chunk -1 are generated independently; the noise lattice is world-aligned
+  // so the column either side of x = 0 has to agree.
+  //
+  // This is block-for-block rather than air-vs-solid on purpose: the two are
+  // separate implementations of the same lattice — chunk generation
+  // precomputes it, generatedBlock interpolates a cell at a time — and any
+  // drift between them would show up in the world as a seam.
+  let mismatches = 0;
+  let firstBad = null;
+  for (let x = -34; x < 34; x += 3) {
+    for (let z = -34; z < 34; z += 3) {
+      for (let y = WORLD_MIN_Y; y <= 60; y += 7) {
+        const direct = generatedBlock(x, y, z, WORLD_SEED);
+        const chunked = w.get(x, y, z);
+        if (direct !== chunked) {
+          mismatches++;
+          firstBad ??= `${x},${y},${z}: ${chunked} vs ${direct}`;
+        }
+      }
+    }
+  }
+  assert('chunked and direct generation agree block for block',
+    mismatches === 0, firstBad ?? '');
+
+  // Nothing is carved right under the surface, which is what keeps the
+  // terrain shell watertight for the mesher.
+  let brokeSurface = false;
+  for (let x = 0; x < 48; x++) {
+    for (let z = 0; z < 48; z++) {
+      const h = surfaceHeight(x, z, WORLD_SEED);
+      for (let y = h - 2; y <= h; y++) if (w.get(x, y, z) === AIR) brokeSurface = true;
+    }
+  }
+  assert('caves never break through to the sky', !brokeSurface);
+}
+
+// ------------------------------------------------------------ stone types
+{
+  const w = new World(WORLD_SEED);
+  let stoneHigh = 0;
+  let deepLow = 0;
+  let deepHigh = 0;
+  for (let x = 0; x < 40; x++) {
+    for (let z = 0; z < 40; z++) {
+      if (w.get(x, 8, z) === STONE) stoneHigh++;
+      if (w.get(x, 8, z) === DEEPSLATE) deepHigh++;
+      if (w.get(x, -20, z) === DEEPSLATE) deepLow++;
+    }
+  }
+  assert('stone above the transition', stoneHigh > 0, stoneHigh);
+  assert('no deepslate well above the transition', deepHigh === 0, deepHigh);
+  assert('deepslate below the transition', deepLow > 1200, deepLow);
+
+  // The boundary is jittered per column rather than being a flat plane.
+  const tops = new Set();
+  for (let x = 0; x < 40; x++) tops.add(deepslateTop(x, 7, WORLD_SEED));
+  assert('the deepslate line is ragged', tops.size > 3, tops.size);
+  assert('and sits around y=4', Math.max(...tops) === DEEPSLATE_LEVEL,
+    `${Math.min(...tops)}..${Math.max(...tops)}`);
 }
 
 for (const [name, ok, detail] of results) {

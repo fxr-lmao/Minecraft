@@ -4,7 +4,7 @@
 // and reports, it doesn't decide anything.
 
 import { blockName } from './textures.js';
-import { CHUNK_SIZE, WORLD_HEIGHT } from './constants.js';
+import { CHUNK_SIZE, WORLD_MIN_Y, WORLD_MAX_Y } from './constants.js';
 import { LOOK_FREE, LOOK_TOUCH } from './input.js';
 
 const CARDINALS = ['South (+Z)', 'West (-X)', 'North (-Z)', 'East (+X)'];
@@ -163,7 +163,7 @@ export class Hud {
       ? `${blockName(info.targetId)} @ ${info.target.x} ${info.target.y} ${info.target.z}`
       : 'none';
     const lines = [
-      `Minecraft [browser clone] alpha 0.6`,
+      `Minecraft [browser clone] alpha 0.7`,
       ``,
       `XYZ: ${info.pos.x.toFixed(3)} / ${info.pos.y.toFixed(3)} / ${info.pos.z.toFixed(3)}`,
       `Block: ${blockName(info.blockUnder)}  ·  Biome: ${info.biome}`,
@@ -181,7 +181,7 @@ export class Hud {
       `Render distance: ${info.renderDistance} chunks (${info.renderDistance * CHUNK_SIZE} blocks)`,
       `Chunks: ${info.meshes} meshed, ${info.queued} queued, ${info.loaded} data in memory`,
       `Memory: ${info.geometryMB.toFixed(0)} MB geometry + ${info.dataMB.toFixed(0)} MB blocks`,
-      `World: infinite, height ${WORLD_HEIGHT}, ${info.edits} edits saved`,
+      `World: infinite, y ${WORLD_MIN_Y} to ${WORLD_MAX_Y}, ${info.edits} edits saved`,
     ];
     this.debugEl.textContent = lines.join('\n');
   }
