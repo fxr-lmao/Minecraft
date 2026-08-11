@@ -1,9 +1,11 @@
-// Smoke test for the player physics on the real flat world.
+// Smoke test for the player physics.
+// Runs on a superflat world (surface at y=3, so the player stands at y=4):
+// generated hills would make "walk forward for five seconds" untestable.
 import { Player } from '../src/player.js';
 import { World, GRASS } from '../src/world.js';
 import { PHYSICS_DT } from '../src/constants.js';
 
-const world = new World();
+const world = new World(1, { flat: 3 });
 
 function simulate(input, seconds) {
   const p = new Player(world);
@@ -92,12 +94,13 @@ const assert = (name, cond, detail) => {
   assert('yaw pi faces South (0°)', Math.abs(p.facingDegrees() - 0) < 1, p.facingDegrees().toFixed(1));
 }
 
-// 9. world border clamps
+// 9. the world is infinite: sprinting a long way just keeps going
 {
   const p = new Player(world);
-  p.pos.set(127.9, 4.01, 64.5);
-  for (let i = 0; i < 600; i++) p.update(PHYSICS_DT, { forward: 1, strafe: 0, jump: false, sprint: true, sneak: false });
-  assert('border clamp keeps x < 127.7', p.pos.x < 127.71, p.pos.x.toFixed(3));
+  p.pos.set(0.5, 4.01, 0.5);
+  for (let i = 0; i < 1800; i++) p.update(PHYSICS_DT, { forward: 1, strafe: 0, jump: false, sprint: true, sneak: false });
+  assert('no border stops you', p.pos.z > 60, p.pos.z.toFixed(1));
+  assert('still on the ground far from spawn', p.onGround && Math.abs(p.pos.y - 4) < 0.01, p.pos.y.toFixed(4));
 }
 
 // 10. fast fall from high up lands cleanly (one-step resolution, no sinking)
@@ -112,7 +115,7 @@ const assert = (name, cond, detail) => {
 //     player through the floor to y = -3 whenever one axis was blocked and the
 //     other was free (running along a wall at an angle).
 {
-  const walled = new World();
+  const walled = new World(1, { flat: 3 });
   for (let z = 60; z < 70; z++) {
     for (let y = 4; y < 6; y++) walled.setBlock(66, y, z, GRASS); // wall at x=66
   }
@@ -121,6 +124,7 @@ const assert = (name, cond, detail) => {
   // pushes along +z, so forward+strafe runs at it diagonally.
   const runInto = (input, seconds, w = walled) => {
     const p = new Player(w);
+    p.autoJump = false; // these cases are about collision, not traversal
     p.pos.set(64.5, 4.001, 64.5);
     p.yaw = -Math.PI / 2;
     let minY = p.pos.y;
@@ -158,7 +162,7 @@ const assert = (name, cond, detail) => {
     Math.abs(noStep.p.pos.y - 4.0) < 0.01, noStep.p.pos.y.toFixed(3));
 
   // ...and jumping up onto a one-block-high ledge does work
-  const ledge = new World();
+  const ledge = new World(1, { flat: 3 });
   for (let x = 66; x < 80; x++) {
     for (let z = 60; z < 70; z++) ledge.setBlock(x, 4, z, GRASS);
   }
@@ -174,16 +178,76 @@ const assert = (name, cond, detail) => {
     `x=${walkedAtLedge.p.pos.x.toFixed(2)} y=${walkedAtLedge.p.pos.y.toFixed(3)}`);
 }
 
-// 12. running into the world border must not sink the player either
+// 12. walking into negative coordinates works like anywhere else
 {
   const p = new Player(world);
-  p.pos.set(127.0, 4.001, 64.5);
+  p.pos.set(-40.5, 4.001, -40.5);
   let minY = p.pos.y;
   for (let i = 0; i < 400; i++) {
     p.update(PHYSICS_DT, { forward: 1, strafe: 1, jump: false, sprint: true, sneak: false });
     minY = Math.min(minY, p.pos.y);
   }
-  assert('border contact never sinks', minY > 3.99, minY.toFixed(3));
+  assert('negative coordinates are solid ground', minY > 3.99 && p.onGround, minY.toFixed(3));
+}
+
+// 13. auto jump: generated terrain steps up a block every few paces, so
+//     walking has to carry you over single blocks without tapping space.
+{
+  const w = new World(1, { flat: 3 });
+  // a raised plateau one block high, so landing on top is observable
+  for (let x = 66; x < 90; x++) {
+    for (let z = 0; z < 40; z++) w.setBlock(x, 4, z, GRASS);
+  }
+
+  const walk = (autoJump, seconds) => {
+    const p = new Player(w);
+    p.autoJump = autoJump;
+    p.pos.set(60.5, 4.001, 20.5);
+    p.yaw = -Math.PI / 2; // forward = +x, into the ledge
+    const steps = Math.round(seconds / PHYSICS_DT);
+    for (let i = 0; i < steps; i++) {
+      p.update(PHYSICS_DT, { forward: 1, strafe: 0, jump: false, sprint: false, sneak: false });
+    }
+    return p;
+  };
+
+  const hopped = walk(true, 4);
+  assert('auto jump carries you over a single block',
+    hopped.pos.x > 67 && Math.abs(hopped.pos.y - 5) < 0.05,
+    `x=${hopped.pos.x.toFixed(2)} y=${hopped.pos.y.toFixed(3)}`);
+
+  const stuck = walk(false, 4);
+  assert('with auto jump off the ledge still blocks you',
+    Math.abs(stuck.pos.x - 65.7) < 0.01, stuck.pos.x.toFixed(3));
+
+  // a two-block wall is not hoppable either way
+  const tall = new World(1, { flat: 3 });
+  for (let z = 0; z < 40; z++) {
+    tall.setBlock(70, 4, z, GRASS);
+    tall.setBlock(70, 5, z, GRASS);
+  }
+  const p2 = new Player(tall);
+  p2.autoJump = true;
+  p2.pos.set(67.5, 4.001, 20.5);
+  p2.yaw = -Math.PI / 2;
+  for (let i = 0; i < 480; i++) {
+    p2.update(PHYSICS_DT, { forward: 1, strafe: 0, jump: false, sprint: false, sneak: false });
+  }
+  assert('auto jump does not climb a two-block wall',
+    p2.pos.x < 70 && p2.pos.y < 6.5, `x=${p2.pos.x.toFixed(2)} y=${p2.pos.y.toFixed(2)}`);
+
+  // flat ground must not trigger spurious hops
+  const flat = new World(1, { flat: 3 });
+  const p3 = new Player(flat);
+  p3.autoJump = true;
+  let maxY = p3.pos.y;
+  for (let i = 0; i < 600; i++) {
+    p3.update(PHYSICS_DT, { forward: 1, strafe: 0, jump: false, sprint: true, sneak: false });
+    maxY = Math.max(maxY, p3.pos.y);
+  }
+  assert('no hopping on flat ground', maxY < 4.02, maxY.toFixed(3));
+  assert('flat sprint still hits full speed', Math.abs(p3.horizontalSpeed - 5.612) < 0.02,
+    p3.horizontalSpeed.toFixed(3));
 }
 
 console.log(results.join('\n'));

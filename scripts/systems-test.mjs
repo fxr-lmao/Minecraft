@@ -2,7 +2,9 @@
 // body-turn angle maths behind the third-person avatar.
 import { World, AIR, GRASS } from '../src/world.js';
 import { Inventory } from '../src/inventory.js';
-import { buildSnapshot, parseSnapshot, encodeEdits, decodeEdits } from '../src/savegame.js';
+import {
+  buildSnapshot, parseSnapshot, encodeEdits, decodeEdits, migrateV1Edits,
+} from '../src/savegame.js';
 import { normalise, DEFAULTS } from '../src/settings.js';
 import { smoothDistance, ViewController } from '../src/view.js';
 import { wrapAngle, approachAngle } from '../src/player-model.js';
@@ -14,9 +16,9 @@ const assert = (name, cond, detail) =>
 
 // ---------------------------------------------------------------- savegame
 {
-  const world = new World();
+  const world = new World(1, { flat: 3 });
   world.setBlock(70, 6, 70, GRASS);
-  world.setBlock(70, 3, 70, AIR);
+  world.setBlock(-70, 3, -12, AIR); // negative coordinates must survive too
   assert('edits are recorded', world.edits.size === 2, world.edits.size);
 
   const inv = new Inventory();
@@ -25,32 +27,31 @@ const assert = (name, cond, detail) =>
   const player = { pos: { x: 1.5, y: 4, z: 2.5 }, yaw: 1.2, pitch: -0.3 };
 
   const snap = buildSnapshot({ world, inventory: inv, player, viewMode: 2 });
-  const round = parseSnapshot(JSON.parse(JSON.stringify(snap)), world);
+  const round = parseSnapshot(JSON.parse(JSON.stringify(snap)));
   assert('snapshot round-trips', round !== null);
+  assert('not flagged as migrated', round.migrated === false);
   assert('edits survive', round.edits.length === 2, round.edits.length);
   assert('inventory survives', round.inventory.slots[0].count === 64 && round.inventory.selected === 4);
   assert('position survives', Math.abs(round.player.x - 1.5) < 1e-9 && Math.abs(round.player.yaw - 1.2) < 1e-9);
   assert('view mode survives', round.view === 2, round.view);
 
   // replaying the edits onto a fresh world reproduces it exactly
-  const fresh = new World();
+  const fresh = new World(1, { flat: 3 });
   fresh.applyEdits(round.edits);
-  assert('replayed world matches', fresh.get(70, 6, 70) === GRASS && fresh.get(70, 3, 70) === AIR,
-    `${fresh.get(70, 6, 70)}/${fresh.get(70, 3, 70)}`);
+  assert('replayed world matches',
+    fresh.get(70, 6, 70) === GRASS && fresh.get(-70, 3, -12) === AIR,
+    `${fresh.get(70, 6, 70)}/${fresh.get(-70, 3, -12)}`);
 
   // rejections
-  assert('null save rejected', parseSnapshot(null, world) === null);
-  assert('wrong version rejected', parseSnapshot({ ...snap, version: 99 }, world) === null);
-  assert('mismatched world size rejected', parseSnapshot({ ...snap, size: 64 }, world) === null);
+  assert('null save rejected', parseSnapshot(null) === null);
+  assert('unknown version rejected', parseSnapshot({ ...snap, version: 99 }) === null);
 
-  const cells = world.size * world.size * world.layers;
-  const dirty = parseSnapshot({ ...snap, edits: [-5, 1, 3, 999, cells + 10, 1, 12, 4] }, world);
-  assert('out-of-range edits dropped', dirty.edits.length === 1 && dirty.edits[0].index === 12,
+  const dirty = parseSnapshot({ ...snap, edits: [1, 2, 3, 999, 4, -5, 6, 1, 7, 8, 9, 2] });
+  assert('malformed edits dropped', dirty.edits.length === 1 && dirty.edits[0].id === 2,
     JSON.stringify(dirty.edits));
 
   const junkInv = parseSnapshot(
-    { ...snap, inventory: { slots: ['x', [3, 0], [2, 5], null], selected: 'nope' } },
-    world
+    { ...snap, inventory: { slots: ['x', [3, 0], [2, 5], null], selected: 'nope' } }
   );
   assert('malformed stacks become empty slots',
     junkInv.inventory.slots[0] === null && junkInv.inventory.slots[1] === null &&
@@ -58,13 +59,38 @@ const assert = (name, cond, detail) =>
   assert('bad selected index falls back to 0', junkInv.inventory.selected === 0);
 }
 
+// version 1 saves came from the old finite 128x128x32 world
+{
+  const v1 = {
+    version: 1,
+    size: 128,
+    layers: 32,
+    // index = y*128*128 + z*128 + x  ->  (5, 2, 3) and (127, 0, 127)
+    edits: [2 * 16384 + 3 * 128 + 5, 4, 127 * 128 + 127, 7],
+    inventory: { slots: [[1, 10]], selected: 0 },
+    player: { x: 64.5, y: 4, z: 64.5, yaw: 0, pitch: 0 },
+    view: 1,
+  };
+  const parsed = parseSnapshot(v1);
+  assert('v1 saves are migrated, not discarded', parsed !== null && parsed.migrated === true);
+  assert('v1 indices become coordinates',
+    parsed.edits.some((e) => e.x === 5 && e.y === 2 && e.z === 3 && e.id === 4),
+    JSON.stringify(parsed.edits));
+  assert('v1 inventory survives the upgrade', parsed.inventory.slots[0].count === 10);
+
+  const direct = migrateV1Edits([2 * 16384 + 3 * 128 + 5, 4]);
+  assert('migrateV1Edits is exact',
+    direct.length === 1 && direct[0].x === 5 && direct[0].y === 2 && direct[0].z === 3);
+  assert('migrate survives garbage', migrateV1Edits('nope').length === 0);
+}
+
 // encode/decode on their own
 {
-  const flat = encodeEdits(new Map([[10, 3], [11, 0]]));
-  assert('encode is flat pairs', flat.join(',') === '10,3,11,0', flat.join(','));
+  const flat = encodeEdits([{ x: 1, y: 2, z: 3, id: 4 }, { x: -5, y: 6, z: -7, id: 8 }]);
+  assert('encode is flat quadruples', flat.join(',') === '1,2,3,4,-5,6,-7,8', flat.join(','));
   assert('decode pairs up', decodeEdits(flat).length === 2);
   assert('decode survives garbage', decodeEdits('nope').length === 0);
-  assert('decode drops odd trailing value', decodeEdits([1, 2, 3]).length === 1);
+  assert('decode drops a partial trailing record', decodeEdits([1, 2, 3]).length === 0);
 }
 
 // ---------------------------------------------------------------- settings

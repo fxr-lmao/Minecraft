@@ -66,7 +66,7 @@
   <div id="loading" class="overlay">
     <div class="panel">
       <div class="spinner"></div>
-      <div class="subtitle">Loading world…</div>
+      <div id="loading-text" class="subtitle">Generating world…</div>
     </div>
   </div>
 
@@ -81,7 +81,7 @@
   <div id="overlay" class="overlay hidden">
     <div class="panel">
       <h1 id="overlay-title">MINECRAFT</h1>
-      <div id="overlay-subtitle" class="subtitle">browser clone · alpha 0.4</div>
+      <div id="overlay-subtitle" class="subtitle">browser clone · alpha 0.5</div>
 
       <p id="overlay-hint" class="hint hidden"></p>
 
@@ -104,9 +104,17 @@
           <span>Field of view <output id="out-fov"></output></span>
           <input id="set-fov" type="range" />
         </label>
+        <label>
+          <span>Render distance <output id="out-distance"></output></span>
+          <input id="set-distance" type="range" />
+        </label>
         <label class="check">
           <input id="set-invert" type="checkbox" />
           <span>Invert vertical look</span>
+        </label>
+        <label class="check">
+          <input id="set-autojump" type="checkbox" />
+          <span>Auto jump (hop up single blocks)</span>
         </label>
       </div>
 

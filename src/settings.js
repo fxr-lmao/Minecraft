@@ -6,17 +6,24 @@
 
 const KEY = 'mc-clone.settings.v1';
 
+import {
+  RENDER_DISTANCE_MIN, RENDER_DISTANCE_MAX, RENDER_DISTANCE_DEFAULT,
+} from './constants.js';
+
 export const LIMITS = {
   sensitivity: { min: 0.2, max: 3, step: 0.05 },
   fov: { min: 50, max: 110, step: 1 },
   touchSensitivity: { min: 0.3, max: 3, step: 0.05 },
+  renderDistance: { min: RENDER_DISTANCE_MIN, max: RENDER_DISTANCE_MAX, step: 1 },
 };
 
 const DEFAULTS = {
   sensitivity: 1,
   touchSensitivity: 1,
   fov: 70,
+  renderDistance: RENDER_DISTANCE_DEFAULT,
   invertY: false,
+  autoJump: true,
 };
 
 function clampSetting(key, value) {

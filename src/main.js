@@ -1,12 +1,17 @@
 // Minecraft browser clone — entry point.
+//
 // Game loop: fixed 120 Hz physics (Minecraft-accurate movement constants),
 // render at display refresh rate. Performance features:
-//   - face-culled voxel meshes, chunked so edits re-mesh 1/16th of the world
-//   - adaptive render resolution: drops pixel scale when FPS is low, raises it again when headroom returns
-//   - high-performance GPU preference, no MSAA
+//   - face-culled voxel meshing, one draw call per chunk via a shared atlas
+//   - chunk streaming on a per-frame time budget, so walking never hitches
+//   - adaptive render resolution that only gives up quality when the frame
+//     rate is genuinely poor
+//
+// Everything that animates is driven by `animDt`, which is zero whenever the
+// game is paused or a menu is open — a paused game is completely still.
 
 import * as THREE from '../vendor/three.module.min.js';
-import { World, AIR, BEDROCK } from './world.js';
+import { World, AIR, BEDROCK, toChunk } from './world.js';
 import { WorldRenderer, buildSingleBlockGeometry } from './blocks.js';
 import { Player } from './player.js';
 import { Input, LOOK_FREE, LOOK_TOUCH } from './input.js';
@@ -17,12 +22,13 @@ import { ViewController } from './view.js';
 import { createPlayerModel } from './player-model.js';
 import { raycastVoxel, blockIntersectsPlayer } from './raycast.js';
 import { createSky, FOG_COLOR } from './sky.js';
-import { BLOCK_DEFS } from './textures.js';
+import { BLOCK_DEFS, getAtlasTexture } from './textures.js';
 import { settings, setSetting, LIMITS } from './settings.js';
 import * as savegame from './savegame.js';
 import {
   PHYSICS_DT, SPEED_WALK,
   PLAYER_WIDTH, PLAYER_HEIGHT, PLAYER_EYE, REACH,
+  CHUNK_SIZE, KEEP_DISTANCE_EXTRA,
 } from './constants.js';
 import { clamp, lerp } from './utils.js';
 
@@ -31,11 +37,13 @@ const TOUCH_SENSITIVITY = 0.006;
 const USE_REPEAT = 0.22; // seconds between repeats while a use button is held
 const SAVE_DEBOUNCE = 2000; // ms after an edit before writing to localStorage
 const SAVE_INTERVAL = 20000; // ms between position-only saves
+const PAUSED_FRAME_MS = 100; // redraw rate while paused (the image is frozen)
 
 // ---------------- error / loading overlays ----------------
 const fatalEl = document.getElementById('fatal');
 const fatalMsg = document.getElementById('fatal-msg');
 const loadingEl = document.getElementById('loading');
+const loadingText = document.getElementById('loading-text');
 let firstFrame = true;
 
 function showFatal(message) {
@@ -68,11 +76,25 @@ const DPR_CAP = Math.min(window.devicePixelRatio || 1, 2);
 let pixelRatio = DPR_CAP;
 
 const scene = new THREE.Scene();
-scene.fog = new THREE.Fog(FOG_COLOR, 35, 95);
+scene.fog = new THREE.Fog(FOG_COLOR, 40, 120);
 
 const camera = new THREE.PerspectiveCamera(settings.fov, 1, 0.1, 1000);
 camera.rotation.order = 'YXZ';
 scene.add(camera); // so the first-person held block (a camera child) renders
+
+/**
+ * Fog follows the render distance so terrain fades out instead of ending at
+ * a visible edge. The far plane stays large and fixed: it has to contain the
+ * sky dome, and clipping it to the render distance simply deleted the sky.
+ * Nothing is drawn out there anyway — chunks beyond the render distance have
+ * no mesh — so a distant far plane costs nothing.
+ */
+function applyRenderDistance() {
+  const blocks = settings.renderDistance * CHUNK_SIZE;
+  scene.fog.near = blocks * 0.55;
+  scene.fog.far = blocks * 0.98;
+  worldRenderer?.setRenderDistance(settings.renderDistance);
+}
 
 /** iPad Safari changes innerHeight as browser chrome slides away — re-measure. */
 function viewportSize() {
@@ -96,20 +118,27 @@ applyResolution();
 renderer.shadowMap.enabled = true;
 renderer.shadowMap.type = THREE.PCFShadowMap; // PCFSoft is deprecated in r185
 renderer.toneMapping = THREE.ACESFilmicToneMapping;
-renderer.toneMappingExposure = 1.05;
+renderer.toneMappingExposure = 1.0;
 
 // ---------------- lights ----------------
-const hemi = new THREE.HemisphereLight(0xbfd9ff, 0x7a6a52, 0.85);
+// A hemisphere light alone leaves vertical faces at about a third of the
+// brightness of the tops, and ACES crushes that into near-black — which read
+// as dark bands wherever distant hills showed you their sides. The ambient
+// term puts a floor under every face; the sun is dialled back to keep the
+// overall exposure where it was.
+const hemi = new THREE.HemisphereLight(0xbfd9ff, 0x7a6a52, 0.75);
 scene.add(hemi);
+const ambient = new THREE.AmbientLight(0xffffff, 0.45);
+scene.add(ambient);
 
-const sun = new THREE.DirectionalLight(0xfff2d9, 1.7);
+const sun = new THREE.DirectionalLight(0xfff2d9, 1.25);
 sun.position.set(60, 100, 40);
 sun.castShadow = true;
 let shadowMapSize = 2048;
 sun.shadow.mapSize.set(shadowMapSize, shadowMapSize);
 sun.shadow.camera.near = 10;
 sun.shadow.camera.far = 260;
-const s = 46;
+const s = 46; // shadows only cover the blocks near the player
 sun.shadow.camera.left = -s;
 sun.shadow.camera.right = s;
 sun.shadow.camera.top = s;
@@ -123,7 +152,7 @@ scene.add(sun.target);
 const world = new World();
 const inventory = new Inventory();
 const view = new ViewController();
-const restored = savegame.load(world);
+const restored = savegame.load();
 
 if (restored) {
   world.applyEdits(restored.edits);
@@ -136,15 +165,20 @@ if (restored) {
   inventory.fillStarterKit(BLOCK_DEFS.map((b) => b.id));
 }
 
-// Meshes are built after the saved edits are applied, so a restored world
-// comes up already built instead of re-meshing every chunk on the first frame.
 const worldRenderer = new WorldRenderer(world, scene);
+applyRenderDistance();
 
 const player = new Player(world);
+player.autoJump = settings.autoJump;
 if (restored?.player) {
   player.pos.set(restored.player.x, restored.player.y, restored.player.z);
   player.yaw = restored.player.yaw ?? player.yaw;
   player.pitch = restored.player.pitch ?? player.pitch;
+  // A v1 save came from the old flat world; the terrain under those
+  // coordinates is now hilly, so drop the player onto the new surface.
+  if (restored.migrated) {
+    player.pos.y = world.spawnHeight(Math.floor(player.pos.x), Math.floor(player.pos.z)) + 0.01;
+  }
 }
 
 const input = new Input(canvas);
@@ -169,34 +203,41 @@ let target = null; // { x, y, z, nx, ny, nz } from the last frame
 // ---------------- first-person held block ----------------
 const HELD_DIST = 0.62; // metres in front of the camera
 const HELD_SIZE = 0.26; // fraction of the screen height the block takes up
-const heldGeometry = buildSingleBlockGeometry();
-const heldMesh = new THREE.Mesh(heldGeometry, new THREE.MeshLambertMaterial());
+// Every block shares the atlas material; only the UVs differ, so the
+// geometry is what changes when you switch slots.
+const heldGeometries = new Map();
+const heldMaterial = new THREE.MeshLambertMaterial({
+  map: getAtlasTexture(),
+  emissiveMap: getAtlasTexture(),
+  emissive: 0x5a5a5a, // never a black silhouette when the sun is behind you
+});
+const heldMesh = new THREE.Mesh(new THREE.BufferGeometry(), heldMaterial);
 heldMesh.rotation.set(0.12, -0.6, 0.1);
 heldMesh.visible = false;
 heldMesh.frustumCulled = false;
 camera.add(heldMesh);
 
-// Held blocks get the same emissive trick as the avatar so the face pointing
-// at the player is never pitch black when the sun is behind them.
-const heldMaterials = new Map();
-function heldMaterialFor(id) {
-  let mat = heldMaterials.get(id);
-  if (!mat) {
-    const { map } = worldRenderer.materialFor(id);
-    mat = new THREE.MeshLambertMaterial({ map, emissiveMap: map, emissive: 0x5a5a5a });
-    heldMaterials.set(id, mat);
-  }
-  return mat;
-}
-
 let heldId = -1;
 let heldSwing = 0;
 
+/**
+ * Sync the block in the hand with the selected hotbar slot. Called every
+ * frame: the selection can change from the number keys, the scroll wheel,
+ * tapping a hotbar slot or dragging stacks in the inventory screen, and
+ * missing any one of those routes leaves the wrong block in your hand.
+ */
 function refreshHeldItem() {
   const id = inventory.selectedId();
   if (id !== heldId) {
     heldId = id;
-    if (id) heldMesh.material = heldMaterialFor(id);
+    if (id) {
+      let geo = heldGeometries.get(id);
+      if (!geo) {
+        geo = buildSingleBlockGeometry(id);
+        heldGeometries.set(id, geo);
+      }
+      heldMesh.geometry = geo;
+    }
   }
   heldMesh.visible = view.isFirstPerson && heldId > 0;
 }
@@ -209,8 +250,6 @@ function refreshHeldItem() {
 function positionHeldItem(swingT) {
   const halfH = Math.tan((camera.fov * Math.PI) / 360) * HELD_DIST;
   const halfW = halfH * camera.aspect;
-  // Size against the shorter axis so a portrait tablet doesn't get a block
-  // that swallows the bottom of the screen.
   const r = HELD_SIZE * Math.min(halfH, halfW * 0.95);
   heldMesh.scale.setScalar(r / 0.85);
   heldMesh.position.set(
@@ -260,7 +299,6 @@ function breakBlock() {
   const left = inventory.add(id, 1);
   if (left > 0) hud.showStatus('Inventory full');
   invUI.render();
-  refreshHeldItem();
   swingHand();
   saveNeeded = true;
 }
@@ -280,7 +318,6 @@ function placeBlock() {
   world.setBlock(bx, by, bz, stack.id);
   inventory.consumeSelected(1);
   invUI.render();
-  refreshHeldItem();
   swingHand();
   saveNeeded = true;
 }
@@ -312,7 +349,6 @@ function onInventoryToggle(open) {
     input.resumePointer();
     saveNeeded = true;
   }
-  refreshHeldItem();
 }
 
 function pause() {
@@ -335,14 +371,11 @@ function cycleView() {
   view.cycle();
   hud.showStatus(view.name);
   playerModel.group.visible = !view.isFirstPerson;
-  refreshHeldItem();
   saveNeeded = true;
 }
 
 input.onAction = (name, arg) => {
   if (name === 'lookmode') {
-    // The pointer lock never engaged (iPadOS Safari does this silently).
-    // Tell the player which mode they got instead of leaving them guessing.
     if (arg === LOOK_FREE) {
       hud.showStatus('Mouse look on — move the cursor, edges keep turning');
     }
@@ -390,6 +423,11 @@ input.onAction = (name, arg) => {
 };
 
 // ---------------- adaptive resolution ----------------
+// The brief: aim high, but never trade real quality for a few frames. So the
+// pixel scale only drops when the frame rate is genuinely bad (below 55) and
+// climbs back as soon as there is headroom (above 85).
+const FPS_LOW = 55;
+const FPS_HIGH = 85;
 let resTimer = 0;
 
 function setShadowMapSize(size) {
@@ -408,10 +446,12 @@ let prevSneaking = false;
 let eyeOffset = 0; // smooth sneak crouch
 let breakRepeat = 0;
 let placeRepeat = 0;
+let lastChunk = { cx: NaN, cz: NaN };
 
 // ---------------- fixed-timestep loop ----------------
 let acc = 0;
 let lastTime = performance.now();
+let lastDrawAt = 0;
 let fpsSmooth = 60;
 let frameMsSmooth = 16;
 
@@ -430,6 +470,14 @@ function frame(now) {
   frameMsSmooth += (frameDt * 1000 - frameMsSmooth) * 0.06;
 
   const playing = input.active && input.enabled;
+  // Every animation runs off this. Paused means paused: no drifting clouds,
+  // no swaying arms, no easing camera.
+  const animDt = playing ? frameDt : 0;
+
+  // A paused game renders an identical image every frame, so slow the redraw
+  // right down instead of burning the GPU (and the battery) on it.
+  if (!playing && !firstFrame && now - lastDrawAt < PAUSED_FRAME_MS) return;
+  lastDrawAt = now;
 
   // ---- look (mouse, free-look cursor, or touch drag) ----
   if (playing) {
@@ -446,7 +494,7 @@ function frame(now) {
     );
   }
 
-  // ---- physics (paused while the mouse is released / a menu is open) ----
+  // ---- physics ----
   if (playing) {
     acc += frameDt;
     let steps = 0;
@@ -477,15 +525,15 @@ function frame(now) {
   // ---- adaptive resolution ----
   if (playing) {
     resTimer += frameDt;
-    if (fpsSmooth < 48 && pixelRatio > 1 && resTimer > 2.5) {
+    if (fpsSmooth < FPS_LOW && pixelRatio > 1 && resTimer > 2.5) {
       pixelRatio = Math.max(1, pixelRatio - 0.25);
       applyResolution();
-      if (pixelRatio <= 1.5) setShadowMapSize(1024);
+      if (pixelRatio <= 1.25) setShadowMapSize(1024);
       resTimer = 0;
-    } else if (fpsSmooth > 100 && pixelRatio < DPR_CAP && resTimer > 3) {
+    } else if (fpsSmooth > FPS_HIGH && pixelRatio < DPR_CAP && resTimer > 3) {
       pixelRatio = Math.min(DPR_CAP, pixelRatio + 0.25);
       applyResolution();
-      if (pixelRatio > 1.5) setShadowMapSize(2048);
+      if (pixelRatio > 1.25) setShadowMapSize(2048);
       resTimer = 0;
     }
   } else {
@@ -500,36 +548,51 @@ function frame(now) {
     prevSneaking = player.sneaking;
   }
 
+  // ---- chunk streaming ----
+  // Nothing is interactive behind the loading screen, so fill the world as
+  // fast as possible there and switch to a small per-frame slice afterwards
+  // — 4 ms fits inside a 120 fps frame with room to spare.
+  worldRenderer.budgetMs = firstFrame ? 30 : 4;
+  const pcx = toChunk(player.pos.x);
+  const pcz = toChunk(player.pos.z);
+  worldRenderer.update(pcx, pcz);
+  if (pcx !== lastChunk.cx || pcz !== lastChunk.cz) {
+    lastChunk = { cx: pcx, cz: pcz };
+    world.evictOutside(pcx, pcz, settings.renderDistance + KEEP_DISTANCE_EXTRA);
+    saveNeeded = saveNeeded || false;
+  }
+  world.tick();
+
   // ---- camera ----
   const fovBase = settings.fov;
   const fovTarget = player.sprinting ? fovBase + 14 : player.sneaking ? fovBase - 10 : fovBase;
-  camera.fov += (fovTarget - camera.fov) * Math.min(1, frameDt * 10);
+  camera.fov += (fovTarget - camera.fov) * Math.min(1, animDt * 10);
   camera.updateProjectionMatrix();
 
   // head bob (first person only)
   const speedFactor = clamp(player.horizontalSpeed / SPEED_WALK, 0, 1.35);
-  player.bobPhase = (player.bobPhase || 0) + player.horizontalSpeed * frameDt * 2.1;
+  player.bobPhase = (player.bobPhase || 0) + player.horizontalSpeed * animDt * 2.1;
   const bobTarget = view.isFirstPerson && player.onGround
     ? (player.sprinting ? 0.085 : 0.055) * speedFactor
     : 0;
-  player.bobY = lerp(player.bobY || 0, Math.sin(player.bobPhase) * bobTarget, Math.min(1, frameDt * 12));
-  player.bobX = lerp(player.bobX || 0, Math.cos(player.bobPhase * 0.5) * bobTarget * 0.6, Math.min(1, frameDt * 12));
+  player.bobY = lerp(player.bobY || 0, Math.sin(player.bobPhase) * bobTarget, Math.min(1, animDt * 12));
+  player.bobX = lerp(player.bobX || 0, Math.cos(player.bobPhase * 0.5) * bobTarget * 0.6, Math.min(1, animDt * 12));
 
-  eyeOffset = lerp(eyeOffset, player.sneaking ? 0.16 : 0, Math.min(1, frameDt * 12));
+  eyeOffset = lerp(eyeOffset, player.sneaking ? 0.16 : 0, Math.min(1, animDt * 12));
   const right = player.rightVector();
   const eye = {
     x: player.pos.x + right.x * player.bobX,
     y: player.pos.y + PLAYER_EYE - eyeOffset + player.bobY,
     z: player.pos.z + right.z * player.bobX,
   };
-  view.apply(camera, world, eye, player.yaw, player.pitch, frameDt);
+  view.apply(camera, world, eye, player.yaw, player.pitch, animDt);
 
   // ---- avatar ----
   playerModel.group.visible = !view.isFirstPerson && view.avatarOpacity > 0.02;
   if (playerModel.group.visible) {
     playerModel.setOpacity(view.avatarOpacity);
     playerModel.update({
-      dt: frameDt,
+      dt: animDt,
       pos: player.pos,
       vel: player.vel,
       yaw: player.yaw,
@@ -541,8 +604,9 @@ function frame(now) {
     });
   }
 
-  // ---- held block: corner placement + use swing ----
-  if (heldSwing > 0) heldSwing = Math.max(0, heldSwing - frameDt * 4.5);
+  // ---- held block: keep it in sync with the hotbar, place it, swing it ----
+  refreshHeldItem();
+  if (heldSwing > 0) heldSwing = Math.max(0, heldSwing - animDt * 4.5);
   positionHeldItem(heldSwing > 0 ? Math.sin((1 - heldSwing) * Math.PI) : 0);
 
   // ---- block targeting ----
@@ -551,38 +615,36 @@ function frame(now) {
     target = raycastVoxel(world, eye, dir, REACH);
     highlight.visible = Boolean(target);
     if (target) highlight.position.set(target.x + 0.5, target.y + 0.5, target.z + 0.5);
-  } else {
-    target = null;
+  } else if (!target) {
     highlight.visible = false;
   }
-
-  // ---- world edits ----
-  worldRenderer.flushDirty();
 
   // ---- autosave ----
   if (saveNeeded && now - lastSaveAt > SAVE_DEBOUNCE) doSave();
   else if (playing && now - lastSaveAt > SAVE_INTERVAL) doSave();
 
   // ---- sun / sky follow player ----
-  sun.position.set(player.pos.x + 60, 105, player.pos.z + 40);
+  sun.position.set(player.pos.x + 60, player.pos.y + 100, player.pos.z + 40);
   sun.target.position.copy(player.pos);
-  sky.update(frameDt, player.pos);
+  sky.update(animDt, player.pos);
 
   // ---- input mode: touch UI and cursor visibility ----
   document.body.classList.toggle('touch', input.usingTouch);
   document.body.classList.toggle('nocursor', playing && input.lookMode === LOOK_FREE);
 
   // ---- debug overlay ----
+  // Frozen along with everything else while paused: a ticking FPS counter on
+  // a still image is exactly the "sort of paused" feeling we are removing.
   const px = Math.floor(player.pos.x);
   const pz = Math.floor(player.pos.z);
-  hud.updateDebug({
+  if (playing) hud.updateDebug({
     pos: player.pos,
     pitchDeg: (player.pitch * 180) / Math.PI,
     yawDeg: player.facingDegrees(),
     speed: player.horizontalSpeed,
     mode: player.sneaking ? 'Sneaking' : player.sprinting ? 'Sprinting' : 'Walking',
     onGround: player.onGround,
-    blockUnder: world.get(px, world.heightAt(px, pz), pz),
+    blockUnder: world.get(px, Math.max(0, world.heightAt(px, pz)), pz),
     target,
     targetId: target ? world.get(target.x, target.y, target.z) : 0,
     view: view.name,
@@ -591,22 +653,34 @@ function frame(now) {
     pixelScale: pixelRatio,
     inputMode: input.lookModeLabel,
     edits: world.edits.size,
+    chunk: `${pcx} ${pcz}`,
+    renderDistance: settings.renderDistance,
+    meshes: worldRenderer.stats.meshes,
+    queued: worldRenderer.stats.queued,
+    loaded: world.chunks.size,
+    calls: renderer.info.render.calls,
+    tris: renderer.info.render.triangles,
   });
 
   renderer.render(scene, camera);
 
-  // hide the loading screen once the first frame is on screen
+  // The loading screen stays up until the chunks around spawn are meshed,
+  // so the world never appears in front of you a piece at a time.
   if (firstFrame) {
-    firstFrame = false;
-    loadingEl.classList.add('hidden');
-    hud.showTitle(input, Boolean(restored));
-    invUI.flashName();
+    if (worldRenderer.ready) {
+      firstFrame = false;
+      loadingEl.classList.add('hidden');
+      hud.showTitle(input, Boolean(restored));
+      invUI.flashName();
+    } else if (loadingText) {
+      const total = worldRenderer.stats.meshes + worldRenderer.stats.queued;
+      loadingText.textContent = `Generating world… ${worldRenderer.stats.meshes}/${total} chunks`;
+    }
   }
 }
 
 // ---------------- overlay / menu wiring ----------------
 hud.overlayEl.addEventListener('pointerdown', (e) => {
-  // Clicks on the menu itself operate the menu; the backdrop starts the game.
   if (e.target.closest('.panel')) return;
   e.preventDefault();
   startPlaying(e.pointerType === 'touch' ? 'touch' : 'mouse');
@@ -627,6 +701,8 @@ hud.bindMenu({
   onSetting: (key, value) => {
     setSetting(key, value);
     if (key === 'fov') camera.fov = settings.fov;
+    if (key === 'renderDistance') applyRenderDistance();
+    if (key === 'autoJump') player.autoJump = settings.autoJump;
   },
 });
 
@@ -635,14 +711,10 @@ document.addEventListener('pointerlockchange', () => {
     hud.hideOverlay();
     hud.refreshLookMode(input);
   } else if (!invUI.isOpen && input.sessionActive && input.lookMode !== LOOK_FREE && input.lookMode !== LOOK_TOUCH) {
-    // Esc (or the browser) dropped the lock while playing with a locked mouse.
     pause();
   }
 });
 
-// Start with a key too (Magic Keyboard on iPad, or just convenience). Escape
-// is excluded — it is the key that just paused the game — and so are keys
-// aimed at the menu's own controls.
 window.addEventListener('keydown', (e) => {
   if (!hud.overlayVisible || e.code === 'Escape' || e.metaKey || e.altKey || e.ctrlKey) return;
   if (e.target instanceof HTMLElement && e.target.closest('input, button, select, summary')) return;
