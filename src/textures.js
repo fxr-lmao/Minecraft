@@ -221,6 +221,62 @@ function snowFace(rand) {
   return noiseCanvas(rand, 0xf4f4f4, { speckles: 20 });
 }
 
+/** Oak log: vertical bark grooves. */
+function logSideFace(rand) {
+  const cv = document.createElement('canvas');
+  cv.width = cv.height = TEX_SIZE;
+  const ctx = cv.getContext('2d');
+  const img = ctx.createImageData(TEX_SIZE, TEX_SIZE);
+  const range = makeNoise(rand, 1);
+  for (let y = 0; y < TEX_SIZE; y++) {
+    for (let x = 0; x < TEX_SIZE; x++) {
+      // vertical grain: darker in irregular columns
+      const groove = Math.sin(x * 1.7 + range(x, y) * 2) > 0.55 ? 0.78 : 1;
+      const c = shadeHex(0x6b4f2a, range(x, y * 0.4) * groove);
+      const o = (y * TEX_SIZE + x) * 4;
+      img.data[o] = (c >> 16) & 255;
+      img.data[o + 1] = (c >> 8) & 255;
+      img.data[o + 2] = c & 255;
+      img.data[o + 3] = 255;
+    }
+  }
+  ctx.putImageData(img, 0, 0);
+  return cv;
+}
+
+/** Cut end of a log: rings around a centre. */
+function logTopFace(rand) {
+  const cv = noiseCanvas(rand, 0xb4915c, { speckles: 18 });
+  const ctx = cv.getContext('2d');
+  ctx.strokeStyle = 'rgba(90,64,32,0.55)';
+  ctx.lineWidth = 1;
+  for (const r of [2.5, 4.5, 6.5]) {
+    ctx.beginPath();
+    ctx.arc(8, 8, r, 0, Math.PI * 2);
+    ctx.stroke();
+  }
+  return cv;
+}
+
+/** Leaves: dense mottled green. Opaque, like Minecraft's "fast" graphics. */
+function leavesFace(rand) {
+  const cv = noiseCanvas(rand, 0x3f7f2a, { speckles: 90, blotches: 6 });
+  const ctx = cv.getContext('2d');
+  const img = ctx.getImageData(0, 0, TEX_SIZE, TEX_SIZE);
+  // scatter a few bright and dark leaves so it reads as foliage, not noise
+  for (let i = 0; i < 26; i++) {
+    const x = Math.floor(rand() * TEX_SIZE);
+    const y = Math.floor(rand() * TEX_SIZE);
+    const c = shadeHex(0x4f9c34, 0.7 + rand() * 0.7);
+    const o = (y * TEX_SIZE + x) * 4;
+    img.data[o] = (c >> 16) & 255;
+    img.data[o + 1] = (c >> 8) & 255;
+    img.data[o + 2] = c & 255;
+  }
+  ctx.putImageData(img, 0, 0);
+  return cv;
+}
+
 // ---------- block registry ----------
 
 // Each entry: { id, name, side, top, bottom } where side/top/bottom are
@@ -235,7 +291,12 @@ export const BLOCK_DEFS = [
   { id: 7, name: 'Bricks', side: bricksFace, top: bricksFace, bottom: bricksFace },
   { id: 8, name: 'Bedrock', side: bedrockFace, top: bedrockFace, bottom: bedrockFace },
   { id: 9, name: 'Snow Block', side: snowFace, top: snowFace, bottom: snowFace },
+  { id: 10, name: 'Oak Log', side: logSideFace, top: logTopFace, bottom: logTopFace },
+  { id: 11, name: 'Leaves', side: leavesFace, top: leavesFace, bottom: leavesFace },
 ];
+
+/** Blocks offered in the starting hotbar (9 slots, so not every block). */
+export const STARTER_BLOCKS = [1, 2, 3, 4, 5, 6, 7, 9, 10];
 
 /**
  * Build a 48x16 atlas canvas for a block: [side | top | bottom].

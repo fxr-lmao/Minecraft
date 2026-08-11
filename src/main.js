@@ -22,13 +22,13 @@ import { ViewController } from './view.js';
 import { createPlayerModel } from './player-model.js';
 import { raycastVoxel, blockIntersectsPlayer } from './raycast.js';
 import { createSky, FOG_COLOR } from './sky.js';
-import { BLOCK_DEFS, getAtlasTexture } from './textures.js';
+import { STARTER_BLOCKS, getAtlasTexture } from './textures.js';
 import { settings, setSetting, LIMITS } from './settings.js';
 import * as savegame from './savegame.js';
 import {
   PHYSICS_DT, SPEED_WALK,
   PLAYER_WIDTH, PLAYER_HEIGHT, PLAYER_EYE, REACH,
-  CHUNK_SIZE, KEEP_DISTANCE_EXTRA,
+  CHUNK_SIZE, DATA_RADIUS,
 } from './constants.js';
 import { clamp, lerp } from './utils.js';
 
@@ -162,7 +162,7 @@ if (restored) {
   }
   view.set(restored.view);
 } else {
-  inventory.fillStarterKit(BLOCK_DEFS.map((b) => b.id));
+  inventory.fillStarterKit(STARTER_BLOCKS);
 }
 
 const worldRenderer = new WorldRenderer(world, scene);
@@ -556,11 +556,11 @@ function frame(now) {
   const pcx = toChunk(player.pos.x);
   const pcz = toChunk(player.pos.z);
   worldRenderer.update(pcx, pcz);
-  if (pcx !== lastChunk.cx || pcz !== lastChunk.cz) {
-    lastChunk = { cx: pcx, cz: pcz };
-    world.evictOutside(pcx, pcz, settings.renderDistance + KEEP_DISTANCE_EXTRA);
-    saveNeeded = saveNeeded || false;
-  }
+  // Meshing distant chunks pulls their data (and their neighbours') into
+  // memory; drop it again every frame so the resident set stays flat no
+  // matter how far the render distance reaches.
+  world.evictOutside(pcx, pcz, DATA_RADIUS);
+  lastChunk = { cx: pcx, cz: pcz };
   world.tick();
 
   // ---- camera ----
@@ -653,11 +653,14 @@ function frame(now) {
     pixelScale: pixelRatio,
     inputMode: input.lookModeLabel,
     edits: world.edits.size,
+    biome: world.biomeAt(px, pz),
     chunk: `${pcx} ${pcz}`,
     renderDistance: settings.renderDistance,
     meshes: worldRenderer.stats.meshes,
     queued: worldRenderer.stats.queued,
     loaded: world.chunks.size,
+    geometryMB: worldRenderer.geometryMB,
+    dataMB: (world.chunks.size * 65) / 1024,
     calls: renderer.info.render.calls,
     tris: renderer.info.render.triangles,
   });
