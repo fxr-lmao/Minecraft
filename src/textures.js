@@ -301,6 +301,80 @@ function buildIcon(side, top) {
   return cv;
 }
 
+// ---------- world atlas ----------
+// Every block face lives in one texture so a whole chunk draws in a single
+// call. Tile order is [side, top, bottom] per block, in BLOCK_DEFS order.
+//
+// Mipmaps are built by hand rather than by the GPU: an automatically
+// generated mip level averages across tile boundaries, so at distance a
+// stone block bleeds into its neighbour in the atlas. Downsampling each tile
+// on its own and packing the results keeps every level clean.
+
+export const ATLAS_TILES = BLOCK_DEFS.length * 3;
+
+/** Tile index for a block id and face column (0 side, 1 top, 2 bottom). */
+export function atlasTile(blockId, column) {
+  const i = BLOCK_DEFS.findIndex((b) => b.id === blockId);
+  return (i < 0 ? 0 : i) * 3 + column;
+}
+
+function tileCanvases() {
+  const tiles = [];
+  for (const block of BLOCK_DEFS) {
+    const rand = mulberry32(block.id * 7919 + 13);
+    tiles.push(block.side(rand), block.top(rand), block.bottom(rand));
+  }
+  return tiles;
+}
+
+/**
+ * Draw every tile side by side at `tileSize` pixels each.
+ * The strip is written upside down because the texture is uploaded with
+ * flipY off (DataTexture), and the face UVs put v = 1 at the top of a block.
+ */
+function packLevel(tiles, tileSize) {
+  const cv = document.createElement('canvas');
+  cv.width = tileSize * tiles.length;
+  cv.height = tileSize;
+  const ctx = cv.getContext('2d');
+  ctx.imageSmoothingEnabled = tileSize < TEX_SIZE; // box-filter when shrinking
+  ctx.translate(0, tileSize);
+  ctx.scale(1, -1);
+  tiles.forEach((tile, i) => {
+    ctx.drawImage(tile, 0, 0, TEX_SIZE, TEX_SIZE, i * tileSize, 0, tileSize, tileSize);
+  });
+  return ctx.getImageData(0, 0, cv.width, cv.height);
+}
+
+let atlasTexture = null;
+
+/** The shared world texture: one tile strip with hand-built mipmaps. */
+export function getAtlasTexture() {
+  if (atlasTexture) return atlasTexture;
+  const tiles = tileCanvases();
+
+  const levels = [];
+  for (let size = TEX_SIZE; size >= 1; size = size >> 1) {
+    levels.push(packLevel(tiles, size));
+  }
+
+  const tex = new THREE.DataTexture(
+    levels[0].data, levels[0].width, levels[0].height, THREE.RGBAFormat
+  );
+  tex.mipmaps = levels.map((img) => ({ data: img.data, width: img.width, height: img.height }));
+  tex.generateMipmaps = false;
+  tex.magFilter = THREE.NearestFilter;
+  tex.minFilter = THREE.NearestMipmapLinearFilter;
+  tex.colorSpace = THREE.SRGBColorSpace;
+  tex.anisotropy = 4;
+  tex.wrapS = THREE.ClampToEdgeWrapping;
+  tex.wrapT = THREE.ClampToEdgeWrapping;
+  tex.flipY = false;
+  tex.needsUpdate = true;
+  atlasTexture = tex;
+  return tex;
+}
+
 const cache = new Map();
 
 /**

@@ -2,30 +2,48 @@
 // dropping the tab in the background, which iPads do constantly) doesn't
 // throw away what you built.
 //
-// Only the *edits* are stored, not the whole 128x128x32 grid: the terrain is
-// generated deterministically, so a flat list of [blockIndex, id] pairs
-// rebuilds it exactly. A player who has placed 10k blocks costs ~80 KB.
+// Only the *edits* are stored, never the terrain: generation is a pure
+// function of the seed, so a flat list of [x, y, z, id] quadruples rebuilds
+// any world exactly. A player who has placed 10k blocks costs ~150 KB.
 //
-// Pure functions here (encode/decode) are unit-tested in Node; the
+// Pure functions here (encode/decode/parse) are unit-tested in Node; the
 // localStorage wrapper around them is not.
 
-const KEY = 'mc-clone.save.v1';
-const VERSION = 1;
+const KEY = 'mc-clone.save.v1'; // same slot; the payload carries its version
+const VERSION = 2;
 /** Refuse to persist absurd saves rather than blowing the storage quota. */
 export const MAX_EDITS = 200000;
 
-/** World edits (Map<index, id>) -> flat [index, id, index, id, ...]. */
-export function encodeEdits(edits) {
+/** World edits -> flat [x, y, z, id, ...]. */
+export function encodeEdits(editList) {
   const out = [];
-  for (const [index, id] of edits) {
-    out.push(index, id);
-    if (out.length >= MAX_EDITS * 2) break;
+  for (const { x, y, z, id } of editList) {
+    out.push(x, y, z, id);
+    if (out.length >= MAX_EDITS * 4) break;
   }
   return out;
 }
 
-/** Flat pairs -> [{ index, id }], skipping anything malformed. */
+/** Flat quadruples -> [{x, y, z, id}], skipping anything malformed. */
 export function decodeEdits(flat) {
+  const out = [];
+  if (!Array.isArray(flat)) return out;
+  for (let i = 0; i + 3 < flat.length; i += 4) {
+    const [x, y, z, id] = flat.slice(i, i + 4);
+    if (![x, y, z, id].every(Number.isInteger)) continue;
+    if (id < 0 || id > 255 || y < 0) continue;
+    out.push({ x, y, z, id });
+  }
+  return out;
+}
+
+/**
+ * Version 1 stored edits as indices into a fixed 128x128x32 grid. The world
+ * is infinite now, so those indices are converted to absolute coordinates —
+ * a player's build survives the upgrade even though the terrain under it is
+ * no longer flat.
+ */
+export function migrateV1Edits(flat, size = 128) {
   const out = [];
   if (!Array.isArray(flat)) return out;
   for (let i = 0; i + 1 < flat.length; i += 2) {
@@ -33,7 +51,10 @@ export function decodeEdits(flat) {
     const id = flat[i + 1];
     if (!Number.isInteger(index) || index < 0) continue;
     if (!Number.isInteger(id) || id < 0 || id > 255) continue;
-    out.push({ index, id });
+    const x = index % size;
+    const z = Math.floor(index / size) % size;
+    const y = Math.floor(index / (size * size));
+    out.push({ x, y, z, id });
   }
   return out;
 }
@@ -43,9 +64,8 @@ export function buildSnapshot({ world, inventory, player, viewMode }) {
   return {
     version: VERSION,
     at: Date.now(),
-    size: world.size,
-    layers: world.layers,
-    edits: encodeEdits(world.edits),
+    seed: world.seed,
+    edits: encodeEdits(world.editList()),
     inventory: {
       slots: inventory.slots.map((s) => (s ? [s.id, s.count] : 0)),
       selected: inventory.selected,
@@ -58,28 +78,40 @@ export function buildSnapshot({ world, inventory, player, viewMode }) {
   };
 }
 
-/**
- * Validate a parsed snapshot against the current world shape.
- * Returns null when the save is missing, malformed, or from a world size
- * that no longer matches (rather than restoring a corrupt world).
- */
-export function parseSnapshot(raw, world) {
-  if (!raw || typeof raw !== 'object') return null;
-  if (raw.version !== VERSION) return null;
-  if (raw.size !== world.size || raw.layers !== world.layers) return null;
-  const cells = world.size * world.size * world.layers;
-  const edits = decodeEdits(raw.edits).filter((e) => e.index < cells);
-  const slots = Array.isArray(raw.inventory?.slots) ? raw.inventory.slots : [];
+function parseInventory(raw) {
+  const slots = Array.isArray(raw?.slots) ? raw.slots : [];
   return {
-    edits,
-    inventory: {
-      slots: slots.map((s) =>
-        Array.isArray(s) && Number.isInteger(s[0]) && Number.isInteger(s[1]) && s[1] > 0
-          ? { id: s[0], count: s[1] }
-          : null
-      ),
-      selected: Number.isInteger(raw.inventory?.selected) ? raw.inventory.selected : 0,
-    },
+    slots: slots.map((s) =>
+      Array.isArray(s) && Number.isInteger(s[0]) && Number.isInteger(s[1]) && s[1] > 0
+        ? { id: s[0], count: s[1] }
+        : null
+    ),
+    selected: Number.isInteger(raw?.selected) ? raw.selected : 0,
+  };
+}
+
+/**
+ * Validate a parsed snapshot. Returns null when the save is missing or
+ * malformed; version 1 saves from the old finite world are migrated.
+ */
+export function parseSnapshot(raw) {
+  if (!raw || typeof raw !== 'object') return null;
+
+  if (raw.version === 1) {
+    return {
+      migrated: true,
+      edits: migrateV1Edits(raw.edits, raw.size ?? 128),
+      inventory: parseInventory(raw.inventory),
+      player: raw.player && Number.isFinite(raw.player.x) ? raw.player : null,
+      view: Number.isInteger(raw.view) ? raw.view : 0,
+    };
+  }
+  if (raw.version !== VERSION) return null;
+
+  return {
+    migrated: false,
+    edits: decodeEdits(raw.edits),
+    inventory: parseInventory(raw.inventory),
     player: raw.player && Number.isFinite(raw.player.x) ? raw.player : null,
     view: Number.isInteger(raw.view) ? raw.view : 0,
   };
@@ -96,9 +128,9 @@ export function save(state) {
   }
 }
 
-export function load(world) {
+export function load() {
   try {
-    return parseSnapshot(JSON.parse(localStorage.getItem(KEY) ?? 'null'), world);
+    return parseSnapshot(JSON.parse(localStorage.getItem(KEY) ?? 'null'));
   } catch {
     return null;
   }

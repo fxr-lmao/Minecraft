@@ -15,7 +15,6 @@ import {
   SPEED_WALK, SPEED_SNEAK, AIR_WALK,
   DRAG_GROUND, DRAG_AIR,
   PLAYER_WIDTH, PLAYER_HEIGHT, PLAYER_EYE,
-  WORLD_SIZE, SPAWN,
 } from './constants.js';
 import { lookVector } from './view.js';
 
@@ -27,7 +26,9 @@ const FALL_RESPAWN_Y = -32;
 export class Player {
   constructor(world) {
     this.world = world;
-    this.pos = new THREE.Vector3(SPAWN.x, SPAWN.y, SPAWN.z);
+    const spawn = world.spawnPoint();
+    this.spawn = new THREE.Vector3(spawn.x, spawn.y + 0.01, spawn.z);
+    this.pos = this.spawn.clone();
     this.vel = new THREE.Vector3();
     this.yaw = Math.PI; // facing -Z at yaw 0; start facing +Z toward world center
     this.pitch = 0;
@@ -35,6 +36,13 @@ export class Player {
     this.onGround = false;
     this.sprinting = false;
     this.sneaking = false;
+    /**
+     * Hop single blocks automatically (Minecraft Bedrock's "auto jump", on by
+     * default there too). Generated terrain steps up a block every few paces,
+     * and without this you spend the whole time tapping space. It triggers a
+     * perfectly ordinary jump — no teleporting, no bespoke step physics.
+     */
+    this.autoJump = true;
 
     this.horizontalSpeed = 0; // for head bob + HUD
   }
@@ -46,6 +54,13 @@ export class Player {
   /** Camera position (eye). */
   get eyePos() {
     return new THREE.Vector3(this.pos.x, this.pos.y + PLAYER_EYE, this.pos.z);
+  }
+
+  /** Back to the spawn point. */
+  respawn() {
+    this.pos.copy(this.spawn);
+    this.vel.set(0, 0, 0);
+    this.onGround = false;
   }
 
   /** Horizontal forward vector from yaw (camera forward projected on XZ). */
@@ -123,25 +138,21 @@ export class Player {
     // ---- integrate + collide (axis separated, with auto-step) ----
     const moved = this._moveWithCollision(dt);
 
-    // Sprinting into a wall cancels sprint (like Minecraft)
-    if (this.sprinting && moved.blockedHorizontal && this.onGround) {
+    // Auto jump: bumped a block while walking, and a single hop clears it.
+    if (this.autoJump && moved.blockedHorizontal && this.onGround && moveDir.lengthSq() > 0
+        && this._canHopOver(moveDir)) {
+      this.vel.y = JUMP_VELOCITY;
+      this.onGround = false;
+    } else if (this.sprinting && moved.blockedHorizontal && this.onGround) {
+      // Sprinting into a wall you cannot hop cancels the sprint (like Minecraft)
       this.sprinting = false;
     }
 
-    // ---- world border (invisible, like Minecraft's barrier) ----
-    const half = HALF;
-    const lim = WORLD_SIZE - half - EPS;
-    const limLow = half + EPS;
-    if (this.pos.x > lim) { this.pos.x = lim; this.vel.x = Math.min(this.vel.x, 0); }
-    if (this.pos.x < limLow) { this.pos.x = limLow; this.vel.x = Math.max(this.vel.x, 0); }
-    if (this.pos.z > lim) { this.pos.z = lim; this.vel.z = Math.min(this.vel.z, 0); }
-    if (this.pos.z < limLow) { this.pos.z = limLow; this.vel.z = Math.max(this.vel.z, 0); }
-
-    // ---- fell out of the world -> respawn ----
+    // The world is infinite: no border to clamp against. Falling out is
+    // still impossible (bedrock seals y = 0), but keep the respawn as a
+    // backstop in case anything ever puts the player under the floor.
     if (this.pos.y < FALL_RESPAWN_Y) {
-      this.pos.set(SPAWN.x, SPAWN.y, SPAWN.z);
-      this.vel.set(0, 0, 0);
-      this.onGround = false;
+      this.respawn();
     }
 
     this.horizontalSpeed = Math.hypot(this.vel.x, this.vel.z);
@@ -199,6 +210,34 @@ export class Player {
     // Sliding along a wall falls out of the axis-separated resolve above:
     // the blocked axis stops, the free axis keeps moving.
     return { blockedHorizontal: blockedX || blockedZ };
+  }
+
+  /**
+   * Is the thing we just walked into exactly one block tall, with room above
+   * for us to land on it? Probes just beyond the player's box in the
+   * direction of travel.
+   */
+  _canHopOver(moveDir) {
+    const feet = Math.floor(this.pos.y + 1e-4);
+    // Head room for the jump itself: nothing directly above us.
+    if (this.world.isSolid(Math.floor(this.pos.x), feet + 2, Math.floor(this.pos.z))) return false;
+
+    // Check straight ahead, and each axis on its own, so hopping still works
+    // when sliding along a wall at an angle.
+    const dirs = [[moveDir.x, moveDir.z], [moveDir.x, 0], [0, moveDir.z]];
+    for (const [dx, dz] of dirs) {
+      if (dx === 0 && dz === 0) continue;
+      const len = Math.hypot(dx, dz);
+      const ax = this.pos.x + (dx / len) * (HALF + 0.2);
+      const az = this.pos.z + (dz / len) * (HALF + 0.2);
+      const cx = Math.floor(ax);
+      const cz = Math.floor(az);
+      const blocked = this.world.isSolid(cx, feet, cz);
+      const clearAbove = !this.world.isSolid(cx, feet + 1, cz)
+        && !this.world.isSolid(cx, feet + 2, cz);
+      if (blocked && clearAbove) return true;
+    }
+    return false;
   }
 
   /** Returns the AABB min/max as {minX, maxX, minY, maxY, minZ, maxZ}. */

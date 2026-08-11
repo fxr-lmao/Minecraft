@@ -40,12 +40,17 @@ export const FOV_BASE = 70;
 export const FOV_SPRINT = 84;
 export const FOV_SNEAK = 60;
 
-// World
-export const WORLD_SIZE = 128; // blocks per side (x and z)
-export const GROUND_LAYERS = 4; // generated terrain: bedrock, dirt, dirt, grass
-export const WORLD_LAYERS = 32; // total buildable height (y = 0..31)
-export const CHUNK_SIZE = 32; // mesher granularity in x/z (full column height)
-export const SPAWN = { x: WORLD_SIZE / 2 + 0.5, y: GROUND_LAYERS + 0.01, z: WORLD_SIZE / 2 + 0.5 };
+// World — infinite in x/z, streamed as chunks
+export const CHUNK_SIZE = 32; // blocks per chunk side
+export const WORLD_HEIGHT = 64; // buildable height (y = 0..63)
+export const WORLD_SEED = 1337;
+// Render distance in chunks (a chunk is CHUNK_SIZE blocks across).
+export const RENDER_DISTANCE_MIN = 2;
+export const RENDER_DISTANCE_MAX = 7;
+export const RENDER_DISTANCE_DEFAULT = 4;
+/** Keep chunks in memory a little beyond what is drawn, so turning around
+ *  doesn't re-generate everything. */
+export const KEEP_DISTANCE_EXTRA = 2;
 
 export const BLOCK_SIZE = 1;
 

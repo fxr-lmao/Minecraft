@@ -155,6 +155,7 @@ export function createPlayerModel() {
   });
 
   let phase = 0;
+  let clock = 0; // seconds of *unpaused* game time, for idle motion
   let swing = 0; // 0..1 arm swing when breaking/placing
   let crouch = 0;
   let sprintLean = 0;
@@ -228,8 +229,10 @@ export function createPlayerModel() {
       legR.rotation.x = -a;
       armL.rotation.x = -a * 0.85;
       armR.rotation.x = a * 0.85;
-      // idle arm sway
-      const idle = Math.sin(performance.now() / 900) * 0.045;
+      // Idle arm sway, driven by the game clock rather than wall-clock time
+      // so that it stops dead when the game is paused.
+      clock += s.dt;
+      const idle = Math.sin(clock * 1.1) * 0.045;
       armL.rotation.z = -idle;
       armR.rotation.z = idle;
 

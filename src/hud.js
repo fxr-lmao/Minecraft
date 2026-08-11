@@ -4,7 +4,7 @@
 // and reports, it doesn't decide anything.
 
 import { blockName } from './textures.js';
-import { WORLD_SIZE, WORLD_LAYERS } from './constants.js';
+import { CHUNK_SIZE, WORLD_HEIGHT } from './constants.js';
 import { LOOK_FREE, LOOK_TOUCH } from './input.js';
 
 const CARDINALS = ['South (+Z)', 'West (-X)', 'North (-Z)', 'East (+X)'];
@@ -48,8 +48,8 @@ export class Hud {
   showTitle(input, restored) {
     this.titleEl.textContent = 'MINECRAFT';
     this.subtitleEl.textContent = restored
-      ? 'browser clone · alpha 0.4 · world restored'
-      : 'browser clone · alpha 0.4';
+      ? 'browser clone · alpha 0.5 · world restored'
+      : 'browser clone · alpha 0.5';
     this.resumeEl.textContent = 'Play';
     this.overlayEl.classList.remove('hidden');
     this.refreshLookMode(input);
@@ -98,6 +98,8 @@ export class Hud {
       ['sensitivity', 'set-sens', 'out-sens', (v) => `${Number(v).toFixed(2)}×`],
       ['touchSensitivity', 'set-touch', 'out-touch', (v) => `${Number(v).toFixed(2)}×`],
       ['fov', 'set-fov', 'out-fov', (v) => `${Math.round(v)}°`],
+      ['renderDistance', 'set-distance', 'out-distance',
+        (v) => `${Math.round(v)} chunks · ${Math.round(v) * CHUNK_SIZE} blocks`],
     ];
     for (const [key, inputId, outId, fmt] of this._settingInputs) {
       const el = document.getElementById(inputId);
@@ -116,10 +118,11 @@ export class Hud {
         this._onSetting?.(key, Number(el.value));
       });
     }
-    const invert = document.getElementById('set-invert');
-    if (invert) {
-      invert.checked = settings.invertY;
-      invert.addEventListener('change', () => this._onSetting?.('invertY', invert.checked));
+    for (const [key, id] of [['invertY', 'set-invert'], ['autoJump', 'set-autojump']]) {
+      const el = document.getElementById(id);
+      if (!el) continue;
+      el.checked = settings[key];
+      el.addEventListener('change', () => this._onSetting?.(key, el.checked));
     }
   }
 
@@ -153,11 +156,11 @@ export class Hud {
       ? `${blockName(info.targetId)} @ ${info.target.x} ${info.target.y} ${info.target.z}`
       : 'none';
     const lines = [
-      `Minecraft [browser clone] alpha 0.4`,
+      `Minecraft [browser clone] alpha 0.5`,
       ``,
       `XYZ: ${info.pos.x.toFixed(3)} / ${info.pos.y.toFixed(3)} / ${info.pos.z.toFixed(3)}`,
       `Block: ${blockName(info.blockUnder)}`,
-      `Chunk: ${Math.floor(info.pos.x / 16)} ${Math.floor(info.pos.z / 16)}`,
+      `Chunk: ${info.chunk}  (${CHUNK_SIZE}x${CHUNK_SIZE})`,
       `Facing: ${CARDINALS[idx]} (${((dir + 360) % 360).toFixed(1)} / ${info.pitchDeg.toFixed(1)})`,
       `Looking at: ${target}`,
       ``,
@@ -166,8 +169,11 @@ export class Hud {
       `View: ${info.view}`,
       ``,
       `FPS: ${info.fps}  (${info.frameMs.toFixed(1)} ms)`,
+      `Draw calls: ${info.calls}  ·  ${(info.tris / 1000).toFixed(1)}k tris`,
       `Pixel scale: ${info.pixelScale.toFixed(2)}x  ·  Input: ${info.inputMode}`,
-      `World: ${WORLD_SIZE}x${WORLD_SIZE}, height ${WORLD_LAYERS}, ${info.edits} edits saved`,
+      `Render distance: ${info.renderDistance} chunks (${info.renderDistance * CHUNK_SIZE} blocks)`,
+      `Chunks: ${info.meshes} drawn, ${info.queued} queued, ${info.loaded} in memory`,
+      `World: infinite, height ${WORLD_HEIGHT}, ${info.edits} edits saved`,
     ];
     this.debugEl.textContent = lines.join('\n');
   }

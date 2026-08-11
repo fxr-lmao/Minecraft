@@ -6,7 +6,7 @@ import { raycastVoxel, blockIntersectsPlayer } from '../src/raycast.js';
 import { lookVector, freeDistance } from '../src/view.js';
 import { PLAYER_WIDTH, PLAYER_HEIGHT, REACH } from '../src/constants.js';
 
-const world = new World(); // flat ground, top grass layer at y = 3
+const world = new World(1, { flat: 3 }); // top grass layer at y = 3
 const results = [];
 const assert = (name, cond, detail) =>
   results.push([name, Boolean(cond), detail !== undefined ? String(detail) : '']);
@@ -33,7 +33,7 @@ const assert = (name, cond, detail) =>
 
 // a pillar to the side gives the face you can build off
 {
-  const w2 = new World();
+  const w2 = new World(1, { flat: 3 });
   w2.setBlock(66, 4, 64, GRASS);
   const hit = raycastVoxel(w2, { x: 64.5, y: 4.5, z: 64.5 }, { x: 1, y: 0, z: 0 }, REACH);
   assert('side hit finds the pillar', hit && hit.x === 66 && hit.y === 4, hit && `${hit.x},${hit.y},${hit.z}`);
@@ -72,7 +72,7 @@ const assert = (name, cond, detail) =>
   const straightDown = freeDistance(world, eye, { x: 0, y: -1, z: 0 }, 4);
   assert('camera stops above the ground', straightDown > 1 && straightDown < 1.6, straightDown.toFixed(2));
 
-  const walled = new World();
+  const walled = new World(1, { flat: 3 });
   for (let y = 3; y < 8; y++) walled.setBlock(66, y, 64, GRASS);
   const dist = freeDistance(walled, eye, { x: 1, y: 0, z: 0 }, 4);
   assert('camera stops before a wall', dist > 1 && dist < 1.5, dist.toFixed(2));
