@@ -163,7 +163,7 @@ export class Hud {
       ? `${blockName(info.targetId)} @ ${info.target.x} ${info.target.y} ${info.target.z}`
       : 'none';
     const lines = [
-      `Minecraft [browser clone] alpha 0.7`,
+      `Minecraft [browser clone] alpha 0.8`,
       ``,
       `XYZ: ${info.pos.x.toFixed(3)} / ${info.pos.y.toFixed(3)} / ${info.pos.z.toFixed(3)}`,
       `Block: ${blockName(info.blockUnder)}  ·  Biome: ${info.biome}`,

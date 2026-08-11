@@ -1,7 +1,7 @@
 {
   "name": "minecraft-clone",
   "private": true,
-  "version": "0.7.0",
+  "version": "0.8.0",
   "type": "module",
   "description": "A browser Minecraft clone: infinite streamed world, block building, inventory, three camera views.",
   "scripts": {

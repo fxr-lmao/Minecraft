@@ -51,9 +51,16 @@ export const CHUNK_SIZE = 32; // blocks per chunk side
  * always 0..WORLD_HEIGHT-1) so they stay non-negative and still fit in a
  * byte; `y` on its own always means the world coordinate the player sees.
  */
-export const WORLD_MIN_Y = -70;
-export const WORLD_MAX_Y = 70; // highest placeable block (the build limit)
-export const WORLD_HEIGHT = WORLD_MAX_Y - WORLD_MIN_Y + 1; // 141 layers
+export const WORLD_MIN_Y = -64; // Minecraft's floor
+/**
+ * 255 layers, and that number is a hard ceiling rather than a preference:
+ * mesh vertex positions are packed into single bytes, and a block at the top
+ * layer needs a vertex one above it, so layer + 1 must still fit in 255.
+ * Going higher means widening every position attribute — 3 bytes a vertex to
+ * 6 — for headroom nobody builds into.
+ */
+export const WORLD_HEIGHT = 255;
+export const WORLD_MAX_Y = WORLD_MIN_Y + WORLD_HEIGHT - 1; // 190, the build limit
 /** Convert a world y to its layer index, and back. */
 export const toLayer = (y) => y - WORLD_MIN_Y;
 export const fromLayer = (layer) => layer + WORLD_MIN_Y;
@@ -76,8 +83,12 @@ export const DATA_RADIUS = 6;
  * only the terrain shell is built — the underside of the world is sealed, so
  * there is nothing down there anyone can see. This is what stops caves from
  * doubling the geometry at every render distance.
+ *
+ * A cave chunk costs ~16 ms to mesh against a shell chunk's ~5, so this
+ * radius is deliberately small: 4 chunks is still 128 blocks of cave around
+ * you, further than you can see underground.
  */
-export const DEEP_RADIUS = 5;
+export const DEEP_RADIUS = 4;
 
 export const BLOCK_SIZE = 1;
 

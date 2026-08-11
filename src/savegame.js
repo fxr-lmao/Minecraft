@@ -12,7 +12,18 @@
 import { WORLD_MIN_Y, WORLD_MAX_Y } from './constants.js';
 
 const KEY = 'mc-clone.save.v1'; // same slot; the payload carries its version
-const VERSION = 2;
+const VERSION = 3;
+
+/**
+ * How far version 2 worlds have to move up.
+ *
+ * Version 2 generated the plains around y = 14; version 3 uses Minecraft's
+ * elevations and puts them at 66. Leaving old edits where they were would
+ * bury everything anyone built fifty blocks underground, so they are lifted
+ * by the difference — which lands them back on the surface they were built
+ * on, give or take the change in the hills.
+ */
+export const V2_LIFT = 52;
 /** Refuse to persist absurd saves rather than blowing the storage quota. */
 export const MAX_EDITS = 200000;
 
@@ -26,8 +37,23 @@ export function encodeEdits(editList) {
   return out;
 }
 
-/** Flat quadruples -> [{x, y, z, id}], skipping anything malformed. */
-export function decodeEdits(flat) {
+/** Raise every edit by `dy`, dropping any that would leave the world. */
+export function liftEdits(edits, dy) {
+  const out = [];
+  for (const e of edits) {
+    const y = e.y + dy;
+    if (y < WORLD_MIN_Y || y > WORLD_MAX_Y) continue;
+    out.push({ ...e, y });
+  }
+  return out;
+}
+
+/**
+ * Flat quadruples -> [{x, y, z, id}], skipping anything malformed.
+ * `floor` lets a migration accept coordinates from a world whose floor was
+ * somewhere else, before they are moved into this one's range.
+ */
+export function decodeEdits(flat, floor = WORLD_MIN_Y) {
   const out = [];
   if (!Array.isArray(flat)) return out;
   for (let i = 0; i + 3 < flat.length; i += 4) {
@@ -36,7 +62,7 @@ export function decodeEdits(flat) {
     // y is absolute and the world extends below zero, so only the real
     // vertical bounds may reject an edit — `y < 0` used to, and would now
     // silently drop everything anyone built underground.
-    if (id < 0 || id > 255 || y < WORLD_MIN_Y || y > WORLD_MAX_Y) continue;
+    if (id < 0 || id > 255 || y < floor || y > WORLD_MAX_Y) continue;
     out.push({ x, y, z, id });
   }
   return out;
@@ -108,6 +134,17 @@ export function parseSnapshot(raw) {
       edits: migrateV1Edits(raw.edits, raw.size ?? 128),
       inventory: parseInventory(raw.inventory),
       player: raw.player && Number.isFinite(raw.player.x) ? raw.player : null,
+      view: Number.isInteger(raw.view) ? raw.view : 0,
+    };
+  }
+  if (raw.version === 2) {
+    return {
+      migrated: true,
+      edits: liftEdits(decodeEdits(raw.edits, WORLD_MIN_Y - V2_LIFT), V2_LIFT),
+      inventory: parseInventory(raw.inventory),
+      player: raw.player && Number.isFinite(raw.player.x)
+        ? { ...raw.player, y: raw.player.y + V2_LIFT }
+        : null,
       view: Number.isInteger(raw.view) ? raw.view : 0,
     };
   }

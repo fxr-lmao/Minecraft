@@ -19,15 +19,22 @@
 
 import { WORLD_MIN_Y, WORLD_MAX_Y, toLayer } from './constants.js';
 
+/**
+ * Sea level, as in Minecraft. There is no water yet, but this is what the
+ * terrain is built around: the plains sit a few blocks above it, and anything
+ * at or below gets sand, so shorelines read as beaches.
+ */
+export const SEA_LEVEL = 62;
+
 /** Columns at or below this height get sand regardless of biome. */
-export const SAND_LEVEL = 4;
+export const SAND_LEVEL = SEA_LEVEL + 1;
 
 /**
  * Stone turns to deepslate below here. The boundary is jittered per column so
  * it reads as a ragged transition rather than a drawn line, the same way
  * Minecraft fades stone into deepslate over a few layers.
  */
-export const DEEPSLATE_LEVEL = 4;
+export const DEEPSLATE_LEVEL = 0;
 const DEEPSLATE_FADE = 8; // how many layers the jitter spreads over
 
 /** The floor is ragged for a few layers, like Minecraft's bedrock. */
@@ -158,12 +165,18 @@ export function dominantBiome(weights) {
 
 // Per-biome terrain shape: a base height and how much the shared detail and
 // hill noise move it. Mountains are tall and rough, desert is low and smooth.
+// Heights are Minecraft's: sea level 62, plains in the mid 60s, mountains
+// topping out around 150.
 const SHAPE = {
-  plains:    { base: 14, hills: 3.5, detail: 1.2 },
-  forest:    { base: 16, hills: 5.0, detail: 2.0 },
-  desert:    { base: 12, hills: 3.0, detail: 1.5 },
-  mountains: { base: 30, hills: 17.0, detail: 4.0 },
+  plains:    { base: 66, hills: 4.0, detail: 1.5 },
+  forest:    { base: 68, hills: 6.0, detail: 2.5 },
+  desert:    { base: 64, hills: 4.0, detail: 2.0 },
+  mountains: { base: 108, hills: 46.0, detail: 6.0 },
 };
+
+/** Terrain is clamped to this band — well inside the world either way. */
+const TERRAIN_MIN = 40;
+const TERRAIN_MAX = 170;
 
 /**
  * Surface height at (x, z): the y of the topmost solid block.
@@ -197,7 +210,7 @@ export function surfaceHeightWith(x, z, seed, w) {
     detailAmp += SHAPE[name].detail * weight;
   }
   const h = base + shaped * hillAmp + detail * detailAmp;
-  return Math.max(2, Math.min(60, Math.round(h)));
+  return Math.max(TERRAIN_MIN, Math.min(TERRAIN_MAX, Math.round(h)));
 }
 
 /** Surface and subsurface block for a column, given its biome mix. */
@@ -206,8 +219,8 @@ export function surfaceBlocks(h, w) {
   // Snow caps and bare rock belong to ground the mountain weight lifted, so
   // they are gated on both the weight and the height it produced.
   if (w.mountains > 0.5) {
-    if (h >= 38) return { top: SNOW, filler: STONE };
-    if (h >= 30) return { top: STONE, filler: STONE };
+    if (h >= 120) return { top: SNOW, filler: STONE };
+    if (h >= 95) return { top: STONE, filler: STONE };
   }
   if (w.desert > 0.5) return { top: SAND, filler: SAND };
   return { top: GRASS, filler: DIRT };
@@ -225,20 +238,34 @@ export function surfaceBlocks(h, w) {
 // The intersection of two iso-surfaces is a line rather than a volume, and
 // that is what turns blobby noise into winding tunnels.
 
-export const CAVE_STEP = 4; // lattice spacing, in blocks
+export const CAVE_STEP = 4; // horizontal lattice spacing, in blocks
+/**
+ * Vertical lattice spacing. Minecraft samples its cave noise on a 4 x 8 x 4
+ * lattice for the same reason: the y axis is where the loop spends its time,
+ * and tunnels are wider than they are tall anyway, so it is the cheapest axis
+ * to sample coarsely. Halving the samples here halves the cost of carving.
+ */
+export const CAVE_STEP_Y = 8;
 export const CAVE_CEILING_DEPTH = 3; // rock kept between a cave and the sky
 const CAVE_FREQ = 0.031; // tunnel scale
 const CAVE_THRESHOLD = 0.08; // how close to the midpoint gets carved
 const CAVE_CEILING = CAVE_CEILING_DEPTH;
-const CAVE_SQUASH = 1.7; // >1 flattens tunnels into wider, lower passages
+/**
+ * Caves stop here however high the ground goes. Mountains now reach 150, and
+ * carving all of that would cost a third again per chunk for tunnels sealed
+ * inside a peak. Minecraft's caves cluster below sea level too.
+ */
+const CAVE_MAX_Y = 70;
+// Flattens tunnels into wider, lower passages. Kept near 1 so that at a
+// vertical lattice step of 8 the noise is still sampled several times per
+// feature — squashing it further would alias into visible banding.
+const CAVE_SQUASH = 1.05;
 
 /** One cave field at a lattice point. */
 function caveField(gx, gy, gz, seed, which) {
   const f = CAVE_FREQ * CAVE_STEP;
-  return valueNoise3(
-    gx * f, gy * f * CAVE_SQUASH, gz * f,
-    seed + (which ? 7717 : 2281)
-  );
+  const fy = CAVE_FREQ * CAVE_STEP_Y * CAVE_SQUASH;
+  return valueNoise3(gx * f, gy * fy, gz * f, seed + (which ? 7717 : 2281));
 }
 
 const lerp = (a, b, t) => a + (b - a) * t;
@@ -246,10 +273,10 @@ const lerp = (a, b, t) => a + (b - a) * t;
 /** Is (x, y, z) inside a cave? The slow path — used one cell at a time. */
 export function caveAt(x, y, z, seed) {
   const gx = Math.floor(x / CAVE_STEP);
-  const gy = Math.floor(y / CAVE_STEP);
+  const gy = Math.floor(y / CAVE_STEP_Y);
   const gz = Math.floor(z / CAVE_STEP);
   const tx = x / CAVE_STEP - gx;
-  const ty = y / CAVE_STEP - gy;
+  const ty = y / CAVE_STEP_Y - gy;
   const tz = z / CAVE_STEP - gz;
   for (let which = 0; which < 2; which++) {
     const c = (dx, dy, dz) => caveField(gx + dx, gy + dy, gz + dz, seed, which);
@@ -289,7 +316,7 @@ export function generatedBlock(x, y, z, seed) {
   if (isBedrock(x, y, z, seed)) return BEDROCK;
   const h = surfaceHeight(x, z, seed);
   if (y > h) return AIR;
-  if (y <= h - CAVE_CEILING && caveAt(x, y, z, seed)) return AIR;
+  if (y <= Math.min(h - CAVE_CEILING, CAVE_MAX_Y) && caveAt(x, y, z, seed)) return AIR;
   const w = biomeWeights(x, z, seed);
   const { top, filler } = surfaceBlocks(h, w);
   if (y === h) return top;
@@ -475,20 +502,21 @@ function carveCaves(blocks, heights, ground, x0, z0, size, area, seed) {
   // bedrock fade up to the highest column that can be carved at all.
   let maxCarveY = WORLD_MIN_Y;
   for (let col = 0; col < area; col++) {
-    if (ground[col] - CAVE_CEILING > maxCarveY) maxCarveY = ground[col] - CAVE_CEILING;
+    const top = Math.min(ground[col] - CAVE_CEILING, CAVE_MAX_Y);
+    if (top > maxCarveY) maxCarveY = top;
   }
   const minCarveY = WORLD_MIN_Y + BEDROCK_FADE;
   if (maxCarveY < minCarveY) return;
 
   const g0x = Math.floor(x0 / CAVE_STEP);
   const g0z = Math.floor(z0 / CAVE_STEP);
-  const g0y = Math.floor(minCarveY / CAVE_STEP);
+  const g0y = Math.floor(minCarveY / CAVE_STEP_Y);
   const nx = Math.floor(size / CAVE_STEP) + 2;
   const nz = nx;
   // +3, not +2: g0y floors the *bottom* of the range, so the top cell can sit
   // one lattice cell higher than the span alone suggests, and it still needs
   // its upper corner.
-  const ny = Math.floor((maxCarveY - minCarveY) / CAVE_STEP) + 3;
+  const ny = Math.floor((maxCarveY - minCarveY) / CAVE_STEP_Y) + 3;
 
   const fieldA = new Float32Array(nx * ny * nz);
   const fieldB = new Float32Array(nx * ny * nz);
@@ -536,14 +564,14 @@ function carveCaves(blocks, heights, ground, x0, z0, size, area, seed) {
       const ix = gx - g0x;
       const tx = wx / CAVE_STEP - gx;
       const col = lz * size + lx;
-      const ceiling = ground[col] - CAVE_CEILING;
+      const ceiling = Math.min(ground[col] - CAVE_CEILING, CAVE_MAX_Y);
 
       let y = minCarveY;
       while (y <= ceiling) {
-        const gy = Math.floor(y / CAVE_STEP);
+        const gy = Math.floor(y / CAVE_STEP_Y);
         const iy = gy - g0y;
         // Last y still inside this lattice cell.
-        const yStop = Math.min(ceiling, (gy + 1) * CAVE_STEP - 1);
+        const yStop = Math.min(ceiling, (gy + 1) * CAVE_STEP_Y - 1);
         if (iy < 0 || iy + 1 >= ny) {
           y = yStop + 1;
           continue;
@@ -561,7 +589,7 @@ function carveCaves(blocks, heights, ground, x0, z0, size, area, seed) {
           continue;
         }
         for (; y <= yStop; y++) {
-          const ty = y / CAVE_STEP - gy;
+          const ty = y / CAVE_STEP_Y - gy;
           const a = a0 + (a1 - a0) * ty;
           if (a < LO || a > HI) continue;
           const b = b0 + (b1 - b0) * ty;

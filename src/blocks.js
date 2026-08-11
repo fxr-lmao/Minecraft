@@ -86,7 +86,6 @@ const SHELL_MARGIN = CAVE_CEILING_DEPTH + 2;
  */
 export function meshChunk(world, cx, cz, deep = true) {
   const chunk = world.chunk(cx, cz);
-  const shell = !deep && !chunk.edited;
   const surface = chunk.surface;
   const x0 = cx * CHUNK_SIZE;
   const z0 = cz * CHUNK_SIZE;
@@ -97,6 +96,34 @@ export function meshChunk(world, cx, cz, deep = true) {
   // vertex positions non-negative and inside a byte.
   const top = Math.min(toLayer(chunk.maxY) + 1, WORLD_HEIGHT - 1);
   const heights = chunk.heights;
+
+  // The four neighbours, so that edge columns can be skipped like any other.
+  // They were once scanned in full because reaching across a border looked
+  // like more trouble than 12% of columns was worth — but that 12% was doing
+  // 71% of the scanning, because a full-height scan is an order of magnitude
+  // longer than a skipped one. The mesher already reads these chunks for
+  // face culling, so nothing extra is generated.
+  const west = world.chunk(cx - 1, cz);
+  const east = world.chunk(cx + 1, cz);
+  const north = world.chunk(cx, cz - 1);
+  const south = world.chunk(cx, cz + 1);
+  const E = CHUNK_SIZE - 1;
+
+  // Shell mode trusts that the only air under the surface is cave air, sealed
+  // in. A pit dug in *any* neighbour breaks that seal across the border too,
+  // so an edited neighbour disqualifies this chunk as well as itself.
+  const shell = !deep && !chunk.edited
+    && !west.edited && !east.edited && !north.edited && !south.edited;
+  /** A per-column value, reaching into the neighbouring chunk when needed. */
+  const at = (pick, lx, lz) => {
+    if (lx < 0) return pick(west)[lz * CHUNK_SIZE + E];
+    if (lx > E) return pick(east)[lz * CHUNK_SIZE];
+    if (lz < 0) return pick(north)[E * CHUNK_SIZE + lx];
+    if (lz > E) return pick(south)[lx];
+    return pick(chunk)[lz * CHUNK_SIZE + lx];
+  };
+  const pickH = (c) => c.heights;
+  const pickS = (c) => c.surface;
 
   // Iterating column-by-column lets us skip the buried rock: everything
   // below the *lowest* of a column's four neighbours is enclosed on all
@@ -110,30 +137,38 @@ export function meshChunk(world, cx, cz, deep = true) {
     for (let lx = 0; lx < CHUNK_SIZE; lx++) {
       const col = lz * CHUNK_SIZE + lx;
       let yStart = 0;
-      // Edge columns have a neighbour in another chunk, so they are scanned
-      // in full — 12% of columns, not worth reaching across for.
-      if (lx > 0 && lx < CHUNK_SIZE - 1 && lz > 0 && lz < CHUNK_SIZE - 1) {
-        const gt = heights[col];
-        if (gt > 0) {
-          const lowest = Math.min(
+      const interior = lx > 0 && lx < E && lz > 0 && lz < E;
+      const gt = heights[col];
+      if (gt > 0) {
+        const lowest = interior
+          ? Math.min(
             heights[col - 1], heights[col + 1],
             heights[col - CHUNK_SIZE], heights[col + CHUNK_SIZE]
+          )
+          : Math.min(
+            at(pickH, lx - 1, lz), at(pickH, lx + 1, lz),
+            at(pickH, lx, lz - 1), at(pickH, lx, lz + 1)
           );
-          // A neighbour reset to 0 by an edit falls back to a full scan.
-          if (lowest > 0) yStart = Math.max(0, Math.min(gt, lowest) - 1);
-        }
-        if (shell) {
-          // Down to the *lowest* neighbouring surface, not this column's:
-          // a cliff face is exposed all the way down to the ground beside
-          // it, and cutting it off at this column's own surface would punch
-          // a hole in the wall.
-          const s = Math.min(
+        // A neighbour reset to 0 by an edit falls back to a full scan.
+        if (lowest > 0) yStart = Math.max(0, Math.min(gt, lowest) - 1);
+      }
+      if (shell) {
+        // Down to the *lowest* neighbouring surface, not this column's:
+        // a cliff face is exposed all the way down to the ground beside
+        // it, and cutting it off at this column's own surface would punch
+        // a hole in the wall.
+        const s = interior
+          ? Math.min(
             surface[col],
             surface[col - 1], surface[col + 1],
             surface[col - CHUNK_SIZE], surface[col + CHUNK_SIZE]
+          )
+          : Math.min(
+            surface[col],
+            at(pickS, lx - 1, lz), at(pickS, lx + 1, lz),
+            at(pickS, lx, lz - 1), at(pickS, lx, lz + 1)
           );
-          yStart = Math.max(yStart, s - SHELL_MARGIN);
-        }
+        yStart = Math.max(yStart, s - SHELL_MARGIN);
       }
 
       const wx = x0 + lx;
