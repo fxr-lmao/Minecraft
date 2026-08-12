@@ -5,7 +5,7 @@ import {
 } from '../src/world.js';
 import {
   surfaceHeight, generatedBlock, biomeWeights, dominantBiome, surfaceBlocks,
-  treeAt, findSpawn, BIOMES, SAND_LEVEL, LOG, LEAVES, SNOW, SAND as SANDID,
+  treeAt, findSpawn, BIOMES, SAND_LEVEL, SEA_LEVEL, LOG, LEAVES, SNOW, SAND as SANDID,
   deepslateTop, DEEPSLATE_LEVEL,
 } from '../src/terrain.js';
 import {
@@ -36,7 +36,10 @@ const assert = (name, cond, detail) =>
   assert('air at the build limit', w.get(5, WORLD_MAX_Y, 5) === AIR);
   assert('above the world is air', w.get(5, WORLD_MAX_Y + 10, 5) === AIR);
   assert('below the world is sealed', w.get(5, WORLD_MIN_Y - 1, 5) === BEDROCK);
-  assert('the world spans 141 layers', WORLD_HEIGHT === 141, WORLD_HEIGHT);
+  assert('the world spans 255 layers', WORLD_HEIGHT === 255, WORLD_HEIGHT);
+  // The mesher packs vertex positions into bytes, and the top layer needs a
+  // vertex one above it. Exceed this and geometry silently wraps.
+  assert('layers still fit in a byte vertex', WORLD_HEIGHT <= 255, WORLD_HEIGHT);
 
   const h = w.heightAt(12, 34);
   assert('heightAt agrees with the terrain function',
@@ -52,8 +55,11 @@ const assert = (name, cond, detail) =>
   const min = Math.min(...heights);
   const max = Math.max(...heights);
   assert('terrain has hills', max - min >= 4, `${min}..${max}`);
-  // mountains legitimately reach the snow line, so the ceiling is the clamp
-  assert('terrain stays in a sane band', min >= 2 && max <= 60, `${min}..${max}`);
+  // Minecraft's elevations: plains a little above sea level, mountains high
+  // enough to carry a snow cap.
+  assert('terrain stays in a sane band', min >= 40 && max <= 170, `${min}..${max}`);
+  assert('the plains sit just above sea level', min >= SEA_LEVEL - 4 && min <= SEA_LEVEL + 8,
+    `${min} vs sea ${SEA_LEVEL}`);
 }
 
 // -------------------------------------------------------------- infinity
@@ -164,14 +170,24 @@ const assert = (name, cond, detail) =>
   }
   assert('every biome exists', BIOMES.every((b) => seen[b] > 100), JSON.stringify(seen));
 
-  // Coherence: height never jumps by a cliff between adjacent columns.
+  // Coherence: the ground rolls rather than jumping. Mountains legitimately
+  // have cliffs now that they reach 150 — Minecraft's do — so this checks the
+  // shape of the distribution instead of a flat ceiling: almost every step is
+  // walkable, and nothing anywhere is a sheer wall.
   let worstStep = 0;
-  for (let i = 0; i < 4000; i++) {
+  let gentle = 0;
+  let steps = 0;
+  for (let i = 0; i < 8000; i++) {
     const x = (i * 31) % 4000 - 2000;
     const z = Math.floor(i / 40) * 53 - 2000;
-    worstStep = Math.max(worstStep, Math.abs(surfaceHeight(x + 1, z, seed) - surfaceHeight(x, z, seed)));
+    const step = Math.abs(surfaceHeight(x + 1, z, seed) - surfaceHeight(x, z, seed));
+    worstStep = Math.max(worstStep, step);
+    if (step <= 3) gentle++;
+    steps++;
   }
-  assert('neighbouring columns never differ by more than 3', worstStep <= 3, worstStep);
+  assert('almost every step is walkable', gentle / steps > 0.95,
+    `${((gentle / steps) * 100).toFixed(1)}%`);
+  assert('and nothing is a sheer wall', worstStep <= 12, worstStep);
 
   // Surface material follows the biome.
   const desertCol = (() => {

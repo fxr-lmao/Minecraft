@@ -4,6 +4,7 @@ import { World, AIR, GRASS } from '../src/world.js';
 import { Inventory } from '../src/inventory.js';
 import {
   buildSnapshot, parseSnapshot, encodeEdits, decodeEdits, migrateV1Edits,
+  liftEdits, V2_LIFT,
 } from '../src/savegame.js';
 import { normalise, DEFAULTS } from '../src/settings.js';
 import { smoothDistance, ViewController } from '../src/view.js';
@@ -62,6 +63,36 @@ const assert = (name, cond, detail) =>
     junkInv.inventory.slots[0] === null && junkInv.inventory.slots[1] === null &&
     junkInv.inventory.slots[2].count === 5, JSON.stringify(junkInv.inventory.slots.slice(0, 3)));
   assert('bad selected index falls back to 0', junkInv.inventory.selected === 0);
+}
+
+// version 2 saves came from the world whose plains sat at y ~14, before the
+// terrain moved up to Minecraft's elevations. Their edits have to come with
+// it or everything anyone built ends up fifty blocks underground.
+{
+  const v2 = {
+    version: 2,
+    edits: [10, 15, 20, 1, -5, 4, -8, 3],
+    inventory: { slots: [[1, 10]], selected: 0 },
+    player: { x: 4.5, y: 15, z: 8.5, yaw: 0, pitch: 0 },
+    view: 0,
+  };
+  const parsed = parseSnapshot(v2);
+  assert('v2 saves are migrated, not discarded', parsed !== null && parsed.migrated === true);
+  assert('v2 edits are lifted to the new surface',
+    parsed.edits.some((e) => e.x === 10 && e.y === 15 + V2_LIFT && e.z === 20),
+    JSON.stringify(parsed.edits));
+  assert('every v2 edit moves by the same amount',
+    parsed.edits.every((e, i) => e.y === v2.edits[i * 4 + 1] + V2_LIFT),
+    JSON.stringify(parsed.edits));
+  assert('the player comes up with their build',
+    parsed.player.y === 15 + V2_LIFT, parsed.player.y);
+  assert('v2 inventory survives', parsed.inventory.slots[0].count === 10);
+
+  // liftEdits on its own: things pushed out of the world are dropped, not
+  // wrapped around to the bottom.
+  const lifted = liftEdits([{ x: 0, y: 1000, z: 0, id: 1 }, { x: 1, y: 2, z: 3, id: 4 }], V2_LIFT);
+  assert('a lift out of the world drops the edit',
+    lifted.length === 1 && lifted[0].y === 2 + V2_LIFT, JSON.stringify(lifted));
 }
 
 // version 1 saves came from the old finite 128x128x32 world
