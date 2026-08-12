@@ -141,6 +141,16 @@ export function createPlayerModel() {
   const shoe = { rows: [{ from: 5, to: 8, color: SHOE }] };
   const armL = limb(SKIN, 31, 4, 12, 4, -6, 24, sleeve);
   const armR = limb(SKIN, 32, 4, 12, 4, 6, 24, sleeve);
+
+  // What the avatar is holding, parented to the right arm so it swings with
+  // it. A block sits in the fist at Minecraft's angle; anything flat and
+  // long — a sword, a tool — goes in the same socket and only needs its own
+  // scale and tilt, which is why this is a group rather than a mesh.
+  const hand = new THREE.Group();
+  hand.position.set(1.5 * PX, -13 * PX, -3 * PX); // the fist, a little ahead of the arm
+  hand.rotation.set(-0.5, 0.5, 0.1);
+  armR.add(hand);
+  let heldMesh = null;
   const legL = limb(PANTS, 41, 4, 12, 4, -2, 12, shoe);
   const legR = limb(PANTS, 42, 4, 12, 4, 2, 12, shoe);
 
@@ -168,6 +178,33 @@ export function createPlayerModel() {
     /** Trigger the mining/placing arm swing. */
     swingArm() {
       swing = 1;
+    },
+
+    /**
+     * Put a block in the avatar's hand, or nothing. Takes geometry and a
+     * material rather than a mesh so it can share exactly what the
+     * first-person view already built for the same block.
+     */
+    setHeldItem(geometry, material) {
+      if (!geometry) {
+        if (heldMesh) heldMesh.visible = false;
+        return;
+      }
+      if (!heldMesh) {
+        // A clone, not the shared material: the avatar fades out when the
+        // camera comes close, and the first-person block drawn from the same
+        // material must not fade with it.
+        const own = material.clone();
+        heldMesh = new THREE.Mesh(geometry, own);
+        // Minecraft holds a block at about 0.4 of its world size — big
+        // enough to tell grass from stone across the third-person camera.
+        heldMesh.scale.setScalar(0.46);
+        hand.add(heldMesh);
+        materials.push(own);
+      } else {
+        heldMesh.geometry = geometry;
+      }
+      heldMesh.visible = true;
     },
 
     /**

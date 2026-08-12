@@ -4,6 +4,7 @@
 
 import * as THREE from '../vendor/three.module.min.js';
 import { mulberry32, clamp } from './utils.js';
+import { WATER, isWater } from './terrain.js';
 
 export const TEX_SIZE = 16;
 
@@ -138,6 +139,13 @@ function deepslateFace(rand) {
     ctx.fillRect(x, Math.floor(rand() * TEX_SIZE), 1, 3 + Math.floor(rand() * 6));
   }
   return cv;
+}
+
+// Water. Drawn opaque here and made translucent by the material — the atlas
+// is a single texture shared with every solid block, so the alpha has to
+// come from somewhere else.
+function waterFace(rand) {
+  return noiseCanvas(rand, 0x3552d4, { speckles: 18, blotches: 4, blotchColor: 0x2c46bd });
 }
 
 function cobbleFace(rand) {
@@ -307,6 +315,7 @@ export const BLOCK_DEFS = [
   { id: 10, name: 'Oak Log', side: logSideFace, top: logTopFace, bottom: logTopFace },
   { id: 11, name: 'Leaves', side: leavesFace, top: leavesFace, bottom: leavesFace },
   { id: 12, name: 'Deepslate', side: deepslateFace, top: deepslateFace, bottom: deepslateFace },
+  { id: 13, name: 'Water', side: waterFace, top: waterFace, bottom: waterFace },
 ];
 
 /** Blocks offered in the starting hotbar (9 slots, so not every block). */
@@ -389,7 +398,10 @@ export const ATLAS_TILES = BLOCK_DEFS.length * 3;
 
 /** Tile index for a block id and face column (0 side, 1 top, 2 bottom). */
 export function atlasTile(blockId, column) {
-  const i = BLOCK_DEFS.findIndex((b) => b.id === blockId);
+  // Every water level shares the source's tiles: eight ids, one appearance,
+  // and no reason to widen the atlas by 21 tiles that are all the same.
+  const id = isWater(blockId) ? WATER : blockId;
+  const i = BLOCK_DEFS.findIndex((b) => b.id === id);
   return (i < 0 ? 0 : i) * 3 + column;
 }
 

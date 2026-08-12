@@ -27,6 +27,21 @@ export const AIR_SPRINT = 5.778;
 export const DRAG_GROUND = -TICK_RATE * Math.log(0.546); // ~12.1 /s
 export const DRAG_AIR = -TICK_RATE * Math.log(0.91); // ~1.89 /s
 
+// Water. Minecraft's per-tick water model is drag 0.8 (against 0.546 on the
+// ground), acceleration 0.02 — 0.026 sprinting — gravity 0.02, and +0.04 a
+// tick while jump is held. Those give the terminal speeds below, which is
+// what the continuous model here is tuned to reproduce:
+//
+//   swim      0.02 / (1 - 0.8)  = 0.10 blocks/tick = 2.0 blocks/s
+//   sprint    0.026 / (1 - 0.8) = 0.13             = 2.6
+//   sink      0.02 / (1 - 0.8)  = 0.10             = 2.0   (78.4 in air)
+//   swim up   (0.8*0.04 - 0.02) / (1 - 0.8) = 0.06 = 1.2
+export const DRAG_WATER = -TICK_RATE * Math.log(0.8); // ~4.46 /s
+export const SPEED_SWIM = 2.0;
+export const SPEED_SWIM_SPRINT = 2.6;
+export const SINK_SPEED = 2.0; // terminal fall in water
+export const SWIM_UP_SPEED = 1.2; // holding jump under water
+
 // Player dimensions (blocks)
 export const PLAYER_WIDTH = 0.6; // x/z extent of the AABB
 export const PLAYER_HEIGHT = 1.8;

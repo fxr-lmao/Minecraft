@@ -58,8 +58,14 @@ const assert = (name, cond, detail) =>
   // Minecraft's elevations: plains a little above sea level, mountains high
   // enough to carry a snow cap.
   assert('terrain stays in a sane band', min >= 40 && max <= 170, `${min}..${max}`);
-  assert('the plains sit just above sea level', min >= SEA_LEVEL - 4 && min <= SEA_LEVEL + 8,
-    `${min} vs sea ${SEA_LEVEL}`);
+  // With oceans in the mix the lowest ground is a sea floor, not a plain, so
+  // what matters is that both exist: ground well under the water, and a
+  // typical column a little above it.
+  const sorted = [...heights].sort((a, b) => a - b);
+  const median = sorted[sorted.length >> 1];
+  assert('there is ground well below sea level', min <= SEA_LEVEL - 8, `${min} vs sea ${SEA_LEVEL}`);
+  assert('the typical column sits above sea level',
+    median > SEA_LEVEL && median < SEA_LEVEL + 20, `${median} vs sea ${SEA_LEVEL}`);
 }
 
 // -------------------------------------------------------------- infinity
@@ -154,7 +160,7 @@ const assert = (name, cond, detail) =>
     const x = (i * 137) % 6000 - 3000;
     const z = Math.floor(i / 40) * 71 - 3000;
     const w = biomeWeights(x, z, seed);
-    const sum = w.plains + w.forest + w.desert + w.mountains;
+    const sum = BIOMES.reduce((acc, b) => acc + w[b], 0);
     if (Math.abs(sum - 1) > 1e-9) sumsOk = false;
     if (BIOMES.some((b) => w[b] < 0)) negative = true;
   }
@@ -162,7 +168,7 @@ const assert = (name, cond, detail) =>
   assert('no negative weights', !negative);
 
   // All four biomes actually occur, in sane proportions.
-  const seen = { plains: 0, forest: 0, desert: 0, mountains: 0 };
+  const seen = Object.fromEntries(BIOMES.map((b) => [b, 0]));
   for (let i = 0; i < 8000; i++) {
     const x = (i * 53) % 5000 - 2500;
     const z = Math.floor(i / 60) * 43 - 2500;

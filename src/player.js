@@ -16,6 +16,7 @@ import {
   DRAG_GROUND, DRAG_AIR,
   PLAYER_WIDTH, PLAYER_HEIGHT, PLAYER_EYE,
   WORLD_MIN_Y,
+  DRAG_WATER, SPEED_SWIM, SPEED_SWIM_SPRINT, SINK_SPEED, SWIM_UP_SPEED,
 } from './constants.js';
 import { lookVector } from './view.js';
 
@@ -52,6 +53,10 @@ export class Player {
     this.autoJump = true;
 
     this.horizontalSpeed = 0; // for head bob + HUD
+    /** True while the player's feet are in water. */
+    this.inWater = false;
+    /** True while the head is under too — no air, and no jumping out. */
+    this.submerged = false;
   }
 
   get eyeHeight() {
@@ -99,6 +104,7 @@ export class Player {
    */
   update(dt, input) {
     const moveDir = this._inputDirection(input);
+    this._sampleWater();
 
     // ---- sprint bookkeeping ----
     // Sprinting requires forward intent; releasing W or sneaking cancels it.
@@ -111,19 +117,25 @@ export class Player {
     }
 
     // ---- horizontal acceleration (Minecraft recurrence, dt-scaled) ----
+    // Water replaces both the drag and the target speed: it is thicker than
+    // air, so you accelerate to a third of walking pace and coast to a stop
+    // much faster.
     const grounded = this.onGround;
-    const k = grounded ? DRAG_GROUND : DRAG_AIR;
+    const k = this.inWater ? DRAG_WATER : (grounded ? DRAG_GROUND : DRAG_AIR);
     const f = Math.exp(-k * dt); // per-step velocity retention factor
 
     // Base target speed; sprint multiplies acceleration by 1.3 (like MC),
     // so the terminal speed becomes 5.612 (ground) / 5.778 (air).
-    const target = grounded
-      ? (this.sneaking ? SPEED_SNEAK : SPEED_WALK)
-      : AIR_WALK;
+    let target;
+    if (this.inWater) target = this.sprinting ? SPEED_SWIM_SPRINT : SPEED_SWIM;
+    else if (grounded) target = this.sneaking ? SPEED_SNEAK : SPEED_WALK;
+    else target = AIR_WALK;
 
     const hasInput = moveDir.lengthSq() > 0;
     if (hasInput) {
-      const a = target * (1 - f) * (this.sprinting ? 1.3 : 1);
+      // Swimming has no separate sprint multiplier — the sprint speed above
+      // already is Minecraft's swim-sprint terminal.
+      const a = target * (1 - f) * (this.sprinting && !this.inWater ? 1.3 : 1);
       this.vel.x = this.vel.x * f + moveDir.x * a;
       this.vel.z = this.vel.z * f + moveDir.z * a;
     } else {
@@ -131,22 +143,33 @@ export class Player {
       this.vel.z *= f;
     }
 
-    // ---- vertical ----
-    this.vel.y -= GRAVITY * dt;
-    if (this.vel.y < -TERMINAL_FALL) this.vel.y = -TERMINAL_FALL;
-
     const wasGrounded = this.onGround;
     this.onGround = false;
 
-    if (input.jump && wasGrounded) {
-      this.vel.y = JUMP_VELOCITY;
+    // ---- vertical ----
+    if (this.inWater) {
+      // Sinking, rising and jumping all settle to their Minecraft terminal
+      // speeds under the same water drag, so the numbers below are the
+      // speeds themselves rather than accelerations.
+      const rising = input.jump;
+      const settle = rising ? SWIM_UP_SPEED : -SINK_SPEED;
+      this.vel.y = settle + (this.vel.y - settle) * f;
+      // Breaking the surface with jump held turns the swim into a real jump,
+      // which is what gets you out onto the bank.
+      if (rising && !this.submerged && wasGrounded) this.vel.y = JUMP_VELOCITY;
+    } else {
+      this.vel.y -= GRAVITY * dt;
+      if (this.vel.y < -TERMINAL_FALL) this.vel.y = -TERMINAL_FALL;
+      if (input.jump && wasGrounded) this.vel.y = JUMP_VELOCITY;
     }
 
     // ---- integrate + collide (axis separated, with auto-step) ----
     const moved = this._moveWithCollision(dt);
 
     // Auto jump: bumped a block while walking, and a single hop clears it.
-    if (this.autoJump && moved.blockedHorizontal && this.onGround && moveDir.lengthSq() > 0
+    // In water the swim-up handles climbing out, so it stays out of the way.
+    if (this.autoJump && !this.inWater
+        && moved.blockedHorizontal && this.onGround && moveDir.lengthSq() > 0
         && this._canHopOver(moveDir)) {
       this.vel.y = JUMP_VELOCITY;
       this.onGround = false;
@@ -163,6 +186,17 @@ export class Player {
     }
 
     this.horizontalSpeed = Math.hypot(this.vel.x, this.vel.z);
+  }
+
+  /**
+   * Is the player in water, and how deep? Feet decide the physics; the head
+   * decides whether a jump can still launch you out.
+   */
+  _sampleWater() {
+    const x = Math.floor(this.pos.x);
+    const z = Math.floor(this.pos.z);
+    this.inWater = this.world.isWaterAt(x, Math.floor(this.pos.y + 0.1), z);
+    this.submerged = this.world.isWaterAt(x, Math.floor(this.pos.y + PLAYER_EYE), z);
   }
 
   _inputDirection(input) {

@@ -52,7 +52,45 @@ export const LEAVES = 11;
 export const DEEPSLATE = 12;
 export const AIR = 0;
 
-export const BIOMES = ['plains', 'forest', 'desert', 'mountains'];
+/**
+ * Water. Minecraft stores a level 0-7 alongside the block; here the level is
+ * folded into the id, because the block array is one byte per cell and a
+ * parallel level array would cost another 255 KB per chunk for a field that
+ * is zero almost everywhere.
+ *
+ *   13        a source — the sea. Permanent: it never drains.
+ *   14..21    flowing, levels 0..7, thinning by one per block travelled
+ *
+ * Flowing level 0 is deliberately a different block from a source even though
+ * they look and spread identically. It is what water becomes at the foot of a
+ * fall, and it has to reach the same seven blocks a source does — but unlike
+ * a source it dries up when whatever was feeding it stops.
+ */
+export const WATER = 13;
+export const WATER_FLOW = 14;
+export const WATER_LEVELS = 7;
+export const WATER_LAST = WATER_FLOW + WATER_LEVELS;
+
+export const isWater = (id) => id >= WATER && id <= WATER_LAST;
+/** 0 at full strength, up to 7 at the far edge of a spread. */
+export const waterLevel = (id) => (id === WATER ? 0 : id - WATER_FLOW);
+/** The flowing block for a level. Sources only ever come from generation. */
+export const waterId = (level) => WATER_FLOW + level;
+/** Everything you cannot walk through and cannot see through. */
+export const isOpaque = (id) => id !== AIR && !isWater(id);
+
+/**
+ * How tall a water block is drawn, as Minecraft does it: a full source is
+ * 8/9 of a block, and each level of flow takes another ninth off, so a stream
+ * visibly thins as it runs. Water under water is full height so the column
+ * has no seams in it.
+ */
+export function waterHeight(id, aboveIsWater) {
+  if (aboveIsWater) return 1;
+  return (8 - waterLevel(id)) / 9;
+}
+
+export const BIOMES = ['ocean', 'plains', 'forest', 'desert', 'mountains'];
 
 /** 2D integer hash -> [0, 1). Deterministic across machines. */
 export function hash2(ix, iz, seed) {
@@ -142,12 +180,16 @@ export function biomeWeights(x, z, seed) {
   const relief = fbm(x * 0.0016, z * 0.0016, seed + 991);
   const moisture = fbm(x * 0.0021, z * 0.0021, seed + 5501);
 
+  // The same relief field that raises mountains at the top end drops the sea
+  // floor at the bottom, so a coastline is just where it crosses sea level —
+  // the land ramps down into the water instead of ending at a wall.
   const mountains = smoothstep(0.54, 0.72, relief);
-  const low = 1 - mountains;
-  const desert = low * smoothstep(0.50, 0.34, moisture);
-  const forest = low * smoothstep(0.52, 0.70, moisture);
-  const plains = Math.max(0, low - desert - forest);
-  return { plains, forest, desert, mountains };
+  const ocean = smoothstep(0.42, 0.30, relief);
+  const land = Math.max(0, 1 - mountains - ocean);
+  const desert = land * smoothstep(0.50, 0.34, moisture);
+  const forest = land * smoothstep(0.52, 0.70, moisture);
+  const plains = Math.max(0, land - desert - forest);
+  return { ocean, plains, forest, desert, mountains };
 }
 
 /** The biome with the largest weight, for the debug screen. */
@@ -168,6 +210,7 @@ export function dominantBiome(weights) {
 // Heights are Minecraft's: sea level 62, plains in the mid 60s, mountains
 // topping out around 150.
 const SHAPE = {
+  ocean:     { base: 46, hills: 7.0, detail: 2.5 },
   plains:    { base: 66, hills: 4.0, detail: 1.5 },
   forest:    { base: 68, hills: 6.0, detail: 2.5 },
   desert:    { base: 64, hills: 4.0, detail: 2.0 },
@@ -315,7 +358,7 @@ export function generatedBlock(x, y, z, seed) {
   if (y < WORLD_MIN_Y || y > WORLD_MAX_Y) return y < WORLD_MIN_Y ? BEDROCK : AIR;
   if (isBedrock(x, y, z, seed)) return BEDROCK;
   const h = surfaceHeight(x, z, seed);
-  if (y > h) return AIR;
+  if (y > h) return y <= SEA_LEVEL ? WATER : AIR;
   if (y <= Math.min(h - CAVE_CEILING, CAVE_MAX_Y) && caveAt(x, y, z, seed)) return AIR;
   const w = biomeWeights(x, z, seed);
   const { top, filler } = surfaceBlocks(h, w);
@@ -331,6 +374,12 @@ export function generatedBlock(x, y, z, seed) {
 function fillColumn(blocks, col, area, wx, wz, h, top, filler, seed) {
   const dsTop = deepslateTop(wx, wz, seed);
   const hi = toLayer(h);
+  // Everything from the ground up to sea level is ocean. Generated water is
+  // always a source, which is what makes the sea permanent: flow can drain a
+  // channel you dig, but never the sea feeding it.
+  for (let y = h + 1; y <= SEA_LEVEL; y++) {
+    blocks[toLayer(y) * area + col] = WATER;
+  }
   for (let layer = 0; layer <= hi; layer++) {
     const y = layer + WORLD_MIN_Y;
     let id;
@@ -471,7 +520,10 @@ export function generateChunk(blocks, heights, surface, chunkX, chunkZ, size, he
       surface[col] = toLayer(h);
       // Nothing is hollow yet, so the first air sits just above the surface.
       heights[col] = toLayer(h) + 1;
-      if (h > maxY) maxY = h;
+      // The sea stands above the ground it covers, so in a coastal chunk it
+      // is the sea, not the sea floor, that decides how high to scan.
+      const colTop = h < SEA_LEVEL ? SEA_LEVEL : h;
+      if (colTop > maxY) maxY = colTop;
     }
   }
 
