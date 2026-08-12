@@ -17,8 +17,11 @@ import {
   PLAYER_WIDTH, PLAYER_HEIGHT, PLAYER_EYE,
   WORLD_MIN_Y,
   DRAG_WATER, SPEED_SWIM, SPEED_SWIM_SPRINT, SINK_SPEED, SWIM_UP_SPEED,
+  FLOW_PUSH_SPEED,
 } from './constants.js';
 import { lookVector } from './view.js';
+import { isWater, waterHeight } from './terrain.js';
+import { fluidFlow } from './water-mesh.js';
 
 const HALF = PLAYER_WIDTH / 2;
 const EPS = 1e-4;
@@ -57,6 +60,12 @@ export class Player {
     this.inWater = false;
     /** True while the head is under too — no air, and no jumping out. */
     this.submerged = false;
+    /** The current where the player is standing, as a unit vector + speed. */
+    this.flow = new Float64Array(2);
+    this.flowSpeed = 0;
+    // Bound once: the fluid maths takes a sampler, and rebuilding the closure
+    // every physics step would allocate 120 of them a second.
+    this._get = (x, y, z) => this.world.get(x, y, z);
   }
 
   get eyeHeight() {
@@ -143,6 +152,16 @@ export class Player {
       this.vel.z *= f;
     }
 
+    // A current carries you whether you are swimming with it or not, and it
+    // settles at the same terminal speed the same drag gives everything else
+    // in water. Standing in a stream and being pushed downhill is most of
+    // what tells you the water is moving.
+    if (this.inWater && this.flowSpeed > 0) {
+      const push = FLOW_PUSH_SPEED * (1 - f);
+      this.vel.x += this.flow[0] * push;
+      this.vel.z += this.flow[1] * push;
+    }
+
     const wasGrounded = this.onGround;
     this.onGround = false;
 
@@ -191,12 +210,35 @@ export class Player {
   /**
    * Is the player in water, and how deep? Feet decide the physics; the head
    * decides whether a jump can still launch you out.
+   *
+   * The test is against the fluid *surface*, not the cell: the last block of a
+   * spread is a ninth of a block deep and you walk through it, while the same
+   * cell full to the brim is water you swim in. Minecraft compares the
+   * surface height to the bottom of your hitbox, and so does this.
    */
   _sampleWater() {
     const x = Math.floor(this.pos.x);
     const z = Math.floor(this.pos.z);
-    this.inWater = this.world.isWaterAt(x, Math.floor(this.pos.y + 0.1), z);
-    this.submerged = this.world.isWaterAt(x, Math.floor(this.pos.y + PLAYER_EYE), z);
+    const feet = this.pos.y;
+    const eye = this.pos.y + PLAYER_EYE;
+    this.inWater = this._fluidTop(x, Math.floor(feet), z) >= feet;
+    this.submerged = this._fluidTop(x, Math.floor(eye), z) >= eye;
+
+    this.flowSpeed = 0;
+    this.flow[0] = 0;
+    this.flow[1] = 0;
+    if (this.inWater) {
+      const fy = Math.floor(feet);
+      const id = this.world.get(x, fy, z);
+      this.flowSpeed = fluidFlow(this._get, x, fy, z, id, this.flow);
+    }
+  }
+
+  /** How high the water stands in a cell, or -Infinity if it holds none. */
+  _fluidTop(x, y, z) {
+    const id = this.world.get(x, y, z);
+    if (!isWater(id)) return -Infinity;
+    return y + waterHeight(id, isWater(this.world.get(x, y + 1, z)));
   }
 
   _inputDirection(input) {

@@ -93,6 +93,13 @@ export class World {
     this.dirtyChunks = new Set();
     /** Bumped on every edit so the save loop knows there is work to do. */
     this.revision = 0;
+    /**
+     * Called with each edit replayed into a freshly generated chunk. Flowing
+     * water hangs off this: it is never saved, so a chunk that comes back into
+     * memory comes back dry, and the channel someone dug through it has to be
+     * poked before the sea notices the hole is still there.
+     */
+    this.onEditReplayed = null;
     this._tick = 0;
   }
 
@@ -131,6 +138,7 @@ export class World {
       if (id !== AIR && y > c.maxY) c.maxY = y;
       c.heights[(z - z0) * CHUNK_SIZE + (x - x0)] = 0;
       c.edited = true;
+      if (this.onEditReplayed) this.onEditReplayed(x, y, z);
     }
   }
 

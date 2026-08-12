@@ -78,16 +78,34 @@ export const waterLevel = (id) => (id === WATER ? 0 : id - WATER_FLOW);
 export const waterId = (level) => WATER_FLOW + level;
 /** Everything you cannot walk through and cannot see through. */
 export const isOpaque = (id) => id !== AIR && !isWater(id);
+/** A permanent block of water — the sea, and pools that Minecraft refills. */
+export const isWaterSource = (id) => id === WATER;
 
 /**
- * How tall a water block is drawn, as Minecraft does it: a full source is
- * 8/9 of a block, and each level of flow takes another ninth off, so a stream
- * visibly thins as it runs. Water under water is full height so the column
- * has no seams in it.
+ * Minecraft counts water the other way up, as an *amount* from 8 (a full
+ * source) down to 1 (the last block of a spread), with 0 meaning dry. Both
+ * spellings are useful — levels index the block ids, amounts are what the
+ * flow arithmetic is written in — so here is the conversion, in both
+ * directions.
+ */
+export const WATER_MAX_AMOUNT = 8;
+export const waterAmount = (id) => (isWater(id) ? WATER_MAX_AMOUNT - waterLevel(id) : 0);
+export const waterIdForAmount = (amount) =>
+  (amount <= 0 ? AIR : waterId(WATER_MAX_AMOUNT - Math.min(amount, WATER_MAX_AMOUNT)));
+
+/**
+ * How tall a water block stands, as Minecraft draws it: amount/9, so a source
+ * is 8/9 of a block and every level of flow takes another ninth off. Water
+ * with water on top of it fills its cell completely, so a column has no
+ * seams in it.
+ *
+ * This is only the *cell's own* height. What actually gets drawn is an
+ * average of the four cells meeting at each corner — see water-mesh.js —
+ * which is what turns a staircase of levels into a sloping surface.
  */
 export function waterHeight(id, aboveIsWater) {
   if (aboveIsWater) return 1;
-  return (8 - waterLevel(id)) / 9;
+  return waterAmount(id) / 9;
 }
 
 export const BIOMES = ['ocean', 'plains', 'forest', 'desert', 'mountains'];

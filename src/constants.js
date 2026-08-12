@@ -41,6 +41,13 @@ export const SPEED_SWIM = 2.0;
 export const SPEED_SWIM_SPRINT = 2.6;
 export const SINK_SPEED = 2.0; // terminal fall in water
 export const SWIM_UP_SPEED = 1.2; // holding jump under water
+/**
+ * How fast a current carries you. Minecraft adds 0.014 blocks/tick along the
+ * flow every tick, which the same water drag settles at
+ * 0.014 / (1 - 0.8) = 0.07 blocks/tick = 1.4 blocks/s — a third of walking
+ * pace, enough to notice in a stream and not enough to sweep you away.
+ */
+export const FLOW_PUSH_SPEED = 1.4;
 
 // Player dimensions (blocks)
 export const PLAYER_WIDTH = 0.6; // x/z extent of the AABB
