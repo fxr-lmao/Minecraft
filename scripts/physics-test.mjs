@@ -2,8 +2,8 @@
 // Runs on a superflat world (surface at y=3, so the player stands at y=4):
 // generated hills would make "walk forward for five seconds" untestable.
 import { Player } from '../src/player.js';
-import { World, GRASS, AIR } from '../src/world.js';
-import { PHYSICS_DT, WORLD_MIN_Y } from '../src/constants.js';
+import { World, GRASS, AIR, WATER } from '../src/world.js';
+import { PHYSICS_DT, WORLD_MIN_Y, SPEED_WALK, JUMP_VELOCITY } from '../src/constants.js';
 
 const world = new World(1, { flat: 3 });
 
@@ -291,6 +291,77 @@ const assert = (name, cond, detail) => {
   r.pos.set(0.5, WORLD_MIN_Y - 20, 0.5);
   r.update(PHYSICS_DT, idle);
   assert('under the floor still respawns', Math.abs(r.pos.y - r.spawn.y) < 1e-6, r.pos.y.toFixed(2));
+}
+
+// Water. Minecraft's per-tick water model is drag 0.8, acceleration 0.02
+// (0.026 sprinting), gravity 0.02 and +0.04 a tick on jump; the terminal
+// speeds those give are what these check.
+{
+  const idle = { forward: 0, strafe: 0, jump: false, sprint: false, sneak: false };
+  const swim = { forward: 1, strafe: 0, jump: false, sprint: false, sneak: false };
+  const swimFast = { forward: 1, strafe: 0, jump: false, sprint: true, sneak: false };
+  const up = { forward: 0, strafe: 0, jump: true, sprint: false, sneak: false };
+
+  // A deep pool: ground at y=3, water from y=4 to y=13.
+  const sea = new World(1, { flat: 3 });
+  for (let x = -40; x <= 40; x++) {
+    for (let z = -40; z <= 40; z++) {
+      for (let y = 4; y <= 13; y++) sea.setBlock(x, y, z, WATER);
+    }
+  }
+
+  const swimmer = (input, seconds, y = 8) => {
+    const p = new Player(sea);
+    p.pos.set(0.5, y, 0.5);
+    p.vel.set(0, 0, 0);
+    for (let i = 0; i < Math.round(seconds / PHYSICS_DT); i++) p.update(PHYSICS_DT, input);
+    return p;
+  };
+
+  const still = swimmer(idle, 0.1);
+  assert('the player knows they are in water', still.inWater && still.submerged);
+
+  const paddling = swimmer(swim, 6);
+  assert('swimming settles at 2.0 m/s', Math.abs(paddling.horizontalSpeed - 2.0) < 0.05,
+    paddling.horizontalSpeed.toFixed(3));
+  const sprinting = swimmer(swimFast, 6);
+  assert('sprint-swimming settles at 2.6 m/s', Math.abs(sprinting.horizontalSpeed - 2.6) < 0.05,
+    sprinting.horizontalSpeed.toFixed(3));
+  assert('swimming is far slower than walking', paddling.horizontalSpeed < SPEED_WALK * 0.55,
+    `${paddling.horizontalSpeed.toFixed(2)} vs ${SPEED_WALK}`);
+
+  // Sinking is slow: 2 m/s against 78.4 m/s of open air. Measured on the way
+  // down — long enough to reach terminal (the time constant is 0.22 s), short
+  // enough not to have hit the bottom.
+  const sinking = swimmer(idle, 1.5, 13);
+  assert('you sink at 2.0 m/s, not terminal velocity',
+    Math.abs(sinking.vel.y + 2.0) < 0.05, sinking.vel.y.toFixed(3));
+  assert('...and are still falling through water', sinking.inWater && !sinking.onGround,
+    sinking.pos.y.toFixed(2));
+
+  // Holding jump swims you up at a steady 1.2 m/s.
+  const rising = swimmer(up, 3);
+  assert('holding jump lifts you at 1.2 m/s', Math.abs(rising.vel.y - 1.2) < 0.05,
+    rising.vel.y.toFixed(3));
+  assert('...which is a fraction of a jump', rising.vel.y < JUMP_VELOCITY * 0.2,
+    `${rising.vel.y.toFixed(2)} vs ${JUMP_VELOCITY}`);
+
+  // And you can actually get out: swim up from the bottom, and the surface
+  // is reachable rather than a ceiling.
+  const climber = new Player(sea);
+  climber.pos.set(0.5, 4, 0.5);
+  climber.vel.set(0, 0, 0);
+  for (let i = 0; i < Math.round(8 / PHYSICS_DT); i++) climber.update(PHYSICS_DT, up);
+  assert('you can swim up to the surface', climber.pos.y > 12, climber.pos.y.toFixed(2));
+
+  // On land nothing changed.
+  const walker = new Player(world);
+  for (let i = 0; i < 600; i++) {
+    walker.update(PHYSICS_DT, { forward: 1, strafe: 0, jump: false, sprint: false, sneak: false });
+  }
+  assert('dry land is untouched by any of this',
+    !walker.inWater && Math.abs(walker.horizontalSpeed - SPEED_WALK) < 0.02,
+    walker.horizontalSpeed.toFixed(3));
 }
 
 console.log(results.join('\n'));

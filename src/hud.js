@@ -163,7 +163,7 @@ export class Hud {
       ? `${blockName(info.targetId)} @ ${info.target.x} ${info.target.y} ${info.target.z}`
       : 'none';
     const lines = [
-      `Minecraft [browser clone] alpha 0.8`,
+      `Minecraft [browser clone] alpha 0.9`,
       ``,
       `XYZ: ${info.pos.x.toFixed(3)} / ${info.pos.y.toFixed(3)} / ${info.pos.z.toFixed(3)}`,
       `Block: ${blockName(info.blockUnder)}  ·  Biome: ${info.biome}`,
@@ -171,8 +171,8 @@ export class Hud {
       `Facing: ${CARDINALS[idx]} (${((dir + 360) % 360).toFixed(1)} / ${info.pitchDeg.toFixed(1)})`,
       `Looking at: ${target}`,
       ``,
-      `Speed: ${info.speed.toFixed(2)} m/s  ${info.mode}`,
-      `On ground: ${info.onGround}`,
+      `Speed: ${info.speed.toFixed(2)} m/s  ${info.mode}${info.inWater ? (info.submerged ? '  · underwater' : '  · in water') : ''}`,
+      `On ground: ${info.onGround}${info.flowing ? `  ·  water flowing (${info.flowing})` : ''}`,
       `View: ${info.view}`,
       ``,
       `FPS: ${info.fps}  (${info.frameMs.toFixed(1)} ms)`,

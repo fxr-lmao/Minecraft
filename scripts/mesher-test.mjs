@@ -1,6 +1,6 @@
 // The chunk mesher: hidden-face culling, chunk-seam culling against
 // neighbours, and atlas UVs that land inside the right tile.
-import { World, GRASS, AIR } from '../src/world.js';
+import { World, GRASS, AIR, isOpaque } from '../src/world.js';
 import { meshChunk, tileU, FACES } from '../src/blocks.js';
 import { atlasTile, ATLAS_TILES } from '../src/textures.js';
 import { CHUNK_SIZE, WORLD_HEIGHT, WORLD_MIN_Y, WORLD_SEED } from '../src/constants.js';
@@ -145,7 +145,9 @@ const withNormal = (buf, n) => {
   const S = CHUNK_SIZE;
   const outside = new Uint8Array(S * S * WORLD_HEIGHT);
   const idx = (x, y, z) => (y * S + z) * S + x;
-  const solid = (x, y, z) => chunk.blocks[y * S * S + z * S + x] !== 0;
+  // Water is see-through, so for visibility it counts as open, not as a
+  // block: the shell has to render the sea floor you can see through it.
+  const solid = (x, y, z) => isOpaque(chunk.blocks[y * S * S + z * S + x]);
   const stack = [];
   for (let z = 0; z < S; z++) {
     for (let x = 0; x < S; x++) {

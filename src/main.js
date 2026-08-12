@@ -15,6 +15,7 @@ import { World, AIR, BEDROCK, toChunk } from './world.js';
 import { WorldRenderer, buildSingleBlockGeometry } from './blocks.js';
 import { Player } from './player.js';
 import { Input, LOOK_FREE, LOOK_TOUCH } from './input.js';
+import { WaterFlow, FLOW_INTERVAL_MS } from './water.js';
 import { installNativeBridge } from './native.js';
 import { Hud } from './hud.js';
 import { Inventory } from './inventory.js';
@@ -46,6 +47,7 @@ const fatalMsg = document.getElementById('fatal-msg');
 const loadingEl = document.getElementById('loading');
 const loadingText = document.getElementById('loading-text');
 let firstFrame = true;
+let flowClock = 0; // ms of game time since the last water step
 
 function showFatal(message) {
   fatalMsg.textContent = message;
@@ -95,6 +97,24 @@ function applyRenderDistance() {
   scene.fog.near = blocks * 0.55;
   scene.fog.far = blocks * 0.98;
   worldRenderer?.setRenderDistance(settings.renderDistance);
+}
+
+/** Under water everything is blue and you cannot see far, as in Minecraft. */
+const UNDERWATER_FOG = 0x1c3f8f;
+let wasSubmerged = false;
+function applyUnderwaterFog(submerged) {
+  if (submerged === wasSubmerged) return;
+  wasSubmerged = submerged;
+  if (submerged) {
+    scene.fog.color.setHex(UNDERWATER_FOG);
+    scene.fog.near = 0.5;
+    scene.fog.far = 22;
+    renderer.setClearColor(UNDERWATER_FOG);
+  } else {
+    scene.fog.color.setHex(FOG_COLOR);
+    applyRenderDistance();
+  }
+  sky.setVisible(!submerged);
 }
 
 /** iPad Safari changes innerHeight as browser chrome slides away — re-measure. */
@@ -168,6 +188,12 @@ if (restored) {
 
 const worldRenderer = new WorldRenderer(world, scene);
 applyRenderDistance();
+
+// Water settles from wherever the world was disturbed. Replaying the save's
+// edits through it is what refills a channel you dug last session: flowing
+// water is never stored, only recomputed from the sea that feeds it.
+const waterFlow = new WaterFlow(world);
+if (restored) for (const e of restored.edits) waterFlow.touch(e.x, e.y, e.z);
 
 const player = new Player(world);
 player.autoJump = settings.autoJump;
@@ -244,6 +270,9 @@ function refreshHeldItem() {
     }
   }
   heldMesh.visible = view.isFirstPerson && heldId > 0;
+  // The avatar carries the same block, so third person shows what you are
+  // about to place instead of an empty fist.
+  playerModel.setHeldItem(heldId > 0 ? heldMesh.geometry : null, heldMaterial);
 }
 
 /**
@@ -300,6 +329,7 @@ function breakBlock() {
     return;
   }
   world.setBlock(target.x, target.y, target.z, AIR);
+  waterFlow.touch(target.x, target.y, target.z);
   const left = inventory.add(id, 1);
   if (left > 0) hud.showStatus('Inventory full');
   invUI.render();
@@ -320,6 +350,7 @@ function placeBlock() {
   if (!world.inBounds(bx, by, bz) || world.isSolid(bx, by, bz)) return;
   if (blockIntersectsPlayer(bx, by, bz, player.pos, PLAYER_WIDTH, PLAYER_HEIGHT)) return;
   world.setBlock(bx, by, bz, stack.id);
+  waterFlow.touch(bx, by, bz);
   inventory.consumeSelected(1);
   invUI.render();
   swingHand();
@@ -567,6 +598,24 @@ function frame(now) {
   lastChunk = { cx: pcx, cz: pcz };
   world.tick();
 
+  // ---- water ----
+  // On the game clock, not the wall clock: paused means the sea stops too.
+  if (playing) {
+    flowClock += frameDt * 1000;
+    if (flowClock >= FLOW_INTERVAL_MS) {
+      flowClock = 0;
+      waterFlow.step(
+        Math.floor(player.pos.x), Math.floor(player.pos.y), Math.floor(player.pos.z)
+      );
+    }
+  }
+
+  // The camera decides this, not the feet: leaning out of the water should
+  // clear the blue even while you are still standing in it.
+  applyUnderwaterFog(world.isWaterAt(
+    Math.floor(camera.position.x), Math.floor(camera.position.y), Math.floor(camera.position.z)
+  ));
+
   // ---- camera ----
   const fovBase = settings.fov;
   const fovTarget = player.sprinting ? fovBase + 14 : player.sneaking ? fovBase - 10 : fovBase;
@@ -658,6 +707,9 @@ function frame(now) {
     inputMode: input.lookModeLabel,
     edits: world.edits.size,
     biome: world.biomeAt(px, pz),
+    inWater: player.inWater,
+    submerged: player.submerged,
+    flowing: waterFlow.pending.size,
     chunk: `${pcx} ${pcz}`,
     renderDistance: settings.renderDistance,
     meshes: worldRenderer.stats.meshes,

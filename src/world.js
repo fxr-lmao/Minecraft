@@ -19,8 +19,11 @@ import {
   generateChunk, generateFlatChunk, findSpawn, biomeWeights, dominantBiome,
 } from './terrain.js';
 
-export { GRASS, DIRT, STONE, SAND, BEDROCK, DEEPSLATE, AIR } from './terrain.js';
-import { BEDROCK, AIR } from './terrain.js';
+export {
+  GRASS, DIRT, STONE, SAND, BEDROCK, DEEPSLATE, WATER, AIR,
+  isWater, isOpaque, waterLevel, waterId,
+} from './terrain.js';
+import { BEDROCK, AIR, isOpaque, isWater } from './terrain.js';
 
 const AREA = CHUNK_SIZE * CHUNK_SIZE;
 const CHUNK_CELLS = AREA * WORLD_HEIGHT;
@@ -163,8 +166,18 @@ export class World {
     return y >= WORLD_MIN_Y && y <= WORLD_MAX_Y;
   }
 
+  /**
+   * Solid means "you cannot walk through it". Water is a block but not an
+   * obstacle, so everything that asks about collision, targeting or ground
+   * height goes through here rather than comparing against AIR.
+   */
   isSolid(x, y, z) {
-    return this.get(x, y, z) !== AIR;
+    return isOpaque(this.get(x, y, z));
+  }
+
+  /** True when this cell is water of any level. */
+  isWaterAt(x, y, z) {
+    return isWater(this.get(x, y, z));
   }
 
   /**
@@ -192,6 +205,44 @@ export class World {
     // A block on a chunk seam also changes the neighbour's hidden faces.
     const lx = toLocal(x);
     const lz = toLocal(z);
+    if (lx === 0) this.markDirty(cx - 1, cz);
+    if (lx === CHUNK_SIZE - 1) this.markDirty(cx + 1, cz);
+    if (lz === 0) this.markDirty(cx, cz - 1);
+    if (lz === CHUNK_SIZE - 1) this.markDirty(cx, cz + 1);
+    return true;
+  }
+
+  /**
+   * Change a block without recording it as a player edit.
+   *
+   * Flowing water uses this. It is a consequence of the terrain rather than a
+   * decision anyone made, so it does not belong in the save file — and
+   * keeping it out means a flooded cavern costs nothing to store and simply
+   * refills from its source the next time anything disturbs it.
+   *
+   * Chunks that are not loaded are left alone rather than generated: water
+   * has no business pulling the world into memory.
+   */
+  setBlockTransient(x, y, z, id) {
+    if (!this.inBounds(x, y, z)) return false;
+    const cx = toChunk(x);
+    const cz = toChunk(z);
+    if (!this.hasChunk(cx, cz)) return false;
+    const c = this.chunk(cx, cz);
+    const lx = toLocal(x);
+    const lz = toLocal(z);
+    const i = c.index(lx, y, lz);
+    if (c.blocks[i] === id) return false;
+    c.blocks[i] = id;
+    if (id !== AIR && y > c.maxY) c.maxY = y;
+    // Keep the mesher's "solid below here" promise true, without throwing the
+    // whole column's skip away the way an edit does.
+    const layer = toLayer(y);
+    const col = lz * CHUNK_SIZE + lx;
+    if (layer < c.heights[col]) c.heights[col] = layer;
+    c.revision++;
+
+    this.markDirty(cx, cz);
     if (lx === 0) this.markDirty(cx - 1, cz);
     if (lx === CHUNK_SIZE - 1) this.markDirty(cx + 1, cz);
     if (lz === 0) this.markDirty(cx, cz - 1);
@@ -257,7 +308,10 @@ export class World {
     const lx = toLocal(x);
     const lz = toLocal(z);
     for (let y = Math.min(c.maxY, WORLD_MAX_Y); y >= WORLD_MIN_Y; y--) {
-      if (c.blocks[c.index(lx, y, lz)] !== AIR) return y;
+      // The sea is not ground: heightAt is what spawning and the debug screen
+      // mean by "the surface", and that is the sea floor, not the surface of
+      // the water above it.
+      if (isOpaque(c.blocks[c.index(lx, y, lz)])) return y;
     }
     return WORLD_MIN_Y - 1;
   }

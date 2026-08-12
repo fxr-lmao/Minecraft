@@ -112,6 +112,12 @@ export function createSky(scene) {
   scene.add(clouds);
 
   return {
+    /** Hidden while the camera is under water — down there you see fog. */
+    setVisible(on) {
+      dome.visible = on;
+      sun.visible = on;
+      clouds.visible = on;
+    },
     update(_dt, playerPos) {
       dome.position.copy(playerPos);
       sun.position.set(playerPos.x - 420, 260, playerPos.z - 260);

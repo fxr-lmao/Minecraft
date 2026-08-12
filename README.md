@@ -2,10 +2,12 @@
 
 A from-scratch Minecraft-style game built with [Three.js](https://threejs.org/) — no external assets, everything (block textures, the player skin, the sky and clouds) is procedurally generated. It runs on GitHub Pages with no build step.
 
-## Status (alpha 0.8)
+## Status (alpha 0.9)
 
 - **Infinite world with four biomes** — plains, forest, desert and snow-capped mountains, streamed in 32×32 chunks as you walk, in every direction, forever. Biomes are blended weights rather than a hard choice, so a mountain range ramps down into the plains beside it instead of ending in a cliff, and the ground cover changes exactly where the shape does
 - **Minecraft's elevations** — the world runs from **y = −64 to y = 190**, with sea level at 62, plains in the mid 60s, and mountains topping out around **150** with bare stone above 95 and snow above 120. Bedrock is ragged, like the real thing
+- **Oceans, and water that flows** — the sea fills everything below y = 62, and dig a channel into it and it runs. A source reaches seven blocks and thins a level with each one; go over a ledge and it falls, lands at full strength and gets another seven, exactly as in Minecraft. Water is translucent, its surface sits lower as it thins, and going under turns the world blue
+- **Swimming** — Minecraft's water constants: 2.0 blocks/s swimming and 2.6 sprinting against 4.317 walking, sinking at 2.0 rather than 78.4, and holding jump lifts you at 1.2 — a seventh of a jump, but enough to surface and climb out
 - **Caves** — winding tunnels through the whole underground, carved where two 3D noise fields cross. The noise is sampled on a 4-block lattice and interpolated, which is what Minecraft does too, and what makes them smooth rather than speckled. They line up exactly across chunk borders
 - **Deepslate below y ≈ 0** — as in Minecraft, stone gives way to deepslate on a boundary jittered per column, so it reads as a transition rather than a drawn line
 - **Forests have trees** — oak logs and leaves, generated deterministically so canopies cross chunk borders intact and regrow identically when a chunk is reloaded
@@ -16,7 +18,7 @@ A from-scratch Minecraft-style game built with [Three.js](https://threejs.org/) 
 - **Dig and build anywhere** — break and place blocks; bedrock is indestructible so you can't fall out of the world
 - **Auto jump** — hops single blocks so hilly terrain doesn't mean holding space (toggleable, like Bedrock)
 - **Inventory** — 9 hotbar slots ("in hand") plus a 9 × 3 grid, with stacking to 64, pick-up/drop, right-click half-stacks and shift-click transfers. Broken blocks go into it, placed blocks come out of it
-- **Three camera perspectives** — first person, third person from behind, and third person from the front. The avatar's body turns toward where you're moving while the head follows your look, the camera sits off your shoulder so it isn't parked on the crosshair, pulls in smoothly instead of clipping through terrain, and zooms with <kbd>Shift</kbd>+scroll
+- **Three camera perspectives** — first person, third person from behind, and third person from the front. The avatar holds whatever you have selected, in a hand socket built to take a sword or a tool as easily as a block. The avatar's body turns toward where you're moving while the head follows your look, the camera sits off your shoulder so it isn't parked on the crosshair, pulls in smoothly instead of clipping through terrain, and zooms with <kbd>Shift</kbd>+scroll
 - **Mouse look that always works** — pointer lock is used when the browser grants it, but iPadOS Safari refuses it *silently*, so the game verifies the lock actually engaged and otherwise switches to free look: the cursor drives the view and holding it near a screen edge keeps turning. Nothing is ever dead, and the pause menu says which mode you're in
 - **Your world is saved** — block edits (as a diff against the generated terrain, so it stays small), inventory, position and view mode go into localStorage automatically. "Reset world" in the pause menu starts over
 - **Paused means paused** — every animation, down to the drifting clouds and the idle arm sway, is driven by a clock that stops with the game
@@ -92,7 +94,7 @@ All paths are relative and `.nojekyll` is present, so the game works from a proj
 npm test
 ```
 
-292 headless checks across seven suites: Minecraft movement speeds, jump height, wall collision and auto jump; infinite-world chunking (negative coordinates, generation, eviction, edits surviving a regenerate), caves and the deepslate transition; the mesher (face culling, chunk seams, atlas UVs); the inventory model; block targeting; the save/settings/camera systems; and pointer lock plus the native iPad bridge.
+330 headless checks across eight suites: Minecraft movement speeds, jump height, wall collision and auto jump; infinite-world chunking (negative coordinates, generation, eviction, edits surviving a regenerate), caves and the deepslate transition; the mesher (face culling, chunk seams, atlas UVs); the inventory model; block targeting; the save/settings/camera systems; pointer lock plus the native iPad bridge; and water — how far it spreads, what a drop does to it, what it refuses to touch, and the swim speeds.
 
 Two of them are worth calling out because they guard optimisations that would otherwise fail silently:
 
@@ -112,7 +114,8 @@ Cave entrances, ores, water and lava, more block types, crafting, sounds.
 - **Caves never break through to the surface.** You find them by digging, not by walking into a hole in a hillside. That is not an accident: it is what makes the terrain shell watertight, which is what lets distant chunks skip their cave geometry entirely. Adding entrances means flagging the chunks that have one so they are always built in full — worth doing, but it is a change to the optimisation, not a tweak to the noise.
 - **Caves stop at y = 70**, so the inside of a mountain is solid. Carving all the way to 150 would cost a third again per chunk for tunnels sealed inside a peak.
 - **The world is 255 layers and cannot simply be made taller.** Mesh vertex positions are packed into single bytes, and a block at the top layer needs a vertex one above it. Going higher means widening every position attribute from 3 bytes a vertex to 6.
-- No ores yet, and no water or lava — a cave is air.
+- No ores yet, and no lava. Caves are dry: water fills the sea and anything you dig into it, but it does not seep into caves under the sea floor.
+- Water has no bucket, so the only sources are the sea. You can dig channels from it and build waterfalls, but not carry it inland.
 - Render distance is not free. Voxel data stays flat, but chunk *geometry* is roughly 0.12 MB per chunk and the chunk count grows with the square of the distance:
 
   | Distance | Blocks | Chunks | Geometry | Draw calls |

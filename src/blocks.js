@@ -18,7 +18,7 @@
 import * as THREE from '../vendor/three.module.min.js';
 import { getAtlasTexture, getBlockDefById, ATLAS_TILES, atlasTile } from './textures.js';
 import { CHUNK_SIZE, WORLD_HEIGHT, WORLD_MIN_Y, DEEP_RADIUS, toLayer, fromLayer } from './constants.js';
-import { CAVE_CEILING_DEPTH } from './terrain.js';
+import { CAVE_CEILING_DEPTH, isWater, isOpaque, waterHeight } from './terrain.js';
 
 const CHUNK_AREA = CHUNK_SIZE * CHUNK_SIZE;
 import { toLocal, toChunk, chunkKey } from './world.js';
@@ -59,11 +59,26 @@ let sPos = new Uint8Array(capQuads * 18);
 let sNrm = new Int8Array(capQuads * 18);
 let sUv = new Uint16Array(capQuads * 12);
 
+// Water goes into its own buffer: it is drawn in a second, translucent pass,
+// and its surface sits at a fraction of a block, so unlike everything else
+// its positions cannot be whole numbers packed into a byte.
+let capWater = 4096;
+let wPos = new Float32Array(capWater * 18);
+let wNrm = new Int8Array(capWater * 18);
+let wUv = new Uint16Array(capWater * 12);
+
 function growScratch() {
   capQuads *= 2;
   sPos = new Uint8Array(capQuads * 18);
   sNrm = new Int8Array(capQuads * 18);
   sUv = new Uint16Array(capQuads * 12);
+}
+
+function growWater() {
+  capWater *= 2;
+  wPos = new Float32Array(capWater * 18);
+  wNrm = new Int8Array(capWater * 18);
+  wUv = new Uint16Array(capWater * 12);
 }
 
 /**
@@ -91,7 +106,10 @@ export function meshChunk(world, cx, cz, deep = true) {
   const z0 = cz * CHUNK_SIZE;
   let vi3 = 0; // write cursor into sPos / sNrm
   let vi2 = 0; // write cursor into sUv
+  let wi3 = 0; // and the same pair for the water buffer
+  let wi2 = 0;
   let overflow = false;
+  let waterOverflow = false;
   // Everything in here counts in layers (y - WORLD_MIN_Y), which keeps the
   // vertex positions non-negative and inside a byte.
   const top = Math.min(toLayer(chunk.maxY) + 1, WORLD_HEIGHT - 1);
@@ -171,30 +189,49 @@ export function meshChunk(world, cx, cz, deep = true) {
         yStart = Math.max(yStart, s - SHELL_MARGIN);
       }
 
-      const wx = x0 + lx;
-      const wz = z0 + lz;
       for (let y = yStart; y <= top; y++) {
         const id = chunk.blocks[y * CHUNK_AREA + col];
         if (id === 0) continue;
+        const liquid = isWater(id);
+        // A water block is drawn short unless it has more water on top of it.
+        const height = liquid
+          ? waterHeight(id, isWater(blockAt(chunk, world, x0, z0, lx, y + 1, lz)))
+          : 1;
+
         for (let f = 0; f < 6; f++) {
           const d = DIRS[f];
           const ny = y + d[1];
           if (ny < 0) continue; // sealed underside is never visible
-          let neighbour;
-          if (ny >= WORLD_HEIGHT) {
-            neighbour = 0;
-          } else {
-            const nx = lx + d[0];
-            const nz = lz + d[2];
-            neighbour = (nx >= 0 && nx < CHUNK_SIZE && nz >= 0 && nz < CHUNK_SIZE)
-              ? chunk.blocks[ny * CHUNK_AREA + nz * CHUNK_SIZE + nx]
-              : world.get(wx + d[0], fromLayer(ny), wz + d[2]);
-          }
-          if (neighbour !== 0) continue;
+          const neighbour = blockAt(chunk, world, x0, z0, lx + d[0], ny, lz + d[2]);
 
-          if (vi3 + 18 > sPos.length) { overflow = true; break; }
+          // Solid faces are hidden only by other solids — you can see the sea
+          // floor through the sea. Water is hidden by solids *and* by itself,
+          // so a body of water is a surface rather than a stack of boxes.
+          if (liquid ? neighbour !== 0 : isOpaque(neighbour)) continue;
+
           const face = FACES[f];
           const tile = atlasTile(id, face.col);
+
+          if (liquid) {
+            if (wi3 + 18 > wPos.length) { waterOverflow = true; break; }
+            for (const vi of TRI_VERTICES) {
+              const v = face.v[vi];
+              const t = face.uv[vi];
+              wPos[wi3] = lx + v[0];
+              wPos[wi3 + 1] = y + v[1] * height;
+              wPos[wi3 + 2] = lz + v[2];
+              wNrm[wi3] = face.n[0];
+              wNrm[wi3 + 1] = face.n[1];
+              wNrm[wi3 + 2] = face.n[2];
+              wi3 += 3;
+              wUv[wi2] = tileU(tile, t[0]) * 65535;
+              wUv[wi2 + 1] = t[1] * 65535;
+              wi2 += 2;
+            }
+            continue;
+          }
+
+          if (vi3 + 18 > sPos.length) { overflow = true; break; }
           for (const vi of TRI_VERTICES) {
             const v = face.v[vi];
             const t = face.uv[vi];
@@ -212,15 +249,16 @@ export function meshChunk(world, cx, cz, deep = true) {
             vi2 += 2;
           }
         }
-        if (overflow) break;
+        if (overflow || waterOverflow) break;
       }
-      if (overflow) break;
+      if (overflow || waterOverflow) break;
     }
-    if (overflow) break;
+    if (overflow || waterOverflow) break;
   }
 
-  if (overflow) {
-    growScratch();
+  if (overflow || waterOverflow) {
+    if (overflow) growScratch();
+    if (waterOverflow) growWater();
     return meshChunk(world, cx, cz, deep);
   }
 
@@ -228,9 +266,26 @@ export function meshChunk(world, cx, cz, deep = true) {
     pos: sPos.slice(0, vi3),
     n: sNrm.slice(0, vi3),
     uv: sUv.slice(0, vi2), // 16-bit normalised: divide by 65535 for 0..1
+    water: {
+      pos: wPos.slice(0, wi3),
+      n: wNrm.slice(0, wi3),
+      uv: wUv.slice(0, wi2),
+    },
     x0,
     z0,
   };
+}
+
+/**
+ * A block by chunk-local coordinates. Anything outside this chunk goes
+ * through the world, which generates the neighbour if it has to.
+ */
+function blockAt(chunk, world, x0, z0, lx, layer, lz) {
+  if (layer < 0 || layer >= WORLD_HEIGHT) return 0;
+  if (lx >= 0 && lx < CHUNK_SIZE && lz >= 0 && lz < CHUNK_SIZE) {
+    return chunk.blocks[layer * CHUNK_AREA + lz * CHUNK_SIZE + lx];
+  }
+  return world.get(x0 + lx, fromLayer(layer), z0 + lz);
 }
 
 /** Full-precision geometry, for the single cube held in the hand. */
@@ -256,6 +311,16 @@ function buildChunkGeometry(buf) {
   geo.setAttribute('normal', new THREE.Int8BufferAttribute(buf.n, 3));
   geo.setAttribute('uv', new THREE.Uint16BufferAttribute(buf.uv, 2, true));
   geo.computeBoundingSphere(); // needed for frustum culling to work
+  return geo;
+}
+
+/** Water, whose surface heights are fractions and so need real floats. */
+function buildWaterGeometry(buf) {
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.Float32BufferAttribute(buf.pos, 3));
+  geo.setAttribute('normal', new THREE.Int8BufferAttribute(buf.n, 3));
+  geo.setAttribute('uv', new THREE.Uint16BufferAttribute(buf.uv, 2, true));
+  geo.computeBoundingSphere();
   return geo;
 }
 
@@ -295,8 +360,20 @@ export class WorldRenderer {
     this.scene = scene;
     this.budgetMs = budgetMs;
     this.material = new THREE.MeshLambertMaterial({ map: getAtlasTexture() });
+    // Water is drawn after everything else and does not write depth, so a
+    // surface never hides the water behind it and the sea floor shows
+    // through. DoubleSide keeps the surface visible from underneath.
+    this.waterMaterial = new THREE.MeshLambertMaterial({
+      map: getAtlasTexture(),
+      transparent: true,
+      opacity: 0.72,
+      depthWrite: false,
+      side: THREE.DoubleSide,
+    });
     /** key -> THREE.Mesh */
     this.meshes = new Map();
+    /** key -> the translucent water mesh, only for chunks that have any. */
+    this.waterMeshes = new Map();
     /** Chunks waiting to be built, nearest to the player first. */
     this.queue = [];
     this.centre = { cx: 0, cz: 0 };
@@ -341,6 +418,12 @@ export class WorldRenderer {
         this.scene.remove(mesh);
         mesh.geometry.dispose();
         this.meshes.delete(key);
+        const water = this.waterMeshes.get(key);
+        if (water) {
+          this.scene.remove(water);
+          water.geometry.dispose();
+          this.waterMeshes.delete(key);
+        }
       } else if (mesh.userData.deep !== this._deepAt(mx, mz)) {
         this.world.markDirty(mx, mz);
       }
@@ -382,32 +465,44 @@ export class WorldRenderer {
     const key = chunkKey(cx, cz);
     const deep = this._deepAt(cx, cz);
     const buf = meshChunk(this.world, cx, cz, deep);
-    const existing = this.meshes.get(key);
-    if (buf.pos.length === 0) {
+    this._sync(this.meshes, key, buf, buf.pos, buildChunkGeometry, this.material, deep, true);
+    this._sync(this.waterMeshes, key, buf, buf.water.pos,
+      () => buildWaterGeometry(buf.water), this.waterMaterial, deep, false);
+  }
+
+  /**
+   * Put one geometry on screen for a chunk, creating, replacing or removing
+   * the mesh as the chunk's contents require. Opaque blocks and water go
+   * through this separately: a chunk with no water never gets a second mesh,
+   * so the sea costs a draw call only where there is sea.
+   */
+  _sync(store, key, buf, data, build, material, deep, shadows) {
+    const existing = store.get(key);
+    if (data.length === 0) {
       if (existing) {
         this.scene.remove(existing);
         existing.geometry.dispose();
-        this.meshes.delete(key);
+        store.delete(key);
       }
       return;
     }
-    const geo = buildChunkGeometry(buf);
+    const geo = build(buf);
     if (existing) {
       existing.geometry.dispose();
       existing.geometry = geo;
       existing.userData.deep = deep;
       return;
     }
-    const mesh = new THREE.Mesh(geo, this.material);
-    mesh.castShadow = true;
-    mesh.receiveShadow = true;
+    const mesh = new THREE.Mesh(geo, material);
+    mesh.castShadow = shadows;
+    mesh.receiveShadow = shadows;
     // Vertices are chunk-local and layer-indexed, so the mesh carries both
     // the horizontal chunk origin and the world's floor.
     mesh.position.set(buf.x0, WORLD_MIN_Y, buf.z0);
     mesh.matrixAutoUpdate = false; // chunks never move
     mesh.updateMatrix();
     mesh.userData.deep = deep;
-    this.meshes.set(key, mesh);
+    store.set(key, mesh);
     this.scene.add(mesh);
   }
 
@@ -415,6 +510,10 @@ export class WorldRenderer {
   get geometryMB() {
     let bytes = 0;
     for (const mesh of this.meshes.values()) bytes += geometryBytes(mesh.geometry);
+    // Water positions are floats rather than bytes, hence the second rate.
+    for (const mesh of this.waterMeshes.values()) {
+      bytes += (mesh.geometry.getAttribute('position')?.count ?? 0) * (12 + 3 + 4);
+    }
     return bytes / (1024 * 1024);
   }
 
