@@ -6,13 +6,14 @@ A from-scratch Minecraft-style game built with [Three.js](https://threejs.org/) 
 
 - **Infinite world with four biomes** — plains, forest, desert and snow-capped mountains, streamed in 32×32 chunks as you walk, in every direction, forever. Biomes are blended weights rather than a hard choice, so a mountain range ramps down into the plains beside it instead of ending in a cliff, and the ground cover changes exactly where the shape does
 - **Minecraft's elevations** — the world runs from **y = −64 to y = 190**, with sea level at 62, plains in the mid 60s, and mountains topping out around **150** with bare stone above 95 and snow above 120. Bedrock is ragged, like the real thing
-- **Oceans, and water that flows** — the sea fills everything below y = 62, and dig a channel into it and it runs. A source reaches seven blocks and thins a level with each one; go over a ledge and it falls, lands at full strength and gets another seven, exactly as in Minecraft. Water is translucent, its surface sits lower as it thins, and going under turns the world blue
+- **Oceans, and water that flows** — the sea fills everything below y = 62, and dig a channel into it and it runs. Minecraft's fluid, rule for rule: a source reaches seven blocks and thins a level with each one; two sources on solid ground make a third, so a channel wider than one block stays full; go over a ledge and it falls, lands at full strength and gets another seven. Water *looks* for the drop — with a hole three blocks away it heads straight for it instead of spreading in a circle, which is what makes digging a channel feel like digging a channel
+- **Water drawn as a surface, not as boxes** — the height of the water belongs to the *corners*, and a corner is the average of the four cells that touch it, so two neighbouring cells always agree about where their shared edge is. A spreading stream comes out as one sloping sheet rather than a staircase of floating slabs with the floor showing through the joints. Moving water and calm water are different textures, both scrolling; a flowing surface has its texture rotated to run downhill; a current pushes you along it at Minecraft's 1.4 blocks/s; and going under turns the world blue
 - **Swimming** — Minecraft's water constants: 2.0 blocks/s swimming and 2.6 sprinting against 4.317 walking, sinking at 2.0 rather than 78.4, and holding jump lifts you at 1.2 — a seventh of a jump, but enough to surface and climb out
 - **Caves** — winding tunnels through the whole underground, carved where two 3D noise fields cross. The noise is sampled on a 4-block lattice and interpolated, which is what Minecraft does too, and what makes them smooth rather than speckled. They line up exactly across chunk borders
 - **Deepslate below y ≈ 0** — as in Minecraft, stone gives way to deepslate on a boundary jittered per column, so it reads as a transition rather than a drawn line
 - **Forests have trees** — oak logs and leaves, generated deterministically so canopies cross chunk borders intact and regrow identically when a chunk is reloaded
 - **Render distance up to 40 chunks (1280 blocks)** in the settings, with fog tuned to the distance so terrain fades out instead of ending at a visible edge. The slider shows what each setting costs
-- **One draw call per chunk** — every block face shares a single texture atlas with hand-built mipmaps, so a chunk is one mesh regardless of how many block types it contains. Chunk builds are spread over frames on a 4 ms budget, so streaming never hitches
+- **One draw call per chunk** — every block face shares a single texture atlas with hand-built mipmaps, so a chunk is one mesh regardless of how many block types it contains. Water is the one exception, drawn afterwards in a translucent pass: a chunk with sea in it pays for a second call, and a third only if some of that water is actually moving. Chunk builds are spread over frames on a 4 ms budget, so streaming never hitches
 - **Flat memory** — block data is only kept within 6 chunks of you; the meshes reach much further. Walking with a 24-chunk render distance holds the same voxel data as a 4-chunk one, because regenerating a chunk is cheaper than remembering it
 - **Caves cost nothing at a distance** — they never break through to the sky, so the terrain shell above them is watertight and none of that geometry can be seen from outside it. Only chunks within 4 of you get their caves built (16 ms and 497 KB each); everything further is the shell alone, at 5.5 ms and 83 KB. Chunks you or a neighbouring chunk have dug into are always built in full, because a pit you made yourself is a real hole in that shell
 - **Dig and build anywhere** — break and place blocks; bedrock is indestructible so you can't fall out of the world
@@ -94,18 +95,19 @@ All paths are relative and `.nojekyll` is present, so the game works from a proj
 npm test
 ```
 
-330 headless checks across eight suites: Minecraft movement speeds, jump height, wall collision and auto jump; infinite-world chunking (negative coordinates, generation, eviction, edits surviving a regenerate), caves and the deepslate transition; the mesher (face culling, chunk seams, atlas UVs); the inventory model; block targeting; the save/settings/camera systems; pointer lock plus the native iPad bridge; and water — how far it spreads, what a drop does to it, what it refuses to touch, and the swim speeds.
+386 headless checks across eight suites: Minecraft movement speeds, jump height, wall collision and auto jump; infinite-world chunking (negative coordinates, generation, eviction, edits surviving a regenerate), caves and the deepslate transition; the mesher (face culling, chunk seams, atlas UVs); the inventory model; block targeting; the save/settings/camera systems; pointer lock plus the native iPad bridge; and water, in both halves — how far it spreads, whether it finds the hole, what a drop does to it, what it refuses to touch, and then the geometry it turns into.
 
-Two of them are worth calling out because they guard optimisations that would otherwise fail silently:
+Three of them are worth calling out because they guard things that would otherwise fail silently:
 
 - **The shell mesh is proved complete.** Distant chunks skip their cave geometry. The test flood-fills the air connected to the sky, then asserts that every single face touching it is present in the shell mesh — so the shortcut can never leave a visible hole.
 - **Both cave code paths are cross-checked.** Chunk generation interpolates a precomputed noise lattice; `generatedBlock` interpolates the same lattice one cell at a time. The test asserts they agree block for block, because a drift between them would show up as a seam.
+- **The water surface is proved gapless.** Water used to be drawn as a box per cell, and since a spreading stream is a staircase of different levels, it came out as a grid of floating slabs you could see the floor between. The test meshes a real spread and a real coastline, then walks every pair of adjacent water quads and asserts their shared edge is the same edge, to the vertex.
 
 The tests run on a superflat world (`new World(seed, { flat: 3 })`) so that "walk forward for five seconds" has a deterministic answer.
 
 ## What's next
 
-Cave entrances, ores, water and lava, more block types, crafting, sounds.
+Cave entrances, ores, lava, buckets, swords and tools, more block types, crafting, sounds.
 
 ## Known limits
 
@@ -116,6 +118,7 @@ Cave entrances, ores, water and lava, more block types, crafting, sounds.
 - **The world is 255 layers and cannot simply be made taller.** Mesh vertex positions are packed into single bytes, and a block at the top layer needs a vertex one above it. Going higher means widening every position attribute from 3 bytes a vertex to 6.
 - No ores yet, and no lava. Caves are dry: water fills the sea and anything you dig into it, but it does not seep into caves under the sea floor.
 - Water has no bucket, so the only sources are the sea. You can dig channels from it and build waterfalls, but not carry it inland.
+- Flowing water is never saved — it is a consequence of the terrain, so it is recomputed rather than stored, which is why a flood costs nothing in the save file. The cost is that a chunk coming back into memory comes back dry for a moment, until replaying its edits pokes the sea into finding the hole again.
 - Render distance is not free. Voxel data stays flat, but chunk *geometry* is roughly 0.12 MB per chunk and the chunk count grows with the square of the distance:
 
   | Distance | Blocks | Chunks | Geometry | Draw calls |

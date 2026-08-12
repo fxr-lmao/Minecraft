@@ -16,9 +16,12 @@
 // outside, and UVs within that tile.
 
 import * as THREE from '../vendor/three.module.min.js';
-import { getAtlasTexture, getBlockDefById, ATLAS_TILES, atlasTile } from './textures.js';
+import {
+  getAtlasTexture, getWaterTextures, getBlockDefById, ATLAS_TILES, atlasTile,
+} from './textures.js';
 import { CHUNK_SIZE, WORLD_HEIGHT, WORLD_MIN_Y, DEEP_RADIUS, toLayer, fromLayer } from './constants.js';
-import { CAVE_CEILING_DEPTH, isWater, isOpaque, waterHeight } from './terrain.js';
+import { CAVE_CEILING_DEPTH, isWater, isOpaque } from './terrain.js';
+import { FluidMesher, STILL, FLOWING } from './water-mesh.js';
 
 const CHUNK_AREA = CHUNK_SIZE * CHUNK_SIZE;
 import { toLocal, toChunk, chunkKey } from './world.js';
@@ -59,14 +62,6 @@ let sPos = new Uint8Array(capQuads * 18);
 let sNrm = new Int8Array(capQuads * 18);
 let sUv = new Uint16Array(capQuads * 12);
 
-// Water goes into its own buffer: it is drawn in a second, translucent pass,
-// and its surface sits at a fraction of a block, so unlike everything else
-// its positions cannot be whole numbers packed into a byte.
-let capWater = 4096;
-let wPos = new Float32Array(capWater * 18);
-let wNrm = new Int8Array(capWater * 18);
-let wUv = new Uint16Array(capWater * 12);
-
 function growScratch() {
   capQuads *= 2;
   sPos = new Uint8Array(capQuads * 18);
@@ -74,12 +69,10 @@ function growScratch() {
   sUv = new Uint16Array(capQuads * 12);
 }
 
-function growWater() {
-  capWater *= 2;
-  wPos = new Float32Array(capWater * 18);
-  wNrm = new Int8Array(capWater * 18);
-  wUv = new Uint16Array(capWater * 12);
-}
+// Water is not built here. Its surface is not a stack of boxes — the height is
+// defined at the corners and shared between cells — so it gets a mesher of its
+// own, which also owns its buffers. See water-mesh.js.
+const fluid = new FluidMesher();
 
 /**
  * How much rock below the shallowest neighbouring surface still gets meshed
@@ -106,10 +99,8 @@ export function meshChunk(world, cx, cz, deep = true) {
   const z0 = cz * CHUNK_SIZE;
   let vi3 = 0; // write cursor into sPos / sNrm
   let vi2 = 0; // write cursor into sUv
-  let wi3 = 0; // and the same pair for the water buffer
-  let wi2 = 0;
   let overflow = false;
-  let waterOverflow = false;
+  fluid.begin(world, chunk, x0, z0);
   // Everything in here counts in layers (y - WORLD_MIN_Y), which keeps the
   // vertex positions non-negative and inside a byte.
   const top = Math.min(toLayer(chunk.maxY) + 1, WORLD_HEIGHT - 1);
@@ -192,11 +183,13 @@ export function meshChunk(world, cx, cz, deep = true) {
       for (let y = yStart; y <= top; y++) {
         const id = chunk.blocks[y * CHUNK_AREA + col];
         if (id === 0) continue;
-        const liquid = isWater(id);
-        // A water block is drawn short unless it has more water on top of it.
-        const height = liquid
-          ? waterHeight(id, isWater(blockAt(chunk, world, x0, z0, lx, y + 1, lz)))
-          : 1;
+        // Water is a surface, not a block. Hand it to the fluid mesher, which
+        // works out its own faces from the heights of the corners it shares
+        // with its neighbours.
+        if (isWater(id)) {
+          fluid.cell(lx, y, lz, id);
+          continue;
+        }
 
         for (let f = 0; f < 6; f++) {
           const d = DIRS[f];
@@ -204,32 +197,12 @@ export function meshChunk(world, cx, cz, deep = true) {
           if (ny < 0) continue; // sealed underside is never visible
           const neighbour = blockAt(chunk, world, x0, z0, lx + d[0], ny, lz + d[2]);
 
-          // Solid faces are hidden only by other solids — you can see the sea
-          // floor through the sea. Water is hidden by solids *and* by itself,
-          // so a body of water is a surface rather than a stack of boxes.
-          if (liquid ? neighbour !== 0 : isOpaque(neighbour)) continue;
+          // A face is hidden only by another solid — you can see the sea floor
+          // through the sea, so water does not count as cover.
+          if (isOpaque(neighbour)) continue;
 
           const face = FACES[f];
           const tile = atlasTile(id, face.col);
-
-          if (liquid) {
-            if (wi3 + 18 > wPos.length) { waterOverflow = true; break; }
-            for (const vi of TRI_VERTICES) {
-              const v = face.v[vi];
-              const t = face.uv[vi];
-              wPos[wi3] = lx + v[0];
-              wPos[wi3 + 1] = y + v[1] * height;
-              wPos[wi3 + 2] = lz + v[2];
-              wNrm[wi3] = face.n[0];
-              wNrm[wi3 + 1] = face.n[1];
-              wNrm[wi3 + 2] = face.n[2];
-              wi3 += 3;
-              wUv[wi2] = tileU(tile, t[0]) * 65535;
-              wUv[wi2 + 1] = t[1] * 65535;
-              wi2 += 2;
-            }
-            continue;
-          }
 
           if (vi3 + 18 > sPos.length) { overflow = true; break; }
           for (const vi of TRI_VERTICES) {
@@ -249,16 +222,15 @@ export function meshChunk(world, cx, cz, deep = true) {
             vi2 += 2;
           }
         }
-        if (overflow || waterOverflow) break;
+        if (overflow) break;
       }
-      if (overflow || waterOverflow) break;
+      if (overflow) break;
     }
-    if (overflow || waterOverflow) break;
+    if (overflow) break;
   }
 
-  if (overflow || waterOverflow) {
-    if (overflow) growScratch();
-    if (waterOverflow) growWater();
+  if (overflow) {
+    growScratch();
     return meshChunk(world, cx, cz, deep);
   }
 
@@ -266,11 +238,7 @@ export function meshChunk(world, cx, cz, deep = true) {
     pos: sPos.slice(0, vi3),
     n: sNrm.slice(0, vi3),
     uv: sUv.slice(0, vi2), // 16-bit normalised: divide by 65535 for 0..1
-    water: {
-      pos: wPos.slice(0, wi3),
-      n: wNrm.slice(0, wi3),
-      uv: wUv.slice(0, wi2),
-    },
+    water: fluid.end(), // { still, flowing }, each a { pos, n, uv }
     x0,
     z0,
   };
@@ -363,17 +331,28 @@ export class WorldRenderer {
     // Water is drawn after everything else and does not write depth, so a
     // surface never hides the water behind it and the sea floor shows
     // through. DoubleSide keeps the surface visible from underneath.
-    this.waterMaterial = new THREE.MeshLambertMaterial({
-      map: getAtlasTexture(),
+    //
+    // Calm and moving water are separate materials because they are separate
+    // textures that scroll at their own speeds. That is not a draw call per
+    // chunk each: a chunk out at sea has only calm water in it and a chunk
+    // with no water at all has neither.
+    const waterTex = getWaterTextures();
+    const waterMaterial = (map) => new THREE.MeshLambertMaterial({
+      map,
       transparent: true,
-      opacity: 0.72,
+      opacity: 0.78,
       depthWrite: false,
       side: THREE.DoubleSide,
     });
+    this.waterMaterials = [waterMaterial(waterTex.still), waterMaterial(waterTex.flowing)];
+    this.waterTextures = [waterTex.still, waterTex.flowing];
     /** key -> THREE.Mesh */
     this.meshes = new Map();
-    /** key -> the translucent water mesh, only for chunks that have any. */
-    this.waterMeshes = new Map();
+    /**
+     * key -> the translucent water meshes, one map per texture, and only for
+     * the chunks that actually have that kind of water in them.
+     */
+    this.waterMeshes = [new Map(), new Map()];
     /** Chunks waiting to be built, nearest to the player first. */
     this.queue = [];
     this.centre = { cx: 0, cz: 0 };
@@ -418,11 +397,12 @@ export class WorldRenderer {
         this.scene.remove(mesh);
         mesh.geometry.dispose();
         this.meshes.delete(key);
-        const water = this.waterMeshes.get(key);
-        if (water) {
+        for (const store of this.waterMeshes) {
+          const water = store.get(key);
+          if (!water) continue;
           this.scene.remove(water);
           water.geometry.dispose();
-          this.waterMeshes.delete(key);
+          store.delete(key);
         }
       } else if (mesh.userData.deep !== this._deepAt(mx, mz)) {
         this.world.markDirty(mx, mz);
@@ -466,8 +446,24 @@ export class WorldRenderer {
     const deep = this._deepAt(cx, cz);
     const buf = meshChunk(this.world, cx, cz, deep);
     this._sync(this.meshes, key, buf, buf.pos, buildChunkGeometry, this.material, deep, true);
-    this._sync(this.waterMeshes, key, buf, buf.water.pos,
-      () => buildWaterGeometry(buf.water), this.waterMaterial, deep, false);
+    for (const kind of [STILL, FLOWING]) {
+      const water = kind === STILL ? buf.water.still : buf.water.flowing;
+      this._sync(this.waterMeshes[kind], key, buf, water.pos,
+        () => buildWaterGeometry(water), this.waterMaterials[kind], deep, false);
+    }
+  }
+
+  /**
+   * Scroll the water. Both textures drift along their v axis, which the
+   * mesher has already rotated to point downhill on a flowing face, so a
+   * stream runs the way it is going and the sea just breathes.
+   *
+   * It runs off the game clock, so pausing stops the sea like everything else.
+   */
+  advanceWater(dt) {
+    this.waterTextures[STILL].offset.y = (this.waterTextures[STILL].offset.y + dt * 0.06) % 1;
+    this.waterTextures[FLOWING].offset.y =
+      (this.waterTextures[FLOWING].offset.y + dt * 0.85) % 1;
   }
 
   /**
@@ -511,8 +507,10 @@ export class WorldRenderer {
     let bytes = 0;
     for (const mesh of this.meshes.values()) bytes += geometryBytes(mesh.geometry);
     // Water positions are floats rather than bytes, hence the second rate.
-    for (const mesh of this.waterMeshes.values()) {
-      bytes += (mesh.geometry.getAttribute('position')?.count ?? 0) * (12 + 3 + 4);
+    for (const store of this.waterMeshes) {
+      for (const mesh of store.values()) {
+        bytes += (mesh.geometry.getAttribute('position')?.count ?? 0) * (12 + 3 + 4);
+      }
     }
     return bytes / (1024 * 1024);
   }

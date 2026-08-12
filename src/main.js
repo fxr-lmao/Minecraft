@@ -12,6 +12,7 @@
 
 import * as THREE from '../vendor/three.module.min.js';
 import { World, AIR, BEDROCK, toChunk } from './world.js';
+import { isWater, waterHeight } from './terrain.js';
 import { WorldRenderer, buildSingleBlockGeometry } from './blocks.js';
 import { Player } from './player.js';
 import { Input, LOOK_FREE, LOOK_TOUCH } from './input.js';
@@ -97,6 +98,16 @@ function applyRenderDistance() {
   scene.fog.near = blocks * 0.55;
   scene.fog.far = blocks * 0.98;
   worldRenderer?.setRenderDistance(settings.renderDistance);
+}
+
+/** True when the camera itself is below the surface of some water. */
+function cameraUnderwater() {
+  const x = Math.floor(camera.position.x);
+  const y = Math.floor(camera.position.y);
+  const z = Math.floor(camera.position.z);
+  const id = world.get(x, y, z);
+  if (!isWater(id)) return false;
+  return y + waterHeight(id, world.isWaterAt(x, y + 1, z)) >= camera.position.y;
 }
 
 /** Under water everything is blue and you cannot see far, as in Minecraft. */
@@ -189,10 +200,13 @@ if (restored) {
 const worldRenderer = new WorldRenderer(world, scene);
 applyRenderDistance();
 
-// Water settles from wherever the world was disturbed. Replaying the save's
-// edits through it is what refills a channel you dug last session: flowing
-// water is never stored, only recomputed from the sea that feeds it.
+// Water settles from wherever the world was disturbed. Flowing water is never
+// stored — it is a consequence of the terrain, not a decision — so anywhere
+// the terrain has been changed has to be poked for the sea to find the hole
+// again. That is true of the save file on load, and equally true of a chunk
+// coming back into memory after being evicted, which is what the hook is for.
 const waterFlow = new WaterFlow(world);
+world.onEditReplayed = (x, y, z) => waterFlow.touch(x, y, z);
 if (restored) for (const e of restored.edits) waterFlow.touch(e.x, e.y, e.z);
 
 const player = new Player(world);
@@ -599,7 +613,9 @@ function frame(now) {
   world.tick();
 
   // ---- water ----
-  // On the game clock, not the wall clock: paused means the sea stops too.
+  // On the game clock, not the wall clock: paused means the sea stops too,
+  // both the flow and the drift of the surface.
+  worldRenderer.advanceWater(animDt);
   if (playing) {
     flowClock += frameDt * 1000;
     if (flowClock >= FLOW_INTERVAL_MS) {
@@ -611,10 +627,10 @@ function frame(now) {
   }
 
   // The camera decides this, not the feet: leaning out of the water should
-  // clear the blue even while you are still standing in it.
-  applyUnderwaterFog(world.isWaterAt(
-    Math.floor(camera.position.x), Math.floor(camera.position.y), Math.floor(camera.position.z)
-  ));
+  // clear the blue even while you are still standing in it. It goes by the
+  // water's actual surface, so a puddle you are wading through does not black
+  // out the screen when you crouch.
+  applyUnderwaterFog(cameraUnderwater());
 
   // ---- camera ----
   const fovBase = settings.fov;
@@ -801,3 +817,4 @@ hud.initSettings(settings, LIMITS);
 refreshHeldItem();
 playerModel.group.visible = !view.isFirstPerson;
 requestAnimationFrame(frame);
+

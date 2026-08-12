@@ -144,6 +144,10 @@ function deepslateFace(rand) {
 // Water. Drawn opaque here and made translucent by the material — the atlas
 // is a single texture shared with every solid block, so the alpha has to
 // come from somewhere else.
+//
+// This one is only the inventory icon and the block held in the hand. The
+// water you see in the world is drawn from its own pair of textures below,
+// because it has to scroll and the atlas cannot.
 function waterFace(rand) {
   return noiseCanvas(rand, 0x3552d4, { speckles: 18, blotches: 4, blotchColor: 0x2c46bd });
 }
@@ -460,6 +464,99 @@ export function getAtlasTexture() {
   tex.needsUpdate = true;
   atlasTexture = tex;
   return tex;
+}
+
+// ---------- water ----------
+// Water gets its own two textures rather than a slot in the world atlas, for
+// one reason: it moves. An atlas cannot scroll — shifting it would drag every
+// other block's texture along with the water — but a texture of its own can
+// be offset a little further every frame, and since water is already drawn in
+// its own translucent pass, that costs nothing extra.
+//
+// Both tiles are built from a handful of sine harmonics with whole-number
+// periods across the tile, which makes them seamless in both directions by
+// construction. Seamless matters more than it sounds: the sea maps one copy
+// of the still tile to every block, and any join at all would show up as the
+// grid of squares this is here to avoid.
+
+/** Sum of sine harmonics, evaluated on a tile that wraps in both axes. */
+function harmonics(x, y, terms) {
+  let v = 0;
+  for (const [kx, ky, phase, amp] of terms) {
+    v += Math.sin(((kx * x + ky * y) / TEX_SIZE) * Math.PI * 2 + phase) * amp;
+  }
+  return v;
+}
+
+function waterCanvas(base, shade, terms) {
+  const cv = document.createElement('canvas');
+  cv.width = cv.height = TEX_SIZE;
+  const ctx = cv.getContext('2d');
+  const img = ctx.createImageData(TEX_SIZE, TEX_SIZE);
+  for (let y = 0; y < TEX_SIZE; y++) {
+    for (let x = 0; x < TEX_SIZE; x++) {
+      const c = shadeHex(base, 1 + harmonics(x, y, terms) * shade);
+      const o = (y * TEX_SIZE + x) * 4;
+      img.data[o] = (c >> 16) & 255;
+      img.data[o + 1] = (c >> 8) & 255;
+      img.data[o + 2] = c & 255;
+      img.data[o + 3] = 255;
+    }
+  }
+  ctx.putImageData(img, 0, 0);
+  return cv;
+}
+
+/** Calm water: broad, slow swells crossing each other. */
+function stillWaterCanvas() {
+  return waterCanvas(0x3a63d2, 0.13, [
+    [1, 1, 0.0, 0.5],
+    [2, -1, 1.7, 0.3],
+    [1, -3, 4.1, 0.2],
+    [3, 2, 2.4, 0.15],
+  ]);
+}
+
+/**
+ * Moving water: streaks that run down the tile. The v axis is the direction of
+ * travel — the mesher rotates the tile so that v points downhill — so the
+ * pattern is mostly a function of u, with just enough variation along v to
+ * keep it from looking like a barcode.
+ */
+function flowingWaterCanvas() {
+  return waterCanvas(0x3a63d2, 0.2, [
+    [4, 0, 0.0, 0.55],
+    [7, 0, 2.2, 0.25],
+    [2, 0, 4.4, 0.3],
+    [3, 1, 1.1, 0.18],
+    [5, 2, 3.3, 0.12],
+  ]);
+}
+
+let waterTextures = null;
+
+/**
+ * The two world-water textures, { still, flowing }. Both repeat in both
+ * directions so the surface tiles across blocks and the scroll wraps cleanly.
+ */
+export function getWaterTextures() {
+  if (waterTextures) return waterTextures;
+  const make = (canvas) => {
+    const tex = new THREE.CanvasTexture(canvas);
+    tex.wrapS = THREE.RepeatWrapping;
+    tex.wrapT = THREE.RepeatWrapping;
+    tex.magFilter = THREE.NearestFilter;
+    tex.minFilter = THREE.LinearMipmapLinearFilter;
+    tex.generateMipmaps = true;
+    tex.colorSpace = THREE.SRGBColorSpace;
+    tex.anisotropy = 4;
+    return tex;
+  };
+  waterTextures = {
+    still: make(stillWaterCanvas()),
+    flowing: make(flowingWaterCanvas()),
+  };
+  return waterTextures;
 }
 
 const cache = new Map();
