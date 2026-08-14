@@ -53,6 +53,37 @@ export const FLOW_PUSH_SPEED = 1.4;
 export const PLAYER_WIDTH = 0.6; // x/z extent of the AABB
 export const PLAYER_HEIGHT = 1.8;
 export const PLAYER_EYE = 1.62;
+/**
+ * Swimming. Sprinting in water lays the player out flat, and Minecraft
+ * changes the hitbox to match: a 0.6 cube with the eye at 0.4, instead of a
+ * 1.8-tall column with the eye at 1.62. It is not cosmetic — it is why you
+ * can swim through a one-block gap you could never walk through, and why
+ * your view drops to just under the surface the moment you start.
+ */
+export const SWIM_HEIGHT = 0.6;
+export const SWIM_EYE = 0.4;
+/**
+ * How much of the swim speed goes into climbing or diving when you aim up or
+ * down. One: look straight down and you descend as fast as you would have
+ * swum forwards, which is Minecraft's behaviour and the reason swimming
+ * feels like flying rather than like treading water.
+ */
+export const SWIM_PITCH_GAIN = 1;
+/**
+ * Floating. A swimmer settles with their eye on the waterline, and the pull
+ * that puts them there fades out over SWIM_FLOAT_RANGE blocks so that it
+ * cannot follow you down a dive. SWIM_FLOAT_PULL is per block of error, per
+ * second, so half a block under the surface it is worth 1.1 blocks/s.
+ */
+export const SWIM_FLOAT_RANGE = 1.5;
+export const SWIM_FLOAT_PULL = 2.2;
+/**
+ * How far above the waterline the swimmer's eye settles. Aiming for exactly
+ * the surface leaves the camera on the boundary, flickering in and out of the
+ * blue; a finger's width above it puts the head out of the water where a
+ * swimmer's head belongs, and looking down still dips you under.
+ */
+export const SWIM_FLOAT_LIFT = 0.15;
 // Minecraft's step height. Unused while every block is a full cube (0.6 is
 // too low to climb one, so you jump); it is here for slabs and stairs.
 export const STEP_HEIGHT = 0.6;

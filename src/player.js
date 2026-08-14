@@ -15,6 +15,8 @@ import {
   SPEED_WALK, SPEED_SNEAK, AIR_WALK,
   DRAG_GROUND, DRAG_AIR,
   PLAYER_WIDTH, PLAYER_HEIGHT, PLAYER_EYE,
+  SWIM_HEIGHT, SWIM_EYE, SWIM_PITCH_GAIN,
+  SWIM_FLOAT_RANGE, SWIM_FLOAT_PULL, SWIM_FLOAT_LIFT,
   WORLD_MIN_Y,
   DRAG_WATER, SPEED_SWIM, SPEED_SWIM_SPRINT, SINK_SPEED, SWIM_UP_SPEED,
   FLOW_PUSH_SPEED,
@@ -26,6 +28,8 @@ import { fluidFlow } from './water-mesh.js';
 const HALF = PLAYER_WIDTH / 2;
 const EPS = 1e-4;
 const TERMINAL_FALL = 78.4; // blocks/s (Minecraft's fall terminal velocity)
+/** How far up a column the buoyancy looks for the open surface, in blocks. */
+const SURFACE_SEARCH = 24;
 /**
  * Backstop for falling out of the world. It must sit *below* the bedrock
  * floor, never at a depth the player can legitimately dig to — this was a
@@ -48,6 +52,15 @@ export class Player {
     this.sprinting = false;
     this.sneaking = false;
     /**
+     * Swimming: the flat-out crawl you get by sprinting in water, not the
+     * bobbing about you do by walking into it. While it is on the hitbox is a
+     * 0.6 cube, the eye is at 0.4, and the direction you are looking is the
+     * direction you go — including up and down.
+     */
+    this.swimming = false;
+    /** The height of the hitbox right now; swimming shrinks it. */
+    this.height = PLAYER_HEIGHT;
+    /**
      * Hop single blocks automatically (Minecraft Bedrock's "auto jump", on by
      * default there too). Generated terrain steps up a block every few paces,
      * and without this you spend the whole time tapping space. It triggers a
@@ -63,18 +76,20 @@ export class Player {
     /** The current where the player is standing, as a unit vector + speed. */
     this.flow = new Float64Array(2);
     this.flowSpeed = 0;
+    /** Where the open surface of the water above us is, or -Infinity. */
+    this.waterTop = -Infinity;
     // Bound once: the fluid maths takes a sampler, and rebuilding the closure
     // every physics step would allocate 120 of them a second.
     this._get = (x, y, z) => this.world.get(x, y, z);
   }
 
   get eyeHeight() {
-    return PLAYER_EYE;
+    return this.swimming ? SWIM_EYE : PLAYER_EYE;
   }
 
   /** Camera position (eye). */
   get eyePos() {
-    return new THREE.Vector3(this.pos.x, this.pos.y + PLAYER_EYE, this.pos.z);
+    return new THREE.Vector3(this.pos.x, this.pos.y + this.eyeHeight, this.pos.z);
   }
 
   /** Back to the spawn point. */
@@ -112,7 +127,6 @@ export class Player {
    * input: { forward: -1|0|1, strafe: -1|0|1, jump: bool, sprint: bool, sneak: bool }
    */
   update(dt, input) {
-    const moveDir = this._inputDirection(input);
     this._sampleWater();
 
     // ---- sprint bookkeeping ----
@@ -122,8 +136,22 @@ export class Player {
       this.sneaking = input.sneak;
     } else {
       this.sneaking = false;
-      if (input.sprint && !this.sprinting && this.onGround) this.sprinting = true;
+      // On the ground you have to be standing on something to break into a
+      // run. In water there is nothing to push off, so being *in* it is
+      // enough — otherwise you could never start swimming out of your depth,
+      // which is the only place swimming is any use.
+      if (input.sprint && !this.sprinting && (this.onGround || this.inWater)) {
+        this.sprinting = true;
+      }
     }
+
+    // ---- swimming ----
+    // Minecraft's rule, and it is a short one: sprint while you are in water
+    // and you are swimming. Stop pressing forward, leave the water, or hit
+    // something you cannot stand up inside, and you are not.
+    this._setSwimming(this.sprinting && this.inWater);
+
+    const moveDir = this._inputDirection(input);
 
     // ---- horizontal acceleration (Minecraft recurrence, dt-scaled) ----
     // Water replaces both the drag and the target speed: it is thicker than
@@ -171,7 +199,14 @@ export class Player {
       // speeds under the same water drag, so the numbers below are the
       // speeds themselves rather than accelerations.
       const rising = input.jump;
-      const settle = rising ? SWIM_UP_SPEED : -SINK_SPEED;
+      let settle = rising ? SWIM_UP_SPEED : -SINK_SPEED;
+      if (this.swimming && !rising && hasInput) {
+        // A swimmer goes where they are pointed. moveDir is the full look
+        // vector here, so aiming down dives and aiming up surfaces, at the
+        // same speed the same stroke would have carried you forwards, and
+        // level means level.
+        settle = moveDir.y * target * SWIM_PITCH_GAIN + this._buoyancy();
+      }
       this.vel.y = settle + (this.vel.y - settle) * f;
       // Breaking the surface with jump held turns the swim into a real jump,
       // which is what gets you out onto the bank.
@@ -216,22 +251,88 @@ export class Player {
    * cell full to the brim is water you swim in. Minecraft compares the
    * surface height to the bottom of your hitbox, and so does this.
    */
+  /**
+   * Enter or leave the swimming pose.
+   *
+   * Leaving is the half that can fail. The swimming hitbox is 0.6 tall, so
+   * you can be somewhere a 1.8-tall one does not fit — under an overhang, in
+   * a flooded tunnel — and standing up there would put your head inside a
+   * block. Minecraft keeps you swimming until there is room, and so does
+   * this: without the check, letting go of sprint in a submerged corridor
+   * teleports you through the ceiling.
+   */
+  _setSwimming(want) {
+    if (want === this.swimming) return;
+    if (!want && !this._canStand()) return;
+    this.swimming = want;
+    this.height = want ? SWIM_HEIGHT : PLAYER_HEIGHT;
+  }
+
+  /**
+   * The pull that keeps a swimmer at the waterline, in blocks/second.
+   *
+   * It is a spring, and it only exists within SWIM_FLOAT_RANGE of the
+   * surface. That matters both ways round: near the top it holds you there,
+   * so cruising along level does not slowly drown you; a metre and a half
+   * down it is gone, so aiming into a dive takes you down and *keeps* you
+   * down instead of being reeled back up by a buoyancy that never lets go.
+   */
+  _buoyancy() {
+    if (this.waterTop === -Infinity) return 0;
+    const toSurface = this.waterTop - SWIM_EYE + SWIM_FLOAT_LIFT - this.pos.y;
+    const near = Math.max(0, 1 - Math.abs(toSurface) / SWIM_FLOAT_RANGE);
+    return toSurface * SWIM_FLOAT_PULL * near;
+  }
+
+  /** Is there room for the full-height hitbox where we are standing? */
+  _canStand() {
+    const minX = Math.floor(this.pos.x - HALF);
+    const maxX = Math.floor(this.pos.x + HALF - 1e-9);
+    const minZ = Math.floor(this.pos.z - HALF);
+    const maxZ = Math.floor(this.pos.z + HALF - 1e-9);
+    const top = Math.floor(this.pos.y + PLAYER_HEIGHT - 1e-9);
+    for (let y = Math.floor(this.pos.y); y <= top; y++) {
+      for (let x = minX; x <= maxX; x++) {
+        for (let z = minZ; z <= maxZ; z++) {
+          if (this.world.isSolid(x, y, z)) return false;
+        }
+      }
+    }
+    return true;
+  }
+
   _sampleWater() {
     const x = Math.floor(this.pos.x);
     const z = Math.floor(this.pos.z);
     const feet = this.pos.y;
-    const eye = this.pos.y + PLAYER_EYE;
+    const eye = this.pos.y + this.eyeHeight;
     this.inWater = this._fluidTop(x, Math.floor(feet), z) >= feet;
     this.submerged = this._fluidTop(x, Math.floor(eye), z) >= eye;
 
     this.flowSpeed = 0;
     this.flow[0] = 0;
     this.flow[1] = 0;
+    this.waterTop = -Infinity;
     if (this.inWater) {
       const fy = Math.floor(feet);
       const id = this.world.get(x, fy, z);
       this.flowSpeed = fluidFlow(this._get, x, fy, z, id, this.flow);
+      this.waterTop = this._surfaceAbove(x, fy, z);
     }
+  }
+
+  /**
+   * The open surface of the column we are in: climb until the water runs out.
+   * Capped, because a swimmer under a hundred blocks of ocean does not care
+   * where the top is — nothing that uses this reaches that far.
+   */
+  _surfaceAbove(x, y, z) {
+    for (let i = 0; i < SURFACE_SEARCH; i++) {
+      const top = this._fluidTop(x, y + i, z);
+      if (top !== -Infinity && top < y + i + 1) return top; // the free surface
+      if (!isWater(this.world.get(x, y + i, z))) return y + i; // ran out of water
+    }
+    return y + SURFACE_SEARCH;
   }
 
   /** How high the water stands in a cell, or -Infinity if it holds none. */
@@ -243,7 +344,10 @@ export class Player {
 
   _inputDirection(input) {
     const dir = new THREE.Vector3();
-    const forward = this.forwardVector();
+    // Swimming steers in three dimensions: forward is wherever the crosshair
+    // is pointing, pitch included. Walking only ever uses the flattened
+    // version of it, or looking at your feet would slow you down.
+    const forward = this.swimming ? this.lookDirection() : this.forwardVector();
     const right = this.rightVector();
     dir.addScaledVector(forward, input.forward);
     dir.addScaledVector(right, input.strafe);
@@ -327,7 +431,7 @@ export class Player {
   _aabb() {
     return {
       minX: this.pos.x - HALF, maxX: this.pos.x + HALF,
-      minY: this.pos.y, maxY: this.pos.y + PLAYER_HEIGHT,
+      minY: this.pos.y, maxY: this.pos.y + this.height,
       minZ: this.pos.z - HALF, maxZ: this.pos.z + HALF,
     };
   }
@@ -373,7 +477,7 @@ export class Player {
       for (let cx = Math.floor(b.minX); cx <= Math.floor(b.maxX - 1e-9); cx++) {
         for (let cz = Math.floor(b.minZ); cz <= Math.floor(b.maxZ - 1e-9); cz++) {
           if (this.world.isSolid(cx, cy, cz)) {
-            resolved = cy - PLAYER_HEIGHT - EPS;
+            resolved = cy - this.height - EPS;
             break;
           }
         }
