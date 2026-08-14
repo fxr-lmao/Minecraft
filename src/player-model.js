@@ -105,6 +105,16 @@ function uniformMaterials(color, seed, opts) {
  */
 export function createPlayerModel() {
   const group = new THREE.Group();
+  /**
+   * Everything hangs off this rather than off the group directly, so that
+   * swimming can tip the whole body over without disturbing the group's
+   * position (the player's feet) or its yaw. Rotating the group itself would
+   * mean fighting the body/head separation for control of the same three
+   * angles.
+   */
+  const root = new THREE.Group();
+  root.rotation.order = 'YXZ';
+  group.add(root);
 
   // ---- head (front face is -Z, matching the forward vector) ----
   const hairSide = { rows: [{ from: 0, to: 2, color: HAIR }] };
@@ -119,12 +129,12 @@ export function createPlayerModel() {
   headPivot.position.y = 24 * PX; // neck
   head.position.y = 4 * PX; // head centre, relative to the neck pivot
   headPivot.add(head);
-  group.add(headPivot);
+  root.add(headPivot);
 
   // ---- body ----
   const body = boxMesh(8, 12, 4, uniformMaterials(SHIRT, 21));
   body.position.y = 18 * PX;
-  group.add(body);
+  root.add(body);
 
   // ---- arms / legs on pivots ----
   const limb = (color, seed, w, h, d, x, y, opts) => {
@@ -133,7 +143,7 @@ export function createPlayerModel() {
     const mesh = boxMesh(w, h, d, uniformMaterials(color, seed, opts));
     mesh.position.y = (-h / 2) * PX;
     pivot.add(mesh);
-    group.add(pivot);
+    root.add(pivot);
     return pivot;
   };
 
@@ -169,6 +179,8 @@ export function createPlayerModel() {
   let swing = 0; // 0..1 arm swing when breaking/placing
   let crouch = 0;
   let sprintLean = 0;
+  let swim = 0; // 0..1 blend between standing up and lying flat
+  let stroke = 0; // the crawl, in radians of shoulder rotation
   let bodyYaw = null; // smoothed; the head twists relative to it
   let opacity = 1;
 
@@ -228,7 +240,7 @@ export function createPlayerModel() {
 
     /**
      * @param {object} s
-     *   { dt, pos, yaw, pitch, speed, onGround, sneaking, sprinting, vel }
+     *   { dt, pos, yaw, pitch, speed, onGround, sneaking, sprinting, swimming, vel }
      */
     update(s) {
       group.position.set(s.pos.x, s.pos.y, s.pos.z);
@@ -238,10 +250,14 @@ export function createPlayerModel() {
       // head twist up to ~55° away from it; look further and the body follows.
       // Without this the whole avatar snaps around with the mouse, which is
       // what made third person look so stiff.
+      // Swimming overrides it: a swimmer goes where they are pointed, so the
+      // body lines up with the look direction rather than trailing the
+      // velocity, and it does so quickly — the whole point of the pose is
+      // that you steer with your head.
       if (bodyYaw === null) bodyYaw = s.yaw;
       const moving = s.speed > 0.35 && s.vel;
-      const targetYaw = moving ? Math.atan2(-s.vel.x, -s.vel.z) : bodyYaw;
-      const turnRate = moving ? 9 : 0;
+      const targetYaw = s.swimming ? s.yaw : (moving ? Math.atan2(-s.vel.x, -s.vel.z) : bodyYaw);
+      const turnRate = s.swimming ? 12 : (moving ? 9 : 0);
       bodyYaw = approachAngle(bodyYaw, targetYaw, turnRate, s.dt);
 
       // clamp the head twist, dragging the body along past the limit
@@ -279,20 +295,59 @@ export function createPlayerModel() {
         legR.rotation.x = -0.15;
       }
 
-      // sneak: lean forward, drop the body, tilt the arms back
+      // ---- swimming ----
+      // Tip the whole rig onto its front and point it where the player is
+      // looking. The rotation happens at the feet, so the model has to be
+      // slid forward by half its length and lifted to the middle of the
+      // swimming hitbox afterwards, or the swimmer would pivot around their
+      // own ankles and end up buried in the sea floor.
+      swim += ((s.swimming ? 1 : 0) - swim) * Math.min(1, s.dt * 9);
+      if (swim < 0.005) {
+        swim = 0;
+        stroke = 0;
+      } else {
+        // The crawl runs a little faster the harder you are swimming.
+        stroke += s.dt * (2.6 + Math.min(s.speed, 3) * 0.9);
+      }
+      root.rotation.x = swim * (-Math.PI / 2 + clamp(s.pitch, -1.15, 1.15));
+      root.position.set(0, swim * 0.30, swim * 0.90);
+
+      if (swim > 0) {
+        // Arms out in front, pulling alternately; legs fluttering behind.
+        // A shoulder turned all the way to -pi points the arm along the body,
+        // which face down is straight ahead — so the crawl is a sweep either
+        // side of that rather than a windmill, and whatever is in the hand
+        // stays out where it can be seen.
+        const flutter = Math.sin(stroke * 2) * 0.32;
+        armL.rotation.x = mix(armL.rotation.x, -Math.PI + Math.sin(stroke) * 0.85, swim);
+        armR.rotation.x = mix(armR.rotation.x, -Math.PI + Math.sin(stroke + Math.PI) * 0.85, swim);
+        armL.rotation.z = mix(armL.rotation.z, -0.16, swim);
+        armR.rotation.z = mix(armR.rotation.z, 0.16, swim);
+        legL.rotation.x = mix(legL.rotation.x, flutter, swim);
+        legR.rotation.x = mix(legR.rotation.x, -flutter, swim);
+        // The body is already pointing where the player is looking, so the
+        // neck only needs whatever is left over.
+        headPivot.rotation.x *= 1 - swim * 0.8;
+      }
+
+      // sneak: lean forward, drop the body, tilt the arms back. Neither
+      // crouching nor a sprinting lean means anything face down in the water,
+      // so swimming fades both out.
       crouch += ((s.sneaking ? 1 : 0) - crouch) * Math.min(1, s.dt * 14);
       // sprint: lean into the run
       sprintLean += ((s.sprinting ? 1 : 0) - sprintLean) * Math.min(1, s.dt * 8);
+      const upright = 1 - swim;
+      const bend = crouch * upright;
 
-      const lean = crouch * 0.45 + sprintLean * 0.16;
+      const lean = bend * 0.45 + sprintLean * upright * 0.16;
       body.rotation.x = lean;
-      body.position.y = (18 - 2 * crouch) * PX;
-      headPivot.position.y = (24 - 3 * crouch) * PX;
-      headPivot.position.z = crouch * 2.2 * PX;
+      body.position.y = (18 - 2 * bend) * PX;
+      headPivot.position.y = (24 - 3 * bend) * PX;
+      headPivot.position.z = bend * 2.2 * PX;
       headPivot.rotation.x -= lean * 0.75; // keep the head level while leaning
-      armL.position.y = armR.position.y = (24 - 3 * crouch) * PX;
-      armL.position.z = armR.position.z = crouch * 1.8 * PX;
-      legL.position.y = legR.position.y = (12 - 1 * crouch) * PX;
+      armL.position.y = armR.position.y = (24 - 3 * bend) * PX;
+      armL.position.z = armR.position.z = bend * 1.8 * PX;
+      legL.position.y = legR.position.y = (12 - 1 * bend) * PX;
 
       // swing decay
       if (swing > 0) {
@@ -301,6 +356,11 @@ export function createPlayerModel() {
       }
     },
   };
+}
+
+/** Linear blend, for easing one pose into another. */
+export function mix(a, b, t) {
+  return a + (b - a) * t;
 }
 
 /** Wrap an angle to (-pi, pi]. */

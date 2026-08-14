@@ -7,8 +7,10 @@ A from-scratch Minecraft-style game built with [Three.js](https://threejs.org/) 
 - **Infinite world with four biomes** — plains, forest, desert and snow-capped mountains, streamed in 32×32 chunks as you walk, in every direction, forever. Biomes are blended weights rather than a hard choice, so a mountain range ramps down into the plains beside it instead of ending in a cliff, and the ground cover changes exactly where the shape does
 - **Minecraft's elevations** — the world runs from **y = −64 to y = 190**, with sea level at 62, plains in the mid 60s, and mountains topping out around **150** with bare stone above 95 and snow above 120. Bedrock is ragged, like the real thing
 - **Oceans, and water that flows** — the sea fills everything below y = 62, and dig a channel into it and it runs. Minecraft's fluid, rule for rule: a source reaches seven blocks and thins a level with each one; two sources on solid ground make a third, so a channel wider than one block stays full; go over a ledge and it falls, lands at full strength and gets another seven. Water *looks* for the drop — with a hole three blocks away it heads straight for it instead of spreading in a circle, which is what makes digging a channel feel like digging a channel
-- **Water drawn as a surface, not as boxes** — the height of the water belongs to the *corners*, and a corner is the average of the four cells that touch it, so two neighbouring cells always agree about where their shared edge is. A spreading stream comes out as one sloping sheet rather than a staircase of floating slabs with the floor showing through the joints. Moving water and calm water are different textures, both scrolling; a flowing surface has its texture rotated to run downhill; a current pushes you along it at Minecraft's 1.4 blocks/s; and going under turns the world blue
+- **Water drawn as a surface, not as boxes** — the height of the water belongs to the *corners*, and a corner is the average of the four cells that touch it, so two neighbouring cells always agree about where their shared edge is. A spreading stream comes out as one sloping sheet rather than a staircase of floating slabs with the floor showing through the joints. Moving water and calm water are different textures, both scrolling; a flowing surface has its texture rotated to run downhill; a current pushes you along it at Minecraft's 1.4 blocks/s
+- **…and shaded like water.** The surface has a real swell on it — four crossing waves summed in *world* space, so neighbouring chunks agree along their shared edge without knowing about each other, and the normals come from the derivative of the same sum so the highlights can never slide off the waves. On top of that: Fresnel, which is most of the difference between "blue glass" and "a lake" (look straight down and you see the sand, look across and it is a mirror of the sky); depth, measured per corner by the mesher, so a foot of water over sand is pale green and six blocks of it is navy, and the deeper it is the less shows through; foam along the shoreline, on the crests near it, and anywhere the current is churning; sun glitter on the wave tops; and **caustics** — the moving net of focused light on the sea floor, which is painted into the terrain shader rather than the water's, because that is where it actually lands. From underneath you get **Snell's window**: the whole sky squeezed into a 97° cone overhead, and a mirror of the depths outside it
 - **Swimming** — Minecraft's water constants: 2.0 blocks/s swimming and 2.6 sprinting against 4.317 walking, sinking at 2.0 rather than 78.4, and holding jump lifts you at 1.2 — a seventh of a jump, but enough to surface and climb out
+- **Swim mode** — sprint in water and you go flat out, exactly as Minecraft does it: the hitbox becomes a 0.6 cube with the eye at 0.4, and you steer with the whole look vector instead of its flattened shadow, so aiming down dives, aiming up surfaces, and level holds your depth. A float pulls you to the waterline when you are near it and lets go a metre and a half down, so a dive stays a dive. The 0.6 hitbox is not cosmetic — it takes you through flooded one-block tunnels you could never walk down, and you stay in the crawl until there is headroom to stand up again. In third person the avatar lies out along the look direction and swims a front crawl
 - **Caves** — winding tunnels through the whole underground, carved where two 3D noise fields cross. The noise is sampled on a 4-block lattice and interpolated, which is what Minecraft does too, and what makes them smooth rather than speckled. They line up exactly across chunk borders
 - **Deepslate below y ≈ 0** — as in Minecraft, stone gives way to deepslate on a boundary jittered per column, so it reads as a transition rather than a drawn line
 - **Forests have trees** — oak logs and leaves, generated deterministically so canopies cross chunk borders intact and regrow identically when a chunk is reloaded
@@ -35,7 +37,7 @@ A from-scratch Minecraft-style game built with [Three.js](https://threejs.org/) 
 | --- | --- |
 | `W A S D` | Move |
 | `Space` | Jump (hold to keep jumping) |
-| `Ctrl` / double-tap `W` | Sprint |
+| `Ctrl` / double-tap `W` | Sprint — in water, swim |
 | `Shift` | Sneak |
 | Mouse | Look |
 | Left / right click | Break / place a block |
@@ -95,19 +97,31 @@ All paths are relative and `.nojekyll` is present, so the game works from a proj
 npm test
 ```
 
-386 headless checks across eight suites: Minecraft movement speeds, jump height, wall collision and auto jump; infinite-world chunking (negative coordinates, generation, eviction, edits surviving a regenerate), caves and the deepslate transition; the mesher (face culling, chunk seams, atlas UVs); the inventory model; block targeting; the save/settings/camera systems; pointer lock plus the native iPad bridge; and water, in both halves — how far it spreads, whether it finds the hole, what a drop does to it, what it refuses to touch, and then the geometry it turns into.
+417 headless checks across eight suites: Minecraft movement speeds, jump height, wall collision, auto jump and the swimming pose; infinite-world chunking (negative coordinates, generation, eviction, edits surviving a regenerate), caves and the deepslate transition; the mesher (face culling, chunk seams, atlas UVs); the inventory model; block targeting; the save/settings/camera systems; pointer lock plus the native iPad bridge; and water, in both halves — how far it spreads, whether it finds the hole, what a drop does to it, what it refuses to touch, and then the geometry it turns into.
 
-Three of them are worth calling out because they guard things that would otherwise fail silently:
+Four of them are worth calling out because they guard things that would otherwise fail silently:
 
 - **The shell mesh is proved complete.** Distant chunks skip their cave geometry. The test flood-fills the air connected to the sky, then asserts that every single face touching it is present in the shell mesh — so the shortcut can never leave a visible hole.
 - **Both cave code paths are cross-checked.** Chunk generation interpolates a precomputed noise lattice; `generatedBlock` interpolates the same lattice one cell at a time. The test asserts they agree block for block, because a drift between them would show up as a seam.
 - **The water surface is proved gapless.** Water used to be drawn as a box per cell, and since a spreading stream is a staircase of different levels, it came out as a grid of floating slabs you could see the floor between. The test meshes a real spread and a real coastline, then walks every pair of adjacent water quads and asserts their shared edge is the same edge, to the vertex.
+- **And proved gapless once it starts moving.** The swell lifts the surface by up to a twentieth of a block, and a surface quad and the top of the wall beneath it are different quads that happen to share a corner. If they were ever lifted by different amounts a crack would open between them, so the amplitude is a property of the corner rather than of the face — and the test asserts exactly that, by collecting every vertex position in a meshed pool and checking that no position is ever handed two different amplitudes.
 
 The tests run on a superflat world (`new World(seed, { flat: 3 })`) so that "walk forward for five seconds" has a deterministic answer.
 
 ## What's next
 
 Cave entrances, ores, lava, buckets, swords and tools, more block types, crafting, sounds.
+
+## How the water is put together
+
+Four files, and they only talk to each other through data:
+
+| File | What it owns |
+| --- | --- |
+| `src/water.js` | Where the water *is*. Minecraft's `FlowingFluid`, rule for rule: `getNewLiquid`, `spread`, `getSpread`, the four-block slope search, infinite sources |
+| `src/water-mesh.js` | What shape it is, and four bytes a vertex of everything the shader cannot work out for itself: depth, shore, wave amplitude, churn. No THREE, no DOM — arrays in, arrays out, so the tests can read the geometry directly |
+| `src/water-shader.js` | What it looks like. The swell, the Fresnel, the sky reflection, the foam, Snell's window, and the caustics patched into the terrain material |
+| `src/textures.js` | The two 16×16 tiles, which hold no colour at all any more — only light and shade around a mid grey, because the colour of water depends on how deep it is and which way you are looking, and a tile knows neither |
 
 ## Known limits
 
@@ -118,6 +132,8 @@ Cave entrances, ores, lava, buckets, swords and tools, more block types, craftin
 - **The world is 255 layers and cannot simply be made taller.** Mesh vertex positions are packed into single bytes, and a block at the top layer needs a vertex one above it. Going higher means widening every position attribute from 3 bytes a vertex to 6.
 - No ores yet, and no lava. Caves are dry: water fills the sea and anything you dig into it, but it does not seep into caves under the sea floor.
 - Water has no bucket, so the only sources are the sea. You can dig channels from it and build waterfalls, but not carry it inland.
+- **The water reflects a sky, not the world.** There is no render target and no second pass, so the reflection is the sky gradient and the sun evaluated in the shader. A cliff at the water's edge does not appear upside down in it. Doing that properly means rendering the scene again into a texture from a mirrored camera, which is a real cost on an iPad for something you notice mostly when it is missing.
+- **Caustics fade with depth measured from sea level**, so a pond you build on a mountaintop gets them at full strength rather than dimmed. They only ever land on faces the mesher marked as touching water, so nothing dry is ever lit by them.
 - Flowing water is never saved — it is a consequence of the terrain, so it is recomputed rather than stored, which is why a flood costs nothing in the save file. The cost is that a chunk coming back into memory comes back dry for a moment, until replaying its edits pokes the sea into finding the hole again.
 - Render distance is not free. Voxel data stays flat, but chunk *geometry* is roughly 0.12 MB per chunk and the chunk count grows with the square of the distance:
 

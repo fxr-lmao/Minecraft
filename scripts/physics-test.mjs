@@ -354,6 +354,106 @@ const assert = (name, cond, detail) => {
   for (let i = 0; i < Math.round(8 / PHYSICS_DT); i++) climber.update(PHYSICS_DT, up);
   assert('you can swim up to the surface', climber.pos.y > 12, climber.pos.y.toFixed(2));
 
+  // ---------------------------------------------------------- swimming mode
+  //
+  // Sprinting in water is not just a faster paddle: Minecraft lays you out
+  // flat, shrinks the hitbox to a 0.6 cube with the eye at 0.4, and steers
+  // you along the whole look vector instead of its flattened shadow.
+  {
+    const crawler = swimmer(swimFast, 1);
+    assert('sprinting in water starts a swim', crawler.swimming);
+    assert('...which shrinks the hitbox to 0.6', crawler.height === 0.6, crawler.height);
+    assert('...and drops the eye to 0.4', crawler.eyeHeight === 0.4, crawler.eyeHeight);
+
+    // Sprinting on the ground needs a foothold; in water there is none, so
+    // being in it has to be enough or you could never start.
+    const fromRest = new Player(sea);
+    fromRest.pos.set(0.5, 8, 0.5);
+    fromRest.vel.set(0, 0, 0);
+    fromRest.update(PHYSICS_DT, swimFast);
+    assert('...and it starts out of your depth, with nothing to push off',
+      fromRest.swimming && !fromRest.onGround);
+
+    // Letting go of forward ends it, exactly as it ends a sprint.
+    const stopped = new Player(sea);
+    stopped.pos.set(0.5, 8, 0.5);
+    for (let i = 0; i < 60; i++) stopped.update(PHYSICS_DT, swimFast);
+    stopped.update(PHYSICS_DT, idle);
+    assert('...letting go of forward ends it', !stopped.swimming);
+    assert('...and you stand back up', stopped.height === 1.8, stopped.height);
+
+    const dry = new Player(world);
+    for (let i = 0; i < 60; i++) dry.update(PHYSICS_DT, swimFast);
+    assert('sprinting on land is not swimming', dry.sprinting && !dry.swimming);
+  }
+
+  // Aiming is steering: the whole look vector, not its flattened shadow.
+  {
+    const diver = new Player(sea);
+    diver.pos.set(0.5, 12, 0.5);
+    diver.pitch = -Math.PI / 2 + 0.02; // straight down
+    for (let i = 0; i < Math.round(2 / PHYSICS_DT); i++) diver.update(PHYSICS_DT, swimFast);
+    assert('looking down while swimming takes you down', diver.pos.y < 8.5,
+      diver.pos.y.toFixed(2));
+
+    const riser = new Player(sea);
+    riser.pos.set(0.5, 5, 0.5);
+    riser.pitch = Math.PI / 2 - 0.02; // straight up
+    for (let i = 0; i < Math.round(5 / PHYSICS_DT); i++) riser.update(PHYSICS_DT, swimFast);
+    assert('...and looking up brings you back to the surface', riser.pos.y > 13,
+      riser.pos.y.toFixed(2));
+
+    // Level means level. Out in the middle of the water column that means
+    // holding your depth — no slow sink into the dark, no drift upwards.
+    const cruiser = new Player(sea);
+    cruiser.pos.set(0.5, 10, 0.5);
+    cruiser.pitch = 0;
+    for (let i = 0; i < Math.round(6 / PHYSICS_DT); i++) cruiser.update(PHYSICS_DT, swimFast);
+    assert('swimming level holds its depth', Math.abs(cruiser.pos.y - 10) < 0.4,
+      cruiser.pos.y.toFixed(2));
+
+    // Near the top it means the waterline: the float pulls you up to it and
+    // parks you there with your head out.
+    const floater = new Player(sea);
+    floater.pos.set(0.5, 12.6, 0.5);
+    floater.pitch = 0;
+    for (let i = 0; i < Math.round(5 / PHYSICS_DT); i++) floater.update(PHYSICS_DT, swimFast);
+    const surface = 13 + 8 / 9;
+    assert('...and at the top, the waterline',
+      Math.abs(floater.pos.y + floater.eyeHeight - surface) < 0.35,
+      (floater.pos.y + floater.eyeHeight).toFixed(2));
+    assert('...with your head out of the water', !floater.submerged);
+
+    // ...but the float must not reel a diver back up.
+    const deepDiver = new Player(sea);
+    deepDiver.pos.set(0.5, 12, 0.5);
+    deepDiver.pitch = -0.9;
+    for (let i = 0; i < Math.round(4 / PHYSICS_DT); i++) deepDiver.update(PHYSICS_DT, swimFast);
+    assert('...and a dive is not reeled back in', deepDiver.pos.y < 6,
+      deepDiver.pos.y.toFixed(2));
+  }
+
+  // A flooded one-block tunnel: swimmable, not walkable, and you cannot stand
+  // up inside it however hard you let go of the controls.
+  {
+    const tunnel = new World(1, { flat: 3 });
+    for (let x = -2; x <= 30; x++) {
+      for (let z = -2; z <= 2; z++) {
+        for (let y = 4; y <= 8; y++) tunnel.setBlock(x, y, z, 1); // solid roof
+      }
+    }
+    for (let x = 0; x <= 24; x++) tunnel.setBlock(x, 4, 0, WATER); // a 1-high bore
+    const rat = new Player(tunnel);
+    rat.pos.set(0.5, 4, 0.5);
+    rat.vel.set(0, 0, 0);
+    rat.yaw = -Math.PI / 2; // +x
+    for (let i = 0; i < Math.round(4 / PHYSICS_DT); i++) rat.update(PHYSICS_DT, swimFast);
+    assert('you can swim down a one-block flooded tunnel', rat.pos.x > 4,
+      rat.pos.x.toFixed(2));
+    for (let i = 0; i < 30; i++) rat.update(PHYSICS_DT, idle);
+    assert('...and cannot stand up inside it', rat.swimming && rat.height === 0.6);
+  }
+
   // On land nothing changed.
   const walker = new Player(world);
   for (let i = 0; i < 600; i++) {

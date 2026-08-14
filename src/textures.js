@@ -473,6 +473,14 @@ export function getAtlasTexture() {
 // be offset a little further every frame, and since water is already drawn in
 // its own translucent pass, that costs nothing extra.
 //
+// They hold no colour, only light and shade around a mid grey. The colour of
+// water is not a property of a 16x16 tile — it depends on how deep it is, how
+// you are looking at it and what is above it to reflect — so the shader works
+// it out and these supply the hand-drawn pattern moving across the top of it.
+// Keeping the pixel tile is what stops all this from reading as a lake in
+// some other engine: it is still Minecraft's water, moving over Minecraft's
+// blocks.
+//
 // Both tiles are built from a handful of sine harmonics with whole-number
 // periods across the tile, which makes them seamless in both directions by
 // construction. Seamless matters more than it sounds: the sea maps one copy
@@ -488,18 +496,19 @@ function harmonics(x, y, terms) {
   return v;
 }
 
-function waterCanvas(base, shade, terms) {
+/** A grey tile: 128 is "no change", and the harmonics swing either side of it. */
+function waterCanvas(terms) {
   const cv = document.createElement('canvas');
   cv.width = cv.height = TEX_SIZE;
   const ctx = cv.getContext('2d');
   const img = ctx.createImageData(TEX_SIZE, TEX_SIZE);
   for (let y = 0; y < TEX_SIZE; y++) {
     for (let x = 0; x < TEX_SIZE; x++) {
-      const c = shadeHex(base, 1 + harmonics(x, y, terms) * shade);
+      const v = clamp(Math.round(128 + harmonics(x, y, terms) * 127), 0, 255);
       const o = (y * TEX_SIZE + x) * 4;
-      img.data[o] = (c >> 16) & 255;
-      img.data[o + 1] = (c >> 8) & 255;
-      img.data[o + 2] = c & 255;
+      img.data[o] = v;
+      img.data[o + 1] = v;
+      img.data[o + 2] = v;
       img.data[o + 3] = 255;
     }
   }
@@ -509,10 +518,10 @@ function waterCanvas(base, shade, terms) {
 
 /** Calm water: broad, slow swells crossing each other. */
 function stillWaterCanvas() {
-  return waterCanvas(0x3a63d2, 0.13, [
-    [1, 1, 0.0, 0.5],
-    [2, -1, 1.7, 0.3],
-    [1, -3, 4.1, 0.2],
+  return waterCanvas([
+    [1, 1, 0.0, 0.50],
+    [2, -1, 1.7, 0.30],
+    [1, -3, 4.1, 0.20],
     [3, 2, 2.4, 0.15],
   ]);
 }
@@ -524,10 +533,10 @@ function stillWaterCanvas() {
  * keep it from looking like a barcode.
  */
 function flowingWaterCanvas() {
-  return waterCanvas(0x3a63d2, 0.2, [
+  return waterCanvas([
     [4, 0, 0.0, 0.55],
     [7, 0, 2.2, 0.25],
-    [2, 0, 4.4, 0.3],
+    [2, 0, 4.4, 0.30],
     [3, 1, 1.1, 0.18],
     [5, 2, 3.3, 0.12],
   ]);
@@ -536,8 +545,12 @@ function flowingWaterCanvas() {
 let waterTextures = null;
 
 /**
- * The two world-water textures, { still, flowing }. Both repeat in both
+ * The two world-water patterns, { still, flowing }. Both repeat in both
  * directions so the surface tiles across blocks and the scroll wraps cleanly.
+ *
+ * No colour space conversion: these are not pictures of anything, they are
+ * numbers the shader multiplies by, and running them through an sRGB decode
+ * would bend the scale so that "no change" was no longer in the middle.
  */
 export function getWaterTextures() {
   if (waterTextures) return waterTextures;
@@ -548,7 +561,7 @@ export function getWaterTextures() {
     tex.magFilter = THREE.NearestFilter;
     tex.minFilter = THREE.LinearMipmapLinearFilter;
     tex.generateMipmaps = true;
-    tex.colorSpace = THREE.SRGBColorSpace;
+    tex.colorSpace = THREE.NoColorSpace;
     tex.anisotropy = 4;
     return tex;
   };

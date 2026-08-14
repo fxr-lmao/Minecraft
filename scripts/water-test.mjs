@@ -13,7 +13,8 @@ import { World, STONE } from '../src/world.js';
 import { WaterFlow, DROP_OFF, SLOPE_FIND_DISTANCE } from '../src/water.js';
 import { meshChunk } from '../src/blocks.js';
 import {
-  fluidCornerHeight, fluidFlow, fluidOwnHeight, STILL, FLOWING,
+  fluidCornerHeight, fluidCornerInfo, fluidWaveAmount, fluidFlow, fluidOwnHeight,
+  DEPTH_SCALE, STILL, FLOWING,
 } from '../src/water-mesh.js';
 import {
   WATER, WATER_LEVELS, WATER_MAX_AMOUNT, AIR, GRASS,
@@ -589,6 +590,113 @@ const F32 = 1e-4;
 {
   assert('a current settles at Minecraft\'s 0.07 blocks a tick',
     near(FLOW_PUSH_SPEED, 0.014 / (1 - 0.8) * 20, 1e-9), FLOW_PUSH_SPEED);
+}
+
+// ------------------------------------------------- what the shader is told
+//
+// Four bytes a vertex — depth, shore, wave amplitude, churn — and the shader
+// can do nothing the mesher has not measured for it. These check the
+// measurements, and one invariant that the geometry depends on: a corner's
+// wave amplitude has to be the same number wherever it is read, or the
+// surface and the wall beneath it come apart when the swell lifts one and not
+// the other.
+{
+  const info = new Float64Array(3);
+
+  // Open sea, four blocks of it, nothing else in reach.
+  const deep = sampler({}, WATER);
+  const seaFloor = (x, y, z) => (y < -4 ? GRASS : y <= 0 ? WATER : AIR);
+  fluidCornerInfo(seaFloor, 3, 0, 3, info);
+  assert('open water touches no shore', info[1] === 0, info[1]);
+  assert('...and reports how deep it is', near(info[2], 5 / DEPTH_SCALE, 1e-9), info[2]);
+
+  // A straight coastline: two of the four cells at this corner are land.
+  const coast = (x, y, z) => (y < 0 ? GRASS : y > 0 ? AIR : (x < 0 ? WATER : GRASS));
+  fluidCornerInfo(coast, 0, 0, 0, info);
+  assert('a straight coast is half shore', near(info[1], 0.5, 1e-9), info[1]);
+  assert('...and only the wet half counts toward the depth',
+    near(info[2], 1 / DEPTH_SCALE, 1e-9), info[2]);
+
+  // The depth walk gives up rather than counting an ocean trench forever.
+  fluidCornerInfo(deep, 0, 0, 0, info);
+  assert('the depth scale tops out', near(info[2], 1, 1e-9), info[2]);
+
+  assert('deep water rides the full swell', near(fluidWaveAmount(8 / 9, 0), 1, 1e-9));
+  assert('the shore pins the surface down', fluidWaveAmount(8 / 9, 1) < 0.2,
+    fluidWaveAmount(8 / 9, 1));
+  const thin = fluidWaveAmount(1 / 9, 0);
+  assert('a one-ninth puddle barely moves at all', thin < 0.15 && thin > 0,
+    thin.toFixed(3));
+  assert('...by less than its own depth, so it cannot dip through the floor',
+    thin * 0.054 < 1 / 9, (thin * 0.054).toFixed(4));
+}
+
+{
+  // A pool with a wall, meshed for real: every vertex carries four channels,
+  // and the ones the top and the side share agree exactly.
+  const { w } = pool((world) => {
+    for (let x = 8; x < 12; x++) {
+      for (let z = 8; z < 12; z++) world.setBlock(x, FLAT + 1, z, WATER);
+    }
+  });
+  const { still, flowing } = meshChunk(w, 0, 0, true).water;
+  const channels = (buf) => buf.data.length / 4;
+  assert('every water vertex carries four channels',
+    channels(still) === still.pos.length / 3 && channels(flowing) === flowing.pos.length / 3,
+    `${channels(still)} + ${channels(flowing)}`);
+
+  // Collect (x, y, z) -> wave amplitude across both buffers and check that no
+  // position is ever given two different amplitudes. This is the weld.
+  const waveAt = new Map();
+  let disagreement = null;
+  for (const buf of [still, flowing]) {
+    for (let v = 0; v < buf.pos.length / 3; v++) {
+      const key = `${buf.pos[v * 3].toFixed(3)},${buf.pos[v * 3 + 1].toFixed(3)},${buf.pos[v * 3 + 2].toFixed(3)}`;
+      const wave = buf.data[v * 4 + 2];
+      if (waveAt.has(key) && waveAt.get(key) !== wave) {
+        disagreement = `${key}: ${waveAt.get(key)} vs ${wave}`;
+      }
+      waveAt.set(key, wave);
+    }
+  }
+  assert('a shared vertex is never told to bob by two different amounts',
+    disagreement === null, disagreement ?? '');
+
+  // The floor of a wall is standing on the ground and must never move.
+  let pinned = true;
+  for (let v = 0; v < flowing.pos.length / 3; v++) {
+    const y = flowing.pos[v * 3 + 1];
+    if (Number.isInteger(y) && flowing.data[v * 4 + 2] !== 0) pinned = false;
+  }
+  assert('the foot of a wall of water is pinned to the floor', pinned);
+
+  // Still water is still: nothing in the pool is churning.
+  let calm = true;
+  for (let v = 0; v < still.pos.length / 3; v++) if (still.data[v * 4 + 3] > 0) calm = false;
+  assert('a pool has no whitewater in it', calm);
+}
+
+{
+  // The `wet` flag: caustics land on the sea floor and nowhere else.
+  const { w } = pool((world) => {
+    world.setBlock(4, FLAT + 1, 4, WATER);
+    world.setBlock(20, FLAT, 20, AIR); // a dry hole, same depth, no water
+  });
+  const buf = meshChunk(w, 0, 0, true);
+  const wetAt = new Map();
+  for (let v = 0; v < buf.pos.length / 3; v++) {
+    if (buf.n[v * 3 + 1] !== 1) continue; // up faces only
+    const key = `${buf.pos[v * 3]},${buf.pos[v * 3 + 1]},${buf.pos[v * 3 + 2]}`;
+    wetAt.set(key, buf.wet[v]);
+  }
+  // The block under the water: its top face is at layer FLAT + 1.
+  const under = toLayer(FLAT) + 1;
+  assert('the floor under water is marked wet',
+    wetAt.get(`4,${under},4`) === 255, wetAt.get(`4,${under},4`));
+  assert('the floor of a dry hole is not',
+    wetAt.get(`20,${toLayer(FLAT)},20`) === 0, wetAt.get(`20,${toLayer(FLAT)},20`));
+  assert('nor is open ground beside the puddle',
+    wetAt.get(`6,${under},4`) === 0, wetAt.get(`6,${under},4`));
 }
 
 for (const [name, ok, detail] of results) {

@@ -17,6 +17,7 @@ import { WorldRenderer, buildSingleBlockGeometry } from './blocks.js';
 import { Player } from './player.js';
 import { Input, LOOK_FREE, LOOK_TOUCH } from './input.js';
 import { WaterFlow, FLOW_INTERVAL_MS } from './water.js';
+import { setCameraUnderwater, setSunDirection } from './water-shader.js';
 import { installNativeBridge } from './native.js';
 import { Hud } from './hud.js';
 import { Inventory } from './inventory.js';
@@ -30,7 +31,7 @@ import { settings, setSetting, LIMITS } from './settings.js';
 import * as savegame from './savegame.js';
 import {
   PHYSICS_DT, SPEED_WALK,
-  PLAYER_WIDTH, PLAYER_HEIGHT, PLAYER_EYE, REACH,
+  PLAYER_WIDTH, PLAYER_EYE, REACH,
   CHUNK_SIZE, DATA_RADIUS,
 } from './constants.js';
 import { clamp, lerp } from './utils.js';
@@ -116,6 +117,10 @@ let wasSubmerged = false;
 function applyUnderwaterFog(submerged) {
   if (submerged === wasSubmerged) return;
   wasSubmerged = submerged;
+  // The surface has to know which side of it you are on: from below there is
+  // no sky to reflect, and the whole sky arrives through Snell's window
+  // instead.
+  setCameraUnderwater(submerged);
   if (submerged) {
     scene.fog.color.setHex(UNDERWATER_FOG);
     scene.fog.near = 0.5;
@@ -165,6 +170,9 @@ scene.add(ambient);
 
 const sun = new THREE.DirectionalLight(0xfff2d9, 1.25);
 sun.position.set(60, 100, 40);
+// The water reflects the same sun the world is lit by, so it has to be told
+// where it is. It never moves (no day cycle yet), hence once, here.
+setSunDirection(60, 100, 40);
 sun.castShadow = true;
 let shadowMapSize = 2048;
 sun.shadow.mapSize.set(shadowMapSize, shadowMapSize);
@@ -362,7 +370,10 @@ function placeBlock() {
   const by = target.y + target.ny;
   const bz = target.z + target.nz;
   if (!world.inBounds(bx, by, bz) || world.isSolid(bx, by, bz)) return;
-  if (blockIntersectsPlayer(bx, by, bz, player.pos, PLAYER_WIDTH, PLAYER_HEIGHT)) return;
+  // player.height, not the standing height: a swimmer is a 0.6 cube, and
+  // refusing to place a block beside them because a hitbox they are not
+  // currently using would have overlapped it is just baffling.
+  if (blockIntersectsPlayer(bx, by, bz, player.pos, PLAYER_WIDTH, player.height)) return;
   world.setBlock(bx, by, bz, stack.id);
   waterFlow.touch(bx, by, bz);
   inventory.consumeSelected(1);
@@ -492,7 +503,15 @@ function setShadowMapSize(size) {
 // ---------------- game state ----------------
 let prevSprinting = false;
 let prevSneaking = false;
+let prevSwimming = false;
 let eyeOffset = 0; // smooth sneak crouch
+/**
+ * The camera's height above the feet, eased. The player's own eye height
+ * snaps between 1.62 standing and 0.4 swimming, and snapping the camera a
+ * metre and a quarter down the moment you break into a crawl is jarring —
+ * easing it reads as ducking under the surface.
+ */
+let eyeHeight = PLAYER_EYE;
 let breakRepeat = 0;
 let placeRepeat = 0;
 let lastChunk = { cx: NaN, cz: NaN };
@@ -591,10 +610,12 @@ function frame(now) {
 
   // ---- status messages on mode changes ----
   if (playing) {
-    if (player.sprinting && !prevSprinting) hud.showStatus('Sprinting');
+    if (player.swimming && !prevSwimming) hud.showStatus('Swimming');
+    else if (player.sprinting && !prevSprinting && !player.swimming) hud.showStatus('Sprinting');
     if (player.sneaking && !prevSneaking) hud.showStatus('Sneaking');
     prevSprinting = player.sprinting;
     prevSneaking = player.sneaking;
+    prevSwimming = player.swimming;
   }
 
   // ---- chunk streaming ----
@@ -648,10 +669,11 @@ function frame(now) {
   player.bobX = lerp(player.bobX || 0, Math.cos(player.bobPhase * 0.5) * bobTarget * 0.6, Math.min(1, animDt * 12));
 
   eyeOffset = lerp(eyeOffset, player.sneaking ? 0.16 : 0, Math.min(1, animDt * 12));
+  eyeHeight = lerp(eyeHeight, player.eyeHeight, Math.min(1, animDt * 14));
   const right = player.rightVector();
   const eye = {
     x: player.pos.x + right.x * player.bobX,
-    y: player.pos.y + PLAYER_EYE - eyeOffset + player.bobY,
+    y: player.pos.y + eyeHeight - eyeOffset + player.bobY,
     z: player.pos.z + right.z * player.bobX,
   };
   view.apply(camera, world, eye, player.yaw, player.pitch, animDt);
@@ -670,6 +692,7 @@ function frame(now) {
       onGround: player.onGround,
       sneaking: player.sneaking,
       sprinting: player.sprinting,
+      swimming: player.swimming,
     });
   }
 
@@ -711,7 +734,9 @@ function frame(now) {
     pitchDeg: (player.pitch * 180) / Math.PI,
     yawDeg: player.facingDegrees(),
     speed: player.horizontalSpeed,
-    mode: player.sneaking ? 'Sneaking' : player.sprinting ? 'Sprinting' : 'Walking',
+    mode: player.swimming ? 'Swimming'
+      : player.sneaking ? 'Sneaking'
+        : player.sprinting ? 'Sprinting' : 'Walking',
     onGround: player.onGround,
     blockUnder: world.get(px, Math.max(0, world.heightAt(px, pz)), pz),
     target,
