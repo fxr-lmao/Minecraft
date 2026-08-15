@@ -22,6 +22,12 @@ import {
   isOpaque, isWaterSource, SEA_LEVEL,
 } from '../src/terrain.js';
 import { WORLD_SEED, CHUNK_SIZE, toLayer, FLOW_PUSH_SPEED } from '../src/constants.js';
+import * as THREE from '../vendor/three.module.min.js';
+import {
+  WaterView, WATER_FAST, WATER_FANCY, WATER_ULTRA,
+} from '../src/water-render.js';
+import { ABSORB } from '../src/water-shader.js';
+import { CAUSTIC_GLSL, SWELL_GLSL } from '../src/water-glsl.js';
 
 const results = [];
 const assert = (name, cond, detail) =>
@@ -676,27 +682,128 @@ const F32 = 1e-4;
   assert('a pool has no whitewater in it', calm);
 }
 
+// ------------------------------------------------------- the render passes
+//
+// The shading itself is GLSL and cannot be run here, but the arithmetic that
+// decides *where* it samples can, and it is the part that is easy to get
+// silently wrong. A planar reflection has one property that has to hold: a
+// point lying on the water plane must land at the same place on screen
+// whether it is projected by the real camera or by the mirrored one. If that
+// is true the reflection is anchored to the surface; if it is out by a
+// fraction the whole reflection slides as you walk.
 {
-  // The `wet` flag: caustics land on the sea floor and nowhere else.
-  const { w } = pool((world) => {
-    world.setBlock(4, FLAT + 1, 4, WATER);
-    world.setBlock(20, FLAT, 20, AIR); // a dry hole, same depth, no water
-  });
-  const buf = meshChunk(w, 0, 0, true);
-  const wetAt = new Map();
-  for (let v = 0; v < buf.pos.length / 3; v++) {
-    if (buf.n[v * 3 + 1] !== 1) continue; // up faces only
-    const key = `${buf.pos[v * 3]},${buf.pos[v * 3 + 1]},${buf.pos[v * 3 + 2]}`;
-    wetAt.set(key, buf.wet[v]);
+  const noopRenderer = {
+    getDrawingBufferSize: (v) => v.set(64, 64),
+    shadowMap: {},
+  };
+  const view = new WaterView(noopRenderer, { quality: WATER_FAST });
+  assert('the lowest setting runs no extra passes',
+    !view.wantsRefraction && !view.wantsReflection);
+  view.setQuality(WATER_FANCY);
+  assert('fancy measures what is behind the water',
+    view.wantsRefraction && !view.wantsReflection);
+  view.setQuality(WATER_ULTRA);
+  assert('...and the top setting mirrors what is above it',
+    view.wantsRefraction && view.wantsReflection);
+
+  const material = { defines: {} };
+  view.useMaterials([material]);
+  assert('the materials are compiled for the passes that are running',
+    material.defines.USE_REFRACTION === 1 && material.defines.USE_REFLECTION === 1);
+  view.setQuality(WATER_FAST);
+  assert('...and recompiled when they stop', material.defines.USE_REFLECTION === 0
+    && material.needsUpdate === true);
+
+  // Now the geometry. Camera above the water, looking down at it at an angle.
+  const camera = new THREE.PerspectiveCamera(70, 1.5, 0.1, 1000);
+  camera.position.set(12, 66.5, -4);
+  camera.rotation.order = 'YXZ';
+  camera.rotation.set(-0.35, 0.8, 0);
+  camera.updateMatrixWorld(true);
+  camera.updateProjectionMatrix();
+
+  view.planeY = 62 + 8 / 9;
+  view._aimMirror(camera);
+  const mirror = view.mirrorCamera;
+  assert('the mirrored camera is the same distance the other side',
+    near(mirror.position.y, 2 * view.planeY - camera.position.y, 1e-6),
+    mirror.position.y.toFixed(4));
+  assert('...directly below the real one',
+    near(mirror.position.x, camera.position.x, 1e-9)
+    && near(mirror.position.z, camera.position.z, 1e-9));
+
+  const forward = (cam) => new THREE.Vector3(0, 0, -1).applyQuaternion(cam.quaternion);
+  const a = forward(camera);
+  const b = forward(mirror);
+  assert('...looking the mirror image of the way the real one looks',
+    near(a.x, b.x, 1e-6) && near(a.z, b.z, 1e-6) && near(a.y, -b.y, 1e-6),
+    `${a.y.toFixed(3)} vs ${b.y.toFixed(3)}`);
+
+  // A mirror matrix would flip the winding of every triangle in the world.
+  // Building the reflection out of a position and a look-at keeps it a
+  // rotation, and this is the number that says so.
+  assert('the mirrored view is a rotation, not a reflection',
+    new THREE.Matrix4().extractRotation(mirror.matrixWorld).determinant() > 0.999,
+    new THREE.Matrix4().extractRotation(mirror.matrixWorld).determinant().toFixed(4));
+
+  // The property that actually matters, and the only one worth writing down:
+  // take something standing above the water, work out where its reflection
+  // *should* appear on the surface, and check that the water there looks it up
+  // in the right place in the reflection texture.
+  //
+  // The image in that texture is left-right mirrored — flipping the camera's
+  // up vector is what keeps the transform a rotation, and the cost is a
+  // mirrored frame — so comparing against the real camera's screen position
+  // would be comparing against the wrong thing. The lookup is correct when it
+  // agrees with where the *mirrored* camera drew the object.
+  const texMatrix = view._reflectionMatrix();
+  const eye = camera.position;
+  let worst = 0;
+  for (const [qx, qy, qz] of [[14, 70, -12], [4, 68, -20], [22, 74, 2]]) {
+    const tree = new THREE.Vector3(qx, qy, qz);
+    const image = new THREE.Vector3(qx, 2 * view.planeY - qy, qz);
+    // Where the line from the eye to the reflected point crosses the water.
+    const t = (view.planeY - eye.y) / (image.y - eye.y);
+    const onSurface = eye.clone().lerp(image, t);
+
+    const lookup = onSurface.clone().applyMatrix4(texMatrix);
+    const drawn = tree.clone().project(mirror);
+    worst = Math.max(worst,
+      Math.abs(lookup.x - (drawn.x * 0.5 + 0.5)),
+      Math.abs(lookup.y - (drawn.y * 0.5 + 0.5)));
   }
-  // The block under the water: its top face is at layer FLAT + 1.
-  const under = toLayer(FLAT) + 1;
-  assert('the floor under water is marked wet',
-    wetAt.get(`4,${under},4`) === 255, wetAt.get(`4,${under},4`));
-  assert('the floor of a dry hole is not',
-    wetAt.get(`20,${toLayer(FLAT)},20`) === 0, wetAt.get(`20,${toLayer(FLAT)},20`));
-  assert('nor is open ground beside the puddle',
-    wetAt.get(`6,${under},4`) === 0, wetAt.get(`6,${under},4`));
+  assert('the water looks up a reflection exactly where it was drawn',
+    worst < 1e-5, worst.toExponential(2));
+}
+
+// ------------------------------------------------------------- the shading
+{
+  // Absorption is the colour of water now, so the constants are worth an
+  // assertion or two of their own.
+  const t = (c, d) => Math.exp(-c * d);
+  assert('red is absorbed fastest and blue slowest',
+    ABSORB.x > ABSORB.y && ABSORB.y > ABSORB.z);
+  assert('a hand\'s depth barely tints anything', t(ABSORB.x, 0.5) > 0.8,
+    t(ABSORB.x, 0.5).toFixed(3));
+  assert('a couple of blocks takes half the red', t(ABSORB.x, 2) < 0.55,
+    t(ABSORB.x, 2).toFixed(3));
+  assert('...and leaves nearly all the blue', t(ABSORB.z, 2) > 0.9,
+    t(ABSORB.z, 2).toFixed(3));
+  assert('eight blocks is blue and nothing else',
+    t(ABSORB.x, 8) < 0.08 && t(ABSORB.z, 8) > 0.65,
+    `${t(ABSORB.x, 8).toFixed(3)} / ${t(ABSORB.z, 8).toFixed(3)}`);
+  assert('the sea floor is gone long before the render distance',
+    t(ABSORB.z, 64) < 0.07, t(ABSORB.z, 64).toFixed(3));
+
+  // One source of GLSL, used by two shaders. If these ever became two copies,
+  // the caustics on the sea floor and the caustics seen from underwater would
+  // drift out of step at exactly the waterline, where you would notice.
+  assert('the surface and the underwater pass share one caustic function',
+    CAUSTIC_GLSL.includes('float caustic(') && CAUSTIC_GLSL.includes('causticRidge'));
+  assert('...and one swell', SWELL_GLSL.includes('void swell(')
+    && SWELL_GLSL.includes('void ripples('));
+  assert('the caustic pattern does not depend on where the origin is',
+    !/\/\s*\(?\s*sin/.test(CAUSTIC_GLSL) && !CAUSTIC_GLSL.includes('length('));
 }
 
 for (const [name, ok, detail] of results) {

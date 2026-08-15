@@ -12,12 +12,13 @@
 
 import * as THREE from '../vendor/three.module.min.js';
 import { World, AIR, BEDROCK, toChunk } from './world.js';
-import { isWater, waterHeight } from './terrain.js';
+import { isWater, waterHeight, SEA_LEVEL } from './terrain.js';
 import { WorldRenderer, buildSingleBlockGeometry } from './blocks.js';
 import { Player } from './player.js';
 import { Input, LOOK_FREE, LOOK_TOUCH } from './input.js';
 import { WaterFlow, FLOW_INTERVAL_MS } from './water.js';
 import { setCameraUnderwater, setSunDirection } from './water-shader.js';
+import { WaterView, HELD_LAYER, WATER_QUALITY_NAMES } from './water-render.js';
 import { installNativeBridge } from './native.js';
 import { Hud } from './hud.js';
 import { Inventory } from './inventory.js';
@@ -111,20 +112,59 @@ function cameraUnderwater() {
   return y + waterHeight(id, world.isWaterAt(x, y + 1, z)) >= camera.position.y;
 }
 
+/**
+ * The height of the water surface the camera should mirror the world through.
+ *
+ * A planar reflection has exactly one plane, and a world can have water at
+ * several heights at once — the sea, a pond up a hill, a waterfall on the way
+ * between them. So it picks the surface nearest the camera by climbing or
+ * falling a short way through the column it is in, and settles for sea level
+ * when there is no water near enough to matter. Water at some other height
+ * still reflects; it just reflects the sky, which is what it did before there
+ * was a reflection pass at all.
+ */
+const PLANE_SEARCH = 12;
+function waterPlaneNear(x, y, z) {
+  const cx = Math.floor(x);
+  const cz = Math.floor(z);
+  const cy = Math.floor(y);
+  for (let d = 0; d <= PLANE_SEARCH; d++) {
+    for (const probe of d === 0 ? [cy] : [cy - d, cy + d]) {
+      const id = world.get(cx, probe, cz);
+      if (!isWater(id)) continue;
+      if (world.isWaterAt(cx, probe + 1, cz)) continue; // not the free surface
+      return probe + waterHeight(id, false);
+    }
+  }
+  return SEA_LEVEL + 8 / 9;
+}
+
 /** Under water everything is blue and you cannot see far, as in Minecraft. */
 const UNDERWATER_FOG = 0x1c3f8f;
-let wasSubmerged = false;
+let wasSubmerged = null;
 function applyUnderwaterFog(submerged) {
   if (submerged === wasSubmerged) return;
   wasSubmerged = submerged;
+  // With the water passes on, the composite absorbs light per channel over
+  // the real distance to every pixel, which is a far better description of
+  // being underwater than a fog colour is. Doing both would grade the same
+  // frame twice, so the fog stands well back and only catches the far
+  // distance the absorption has already taken care of.
+  const graded = waterView.wantsRefraction;
   // The surface has to know which side of it you are on: from below there is
   // no sky to reflect, and the whole sky arrives through Snell's window
   // instead.
   setCameraUnderwater(submerged);
+  // The held block is drawn in a pass of its own, after the water and after
+  // the underwater grade, so it is the one thing in the frame the grade
+  // cannot reach. Tint it by hand instead, or your arm stays in daylight
+  // while the rest of the world is ten metres under.
+  heldMaterial.color.setHex(submerged ? 0x6f9fc4 : 0xffffff);
+  heldMaterial.emissive.setHex(submerged ? 0x25384a : 0x5a5a5a);
   if (submerged) {
     scene.fog.color.setHex(UNDERWATER_FOG);
-    scene.fog.near = 0.5;
-    scene.fog.far = 22;
+    scene.fog.near = graded ? 30 : 0.5;
+    scene.fog.far = graded ? 110 : 22;
     renderer.setClearColor(UNDERWATER_FOG);
   } else {
     scene.fog.color.setHex(FOG_COLOR);
@@ -208,6 +248,11 @@ if (restored) {
 const worldRenderer = new WorldRenderer(world, scene);
 applyRenderDistance();
 
+// The water's own renderer: the off-screen passes that let the surface
+// measure what is behind it and mirror what is above it. See water-render.js.
+const waterView = new WaterView(renderer, { quality: settings.waterQuality });
+waterView.useMaterials(worldRenderer.waterMaterials);
+
 // Water settles from wherever the world was disturbed. Flowing water is never
 // stored — it is a consequence of the terrain, not a decision — so anywhere
 // the terrain has been changed has to be poked for the sea to find the hole
@@ -267,6 +312,9 @@ const heldMesh = new THREE.Mesh(new THREE.BufferGeometry(), heldMaterial);
 heldMesh.rotation.set(0.12, -0.6, 0.1);
 heldMesh.visible = false;
 heldMesh.frustumCulled = false;
+// Off the default layer, so the mirrored camera does not find a block
+// floating in the reflection where the player's hand would be.
+heldMesh.layers.set(HELD_LAYER);
 camera.add(heldMesh);
 
 let heldId = -1;
@@ -651,7 +699,10 @@ function frame(now) {
   // clear the blue even while you are still standing in it. It goes by the
   // water's actual surface, so a puddle you are wading through does not black
   // out the screen when you crouch.
-  applyUnderwaterFog(cameraUnderwater());
+  const submerged = cameraUnderwater();
+  applyUnderwaterFog(submerged);
+  waterView.underwater = submerged;
+  waterView.planeY = waterPlaneNear(camera.position.x, camera.position.y, camera.position.z);
 
   // ---- camera ----
   const fovBase = settings.fov;
@@ -760,9 +811,11 @@ function frame(now) {
     dataMB: (world.chunks.size * 65) / 1024,
     calls: renderer.info.render.calls,
     tris: renderer.info.render.triangles,
+    waterQuality: WATER_QUALITY_NAMES[settings.waterQuality] ?? '?',
+    waterMs: waterView.frameMs,
   });
 
-  renderer.render(scene, camera);
+  waterView.render(scene, camera, worldRenderer.hasWater);
 
   // The loading screen stays up until the chunks around spawn are meshed,
   // so the world never appears in front of you a piece at a time.
@@ -803,6 +856,10 @@ hud.bindMenu({
     if (key === 'fov') camera.fov = settings.fov;
     if (key === 'renderDistance') applyRenderDistance();
     if (key === 'autoJump') player.autoJump = settings.autoJump;
+    if (key === 'waterQuality') {
+      waterView.setQuality(settings.waterQuality);
+      wasSubmerged = null; // the fog depends on which passes are running
+    }
   },
 });
 
