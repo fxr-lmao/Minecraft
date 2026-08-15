@@ -107,6 +107,12 @@ export class Hud {
         const warn = n >= 20 ? '  ⚠ heavy' : '';
         return `${n} chunks · ${n * CHUNK_SIZE} blocks · ~${mb} MB${warn}`;
       }],
+      // Each level is another render of the world, so the label says so.
+      ['waterQuality', 'set-water', 'out-water', (v) => [
+        'Fast — flat, one pass',
+        'Fancy — depth, refraction, foam',
+        'Reflections — the world in the water',
+      ][Math.round(v)] ?? ''],
     ];
     for (const [key, inputId, outId, fmt] of this._settingInputs) {
       const el = document.getElementById(inputId);
@@ -177,6 +183,7 @@ export class Hud {
       ``,
       `FPS: ${info.fps}  (${info.frameMs.toFixed(1)} ms)`,
       `Draw calls: ${info.calls}  ·  ${(info.tris / 1000).toFixed(1)}k tris`,
+      `Water: ${info.waterQuality}  ·  ${info.waterMs.toFixed(1)} ms/frame`,
       `Pixel scale: ${info.pixelScale.toFixed(2)}x  ·  Input: ${info.inputMode}`,
       `Render distance: ${info.renderDistance} chunks (${info.renderDistance * CHUNK_SIZE} blocks)`,
       `Chunks: ${info.meshes} meshed, ${info.queued} queued, ${info.loaded} data in memory`,

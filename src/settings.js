@@ -15,6 +15,13 @@ export const LIMITS = {
   fov: { min: 50, max: 110, step: 1 },
   touchSensitivity: { min: 0.3, max: 3, step: 0.05 },
   renderDistance: { min: RENDER_DISTANCE_MIN, max: RENDER_DISTANCE_MAX, step: 1 },
+  /**
+   * 0 fast, 1 fancy, 2 reflections. The levels are passes, not sliders:
+   * "fancy" adds an off-screen render of the world so the water can measure
+   * what is behind it, and "reflections" adds a second one from a mirrored
+   * camera. Anyone who wants the frames back turns it down.
+   */
+  waterQuality: { min: 0, max: 2, step: 1 },
 };
 
 const DEFAULTS = {
@@ -22,6 +29,7 @@ const DEFAULTS = {
   touchSensitivity: 1,
   fov: 70,
   renderDistance: RENDER_DISTANCE_DEFAULT,
+  waterQuality: 2,
   invertY: false,
   autoJump: true,
 };
