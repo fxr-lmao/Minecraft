@@ -3,7 +3,9 @@
 // generated hills would make "walk forward for five seconds" untestable.
 import { Player } from '../src/player.js';
 import { World, GRASS, AIR, WATER } from '../src/world.js';
-import { PHYSICS_DT, WORLD_MIN_Y, SPEED_WALK, JUMP_VELOCITY } from '../src/constants.js';
+import {
+  PHYSICS_DT, WORLD_MIN_Y, SPEED_WALK, JUMP_VELOCITY, SWIM_UP_SPEED, GRAVITY,
+} from '../src/constants.js';
 
 const world = new World(1, { flat: 3 });
 
@@ -452,6 +454,75 @@ const assert = (name, cond, detail) => {
       rat.pos.x.toFixed(2));
     for (let i = 0; i < 30; i++) rat.update(PHYSICS_DT, idle);
     assert('...and cannot stand up inside it', rat.swimming && rat.height === 0.6);
+  }
+
+  // ------------------------------------------------------- getting back out
+  //
+  // Swimming up cannot do it, and the arithmetic says so before any of the
+  // simulation does: you rise at SWIM_UP_SPEED, you leave the water with that
+  // still on the clock, and gravity gives you v²/2g of coast. The bank is
+  // 1 - 8/9 of a block above the surface. The coast is smaller than the lip,
+  // so you bob against the edge forever — which is exactly what the bug
+  // report described.
+  {
+    const coast = (SWIM_UP_SPEED * SWIM_UP_SPEED) / (2 * GRAVITY);
+    const lip = 1 - 8 / 9;
+    assert('swimming up alone cannot clear the lip of a bank', coast < lip,
+      `${coast.toFixed(3)} of coast against a ${lip.toFixed(3)} lip`);
+
+    /** A pool six deep, with a bank on the +x side whose top is at `wallTop + 1`. */
+    const pool = (wallTop) => {
+      const w = new World(1, { flat: 3 });
+      for (let x = -20; x <= 0; x++) {
+        for (let z = -8; z <= 8; z++) {
+          for (let y = 4; y <= 9; y++) w.setBlock(x, y, z, WATER);
+        }
+      }
+      for (let x = 1; x <= 40; x++) {
+        for (let z = -8; z <= 8; z++) {
+          for (let y = 4; y <= wallTop; y++) w.setBlock(x, y, z, GRASS);
+        }
+      }
+      return w;
+    };
+
+    /** Swim at the bank for `seconds` and report where you ended up. */
+    const swimAt = (wallTop, input, seconds = 6) => {
+      const p = new Player(pool(wallTop));
+      p.pos.set(-3.5, 9.5, 0.5);
+      p.vel.set(0, 0, 0);
+      p.yaw = -Math.PI / 2; // facing +x, at the bank
+      let highest = p.pos.y;
+      for (let i = 0; i < Math.round(seconds / PHYSICS_DT); i++) {
+        p.update(PHYSICS_DT, input);
+        highest = Math.max(highest, p.pos.y);
+      }
+      return { p, highest, out: p.pos.x > 1 && !p.inWater };
+    };
+
+    const jumping = { forward: 1, strafe: 0, jump: true, sprint: false, sneak: false };
+    const crawling = { forward: 1, strafe: 0, jump: false, sprint: true, sneak: false };
+
+    const climbed = swimAt(9, jumping);
+    assert('but swimming at a bank climbs out of the water', climbed.out,
+      `x ${climbed.p.pos.x.toFixed(2)}, y ${climbed.p.pos.y.toFixed(2)}`);
+    assert('...clearing the top of it', climbed.highest > 10,
+      climbed.highest.toFixed(2));
+
+    // Minecraft's boost needs no jump key, and neither does this one: you
+    // swim at the shore and you are on the shore.
+    const crawled = swimAt(9, crawling);
+    assert('...with no jump key involved', crawled.out,
+      `x ${crawled.p.pos.x.toFixed(2)}, y ${crawled.p.pos.y.toFixed(2)}`);
+
+    // The other half of the rule. A cliff has no room 0.6 up, so nothing
+    // fires and the water keeps you — otherwise swimming into any wall would
+    // be a ladder.
+    const cliff = swimAt(12, jumping);
+    assert('a three-block cliff is not a bank', !cliff.out,
+      `x ${cliff.p.pos.x.toFixed(2)}, y ${cliff.p.pos.y.toFixed(2)}`);
+    assert('...and you do not scale it', cliff.highest < 11,
+      cliff.highest.toFixed(2));
   }
 
   // On land nothing changed.

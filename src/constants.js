@@ -84,6 +84,30 @@ export const SWIM_FLOAT_PULL = 2.2;
  * swimmer's head belongs, and looking down still dips you under.
  */
 export const SWIM_FLOAT_LIFT = 0.15;
+/**
+ * Hauling yourself out of the water.
+ *
+ * Swimming up gets you to the surface and no further: at 1.2 blocks/s you
+ * leave the water with 1.2 still on the clock, gravity takes 1.2²/64 = 0.022
+ * blocks off it, and the bank you are trying to reach is 0.111 above the
+ * surface. You are ninety millimetres short, every time, forever — which is
+ * why swimming at a shore just bumps you against it.
+ *
+ * Minecraft's answer is a separate move, in LivingEntity.travel: in water,
+ * colliding horizontally, with the hitbox free 0.6 higher, the vertical
+ * velocity is *set* to 0.3 blocks/tick. That is the boost that pops you out
+ * of a pool, and it needs no jump key — you swim at the edge and you climb
+ * out. 0.3 × 20 ticks is the 6 blocks/s below, which carries you half a block
+ * clear of the water: comfortably over the lip, and nowhere near a jump.
+ *
+ * The 0.6 is load-bearing too. Against a cliff the space 0.6 up is solid, so
+ * nothing fires and you stay in the water; it is only at the *top* of a wall
+ * that the check passes, which is exactly when climbing out is what you meant.
+ */
+export const WATER_CLIMB_SPEED = 6.0;
+export const WATER_CLIMB_LIFT = 0.6;
+/** How far ahead the climb looks for somewhere to land, in blocks. */
+export const WATER_CLIMB_REACH = 0.35;
 // Minecraft's step height. Unused while every block is a full cube (0.6 is
 // too low to climb one, so you jump); it is here for slabs and stairs.
 export const STEP_HEIGHT = 0.6;
