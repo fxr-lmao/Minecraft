@@ -17,6 +17,7 @@ import {
   PLAYER_WIDTH, PLAYER_HEIGHT, PLAYER_EYE,
   SWIM_HEIGHT, SWIM_EYE, SWIM_PITCH_GAIN,
   SWIM_FLOAT_RANGE, SWIM_FLOAT_PULL, SWIM_FLOAT_LIFT,
+  WATER_CLIMB_SPEED, WATER_CLIMB_LIFT, WATER_CLIMB_REACH,
   WORLD_MIN_Y,
   DRAG_WATER, SPEED_SWIM, SPEED_SWIM_SPRINT, SINK_SPEED, SWIM_UP_SPEED,
   FLOW_PUSH_SPEED,
@@ -220,8 +221,16 @@ export class Player {
     // ---- integrate + collide (axis separated, with auto-step) ----
     const moved = this._moveWithCollision(dt);
 
+    // Climbing out. Swimming up cannot do it — it tops out at the surface,
+    // and the bank is above the surface — so pushing against the edge is its
+    // own move, exactly as it is in Minecraft. No jump key: you swim at the
+    // shore and you haul yourself onto it.
+    if (this.inWater && moved.blockedHorizontal && this._canClimbOut(moveDir)) {
+      this.vel.y = WATER_CLIMB_SPEED;
+    }
+
     // Auto jump: bumped a block while walking, and a single hop clears it.
-    // In water the swim-up handles climbing out, so it stays out of the way.
+    // In water the climb above handles it, so it stays out of the way.
     if (this.autoJump && !this.inWater
         && moved.blockedHorizontal && this.onGround && moveDir.lengthSq() > 0
         && this._canHopOver(moveDir)) {
@@ -284,21 +293,50 @@ export class Player {
     return toSurface * SWIM_FLOAT_PULL * near;
   }
 
-  /** Is there room for the full-height hitbox where we are standing? */
-  _canStand() {
-    const minX = Math.floor(this.pos.x - HALF);
-    const maxX = Math.floor(this.pos.x + HALF - 1e-9);
-    const minZ = Math.floor(this.pos.z - HALF);
-    const maxZ = Math.floor(this.pos.z + HALF - 1e-9);
-    const top = Math.floor(this.pos.y + PLAYER_HEIGHT - 1e-9);
-    for (let y = Math.floor(this.pos.y); y <= top; y++) {
-      for (let x = minX; x <= maxX; x++) {
-        for (let z = minZ; z <= maxZ; z++) {
-          if (this.world.isSolid(x, y, z)) return false;
+  /**
+   * Would the hitbox fit if it were moved by this offset, and was `height`
+   * tall? Every "is there room to..." question in here is this question.
+   */
+  _boxFree(ox, oy, oz, height) {
+    const x = this.pos.x + ox;
+    const y = this.pos.y + oy;
+    const z = this.pos.z + oz;
+    const maxX = Math.floor(x + HALF - 1e-9);
+    const maxZ = Math.floor(z + HALF - 1e-9);
+    const top = Math.floor(y + height - 1e-9);
+    for (let cy = Math.floor(y); cy <= top; cy++) {
+      for (let cx = Math.floor(x - HALF); cx <= maxX; cx++) {
+        for (let cz = Math.floor(z - HALF); cz <= maxZ; cz++) {
+          if (this.world.isSolid(cx, cy, cz)) return false;
         }
       }
     }
     return true;
+  }
+
+  /** Is there room for the full-height hitbox where we are standing? */
+  _canStand() {
+    return this._boxFree(0, 0, 0, PLAYER_HEIGHT);
+  }
+
+  /**
+   * Are we pushing against something we could climb onto?
+   *
+   * Two probes, because one is not enough either way round. Straight up,
+   * because a boost into an overhang is a knock on the head rather than a way
+   * out. And forward, because the point of the boost is to land on the thing
+   * being pushed against — the reach is a little more than the hitbox's half
+   * width, so the probe straddles the edge and sits over the bank rather than
+   * over the water it came from.
+   */
+  _canClimbOut(moveDir) {
+    const len = Math.hypot(moveDir.x, moveDir.z);
+    if (len === 0) return false;
+    const h = this.height;
+    if (!this._boxFree(0, WATER_CLIMB_LIFT, 0, h)) return false;
+    const ax = (moveDir.x / len) * WATER_CLIMB_REACH;
+    const az = (moveDir.z / len) * WATER_CLIMB_REACH;
+    return this._boxFree(ax, WATER_CLIMB_LIFT, az, h);
   }
 
   _sampleWater() {
