@@ -147,10 +147,23 @@ export class Player {
     }
 
     // ---- swimming ----
-    // Minecraft's rule, and it is a short one: sprint while you are in water
-    // and you are swimming. Stop pressing forward, leave the water, or hit
-    // something you cannot stand up inside, and you are not.
-    this._setSwimming(this.sprinting && this.inWater);
+    //
+    // Minecraft asks two different questions here and I had only implemented
+    // one of them, which is why sprinting through an ankle-deep puddle threw
+    // you flat on your face in it.
+    //
+    // To *start*, your eyes have to be under: `updateSwimming` tests
+    // `isUnderWater`, not `isInWater`. That is the whole puddle fix — a
+    // one-block puddle stands 8/9 high and your eye is at 1.62, so it never
+    // qualifies, and you run straight through it. Wading into the sea, on the
+    // other hand, takes you deeper until your head goes under, and that is
+    // the moment the crawl begins.
+    //
+    // To *keep going*, merely being in it is enough. Without that asymmetry a
+    // swimmer at the surface — where the float holds them, head out — would
+    // stand bolt upright every time they came up for air, and a flooded
+    // one-block tunnel could never be swum down at all.
+    this._setSwimming(this.sprinting && (this.swimming ? this.inWater : this.submerged));
 
     const moveDir = this._inputDirection(input);
 

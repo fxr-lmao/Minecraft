@@ -5,6 +5,7 @@ import { Player } from '../src/player.js';
 import { World, GRASS, AIR, WATER } from '../src/world.js';
 import {
   PHYSICS_DT, WORLD_MIN_Y, SPEED_WALK, JUMP_VELOCITY, SWIM_UP_SPEED, GRAVITY,
+  PLAYER_HEIGHT,
 } from '../src/constants.js';
 
 const world = new World(1, { flat: 3 });
@@ -389,6 +390,63 @@ const assert = (name, cond, detail) => {
     assert('sprinting on land is not swimming', dry.sprinting && !dry.swimming);
   }
 
+  // ------------------------------------------- ...and only out of your depth
+  //
+  // Minecraft asks two different questions here. To *start* a swim your eyes
+  // have to be under the surface -- `updateSwimming` tests `isUnderWater`. To
+  // *keep* one, merely being in the water is enough -- `isInWater`. Both
+  // halves earn their keep: without the first, sprinting through an
+  // ankle-deep puddle throws you flat on your face in it; without the second,
+  // a swimmer at the surface would stand bolt upright every time their head
+  // came up for air.
+  {
+    // A one-block puddle across otherwise dry, flat ground.
+    const puddle = new World(1, { flat: 3 });
+    for (let x = 4; x <= 8; x++) {
+      for (let z = -3; z <= 3; z++) puddle.setBlock(x, 4, z, WATER);
+    }
+    const runner = new Player(puddle);
+    runner.pos.set(0.5, 4, 0.5);
+    runner.vel.set(0, 0, 0);
+    runner.yaw = -Math.PI / 2; // +x, straight through it
+    let everSwam = false, everWet = false, shortest = runner.height;
+    for (let i = 0; i < Math.round(6 / PHYSICS_DT); i++) {
+      runner.update(PHYSICS_DT, swimFast);
+      everSwam = everSwam || runner.swimming;
+      everWet = everWet || runner.inWater;
+      shortest = Math.min(shortest, runner.height);
+    }
+    assert('a sprint goes clean through a puddle', everWet && runner.pos.x > 9,
+      runner.pos.x.toFixed(2));
+    assert('...without ever starting a swim', !everSwam);
+    assert('...and on your feet the whole way', shortest === PLAYER_HEIGHT, shortest);
+
+    // Wading into the sea does start one -- but at the moment your head goes
+    // under, not at the moment your boots get wet. This beach steps down one
+    // block every two, so those are several strides apart.
+    const beach = new World(1, { flat: 3 });
+    for (let x = 4; x <= 60; x++) {
+      const depth = Math.min(8, Math.floor((x - 3) / 2));
+      for (let z = -4; z <= 4; z++) {
+        for (let y = 3; y > 3 - depth; y--) beach.setBlock(x, y, z, WATER);
+      }
+    }
+    const wader = new Player(beach);
+    wader.pos.set(0.5, 4, 0.5);
+    wader.vel.set(0, 0, 0);
+    wader.yaw = -Math.PI / 2;
+    let firstWet = null, firstSwim = null;
+    for (let i = 0; i < Math.round(10 / PHYSICS_DT); i++) {
+      wader.update(PHYSICS_DT, swimFast);
+      if (firstWet === null && wader.inWater) firstWet = wader.pos.x;
+      if (firstSwim === null && wader.swimming) firstSwim = wader.pos.x;
+    }
+    assert('wading out to sea does start one', firstSwim !== null,
+      firstSwim === null ? 'never' : firstSwim.toFixed(2));
+    assert('...but not at the water\'s edge', firstSwim > firstWet + 1,
+      `wet at ${firstWet.toFixed(2)}, swimming at ${firstSwim.toFixed(2)}`);
+  }
+
   // Aiming is steering: the whole look vector, not its flattened shadow.
   {
     const diver = new Player(sea);
@@ -398,12 +456,20 @@ const assert = (name, cond, detail) => {
     assert('looking down while swimming takes you down', diver.pos.y < 8.5,
       diver.pos.y.toFixed(2));
 
+    // Straight up from the bottom breaches the surface, and what happens
+    // after that is a porpoise: you leave the water, the pose ends because
+    // nothing is holding you, you arc over and drop back in. So the check is
+    // on the highest point reached, not on where the loop happened to stop.
     const riser = new Player(sea);
     riser.pos.set(0.5, 5, 0.5);
     riser.pitch = Math.PI / 2 - 0.02; // straight up
-    for (let i = 0; i < Math.round(5 / PHYSICS_DT); i++) riser.update(PHYSICS_DT, swimFast);
-    assert('...and looking up brings you back to the surface', riser.pos.y > 13,
-      riser.pos.y.toFixed(2));
+    let breach = riser.pos.y;
+    for (let i = 0; i < Math.round(5 / PHYSICS_DT); i++) {
+      riser.update(PHYSICS_DT, swimFast);
+      breach = Math.max(breach, riser.pos.y);
+    }
+    assert('...and looking up brings you back to the surface', breach > 13,
+      breach.toFixed(2));
 
     // Level means level. Out in the middle of the water column that means
     // holding your depth — no slow sink into the dark, no drift upwards.
@@ -415,9 +481,11 @@ const assert = (name, cond, detail) => {
       cruiser.pos.y.toFixed(2));
 
     // Near the top it means the waterline: the float pulls you up to it and
-    // parks you there with your head out.
+    // parks you there with your head out. Starting height matters now — you
+    // have to be under to begin with, which at a 13.889 surface and a 1.62
+    // eye means below 12.27.
     const floater = new Player(sea);
-    floater.pos.set(0.5, 12.6, 0.5);
+    floater.pos.set(0.5, 12.2, 0.5);
     floater.pitch = 0;
     for (let i = 0; i < Math.round(5 / PHYSICS_DT); i++) floater.update(PHYSICS_DT, swimFast);
     const surface = 13 + 8 / 9;
@@ -425,6 +493,7 @@ const assert = (name, cond, detail) => {
       Math.abs(floater.pos.y + floater.eyeHeight - surface) < 0.35,
       (floater.pos.y + floater.eyeHeight).toFixed(2));
     assert('...with your head out of the water', !floater.submerged);
+    assert('...and still swimming, head out or not', floater.swimming);
 
     // ...but the float must not reel a diver back up.
     const deepDiver = new Player(sea);
@@ -438,15 +507,23 @@ const assert = (name, cond, detail) => {
   // A flooded one-block tunnel: swimmable, not walkable, and you cannot stand
   // up inside it however hard you let go of the controls.
   {
+    // You cannot *start* a swim inside a bore one block high — your eyes are
+    // above the water in there, and that is the point of the new rule. So the
+    // tunnel opens onto a pool, and you arrive already swimming.
     const tunnel = new World(1, { flat: 3 });
-    for (let x = -2; x <= 30; x++) {
+    for (let x = -1; x <= 30; x++) {
       for (let z = -2; z <= 2; z++) {
         for (let y = 4; y <= 8; y++) tunnel.setBlock(x, y, z, 1); // solid roof
       }
     }
-    for (let x = 0; x <= 24; x++) tunnel.setBlock(x, 4, 0, WATER); // a 1-high bore
+    for (let x = -1; x <= 24; x++) tunnel.setBlock(x, 4, 0, WATER); // a 1-high bore
+    for (let x = -8; x <= -2; x++) {
+      for (let z = -2; z <= 2; z++) {
+        for (let y = 4; y <= 8; y++) tunnel.setBlock(x, y, z, WATER); // pool at the mouth
+      }
+    }
     const rat = new Player(tunnel);
-    rat.pos.set(0.5, 4, 0.5);
+    rat.pos.set(-3.5, 4, 0.5);
     rat.vel.set(0, 0, 0);
     rat.yaw = -Math.PI / 2; // +x
     for (let i = 0; i < Math.round(4 / PHYSICS_DT); i++) rat.update(PHYSICS_DT, swimFast);
@@ -487,11 +564,14 @@ const assert = (name, cond, detail) => {
     };
 
     /** Swim at the bank for `seconds` and report where you ended up. */
+    // Start out of your depth and look slightly up: that is how you get to
+    // the bank as a swimmer at all, now that a swim only begins underwater.
     const swimAt = (wallTop, input, seconds = 6) => {
       const p = new Player(pool(wallTop));
-      p.pos.set(-3.5, 9.5, 0.5);
+      p.pos.set(-5.5, 7, 0.5);
       p.vel.set(0, 0, 0);
       p.yaw = -Math.PI / 2; // facing +x, at the bank
+      p.pitch = 0.3; // and up towards the surface
       let highest = p.pos.y;
       for (let i = 0; i < Math.round(seconds / PHYSICS_DT); i++) {
         p.update(PHYSICS_DT, input);
