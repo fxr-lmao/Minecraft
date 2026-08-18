@@ -161,6 +161,8 @@ export function createPlayerModel() {
   hand.rotation.set(-0.5, 0.5, 0.1);
   armR.add(hand);
   let heldMesh = null;
+  /** Source material -> the avatar's own copy of it. */
+  const heldClones = new Map();
   const legL = limb(PANTS, 41, 4, 12, 4, -2, 12, shoe);
   const legR = limb(PANTS, 42, 4, 12, 4, 2, 12, shoe);
 
@@ -202,19 +204,27 @@ export function createPlayerModel() {
         if (heldMesh) heldMesh.visible = false;
         return;
       }
+      // A clone, not the shared material: the avatar fades out when the
+      // camera comes close, and the first-person copy drawn from the same
+      // material must not fade with it. Cloned once per source material and
+      // kept, because there is more than one now — a block is lit and opaque,
+      // an item is a flat unlit sprite with cut-out corners — and reusing the
+      // first clone for both puts black corners on the bucket.
+      let own = heldClones.get(material);
+      if (!own) {
+        own = material.clone();
+        heldClones.set(material, own);
+        materials.push(own);
+      }
       if (!heldMesh) {
-        // A clone, not the shared material: the avatar fades out when the
-        // camera comes close, and the first-person block drawn from the same
-        // material must not fade with it.
-        const own = material.clone();
         heldMesh = new THREE.Mesh(geometry, own);
         // Minecraft holds a block at about 0.4 of its world size — big
         // enough to tell grass from stone across the third-person camera.
         heldMesh.scale.setScalar(0.46);
         hand.add(heldMesh);
-        materials.push(own);
       } else {
         heldMesh.geometry = geometry;
+        heldMesh.material = own;
       }
       heldMesh.visible = true;
     },

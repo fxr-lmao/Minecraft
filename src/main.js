@@ -13,12 +13,14 @@
 import * as THREE from '../vendor/three.module.min.js';
 import { World, AIR, BEDROCK, toChunk } from './world.js';
 import { isWater, waterHeight, SEA_LEVEL } from './terrain.js';
-import { WorldRenderer, buildSingleBlockGeometry } from './blocks.js';
+import { WorldRenderer, buildSingleBlockGeometry, buildSingleItemGeometry } from './blocks.js';
 import { Player } from './player.js';
 import { Input, LOOK_FREE, LOOK_TOUCH } from './input.js';
 import { WaterFlow, FLOW_INTERVAL_MS } from './water.js';
 import { setCameraUnderwater, setSunDirection } from './water-shader.js';
 import { WaterView, HELD_LAYER, WATER_QUALITY_NAMES } from './water-render.js';
+import { Particles } from './particles.js';
+import { isItem, useBucket, needsFluidAim } from './items.js';
 import { installNativeBridge } from './native.js';
 import { Hud } from './hud.js';
 import { Inventory } from './inventory.js';
@@ -161,6 +163,7 @@ function applyUnderwaterFog(submerged) {
   // while the rest of the world is ten metres under.
   heldMaterial.color.setHex(submerged ? 0x6f9fc4 : 0xffffff);
   heldMaterial.emissive.setHex(submerged ? 0x25384a : 0x5a5a5a);
+  heldItemMaterial.color.setHex(submerged ? 0x86b4d2 : 0xffffff);
   if (submerged) {
     scene.fog.color.setHex(UNDERWATER_FOG);
     scene.fog.near = graded ? 30 : 0.5;
@@ -262,6 +265,10 @@ const waterFlow = new WaterFlow(world);
 world.onEditReplayed = (x, y, z) => waterFlow.touch(x, y, z);
 if (restored) for (const e of restored.edits) waterFlow.touch(e.x, e.y, e.z);
 
+// Splashes, spray, bubbles and wake. On the default layer, so the refraction
+// pass picks them up and the water composites correctly around them.
+const particles = new Particles(scene);
+
 const player = new Player(world);
 player.autoJump = settings.autoJump;
 if (restored?.player) {
@@ -296,6 +303,8 @@ highlight.visible = false;
 scene.add(highlight);
 
 let target = null; // { x, y, z, nx, ny, nz } from the last frame
+/** Where the camera was looking from last frame — items aim from here too. */
+let lastEye = { x: 0, y: 0, z: 0 };
 
 // ---------------- first-person held block ----------------
 const HELD_DIST = 0.62; // metres in front of the camera
@@ -308,6 +317,24 @@ const heldMaterial = new THREE.MeshLambertMaterial({
   emissiveMap: getAtlasTexture(),
   emissive: 0x5a5a5a, // never a black silhouette when the sun is behind you
 });
+/**
+ * Items get their own material, and it is unlit.
+ *
+ * Two reasons. The cutout: an item sprite has transparent corners, and an
+ * opaque material samples the colour under them regardless — which for a
+ * cleared canvas is black, so the bucket arrives as a black tile with a
+ * bucket painted on it. And the lighting: a flat sprite has one normal, so
+ * Lambert shading turns the whole thing into whatever that one direction
+ * happens to catch, and held at Minecraft's angle it catches almost nothing.
+ * An icon is an icon — it should look like the picture it is.
+ */
+const heldItemMaterial = new THREE.MeshBasicMaterial({
+  map: getAtlasTexture(),
+  transparent: true,
+  alphaTest: 0.5,
+  side: THREE.DoubleSide,
+});
+
 const heldMesh = new THREE.Mesh(new THREE.BufferGeometry(), heldMaterial);
 heldMesh.rotation.set(0.12, -0.6, 0.1);
 heldMesh.visible = false;
@@ -333,16 +360,20 @@ function refreshHeldItem() {
     if (id) {
       let geo = heldGeometries.get(id);
       if (!geo) {
-        geo = buildSingleBlockGeometry(id);
+        geo = isItem(id) ? buildSingleItemGeometry(id) : buildSingleBlockGeometry(id);
         heldGeometries.set(id, geo);
       }
       heldMesh.geometry = geo;
+      heldMesh.material = isItem(id) ? heldItemMaterial : heldMaterial;
     }
   }
   heldMesh.visible = view.isFirstPerson && heldId > 0;
-  // The avatar carries the same block, so third person shows what you are
-  // about to place instead of an empty fist.
-  playerModel.setHeldItem(heldId > 0 ? heldMesh.geometry : null, heldMaterial);
+  // The avatar carries the same thing, so third person shows what you are
+  // about to use instead of an empty fist.
+  playerModel.setHeldItem(
+    heldId > 0 ? heldMesh.geometry : null,
+    isItem(heldId) ? heldItemMaterial : heldMaterial
+  );
 }
 
 /**
@@ -408,12 +439,18 @@ function breakBlock() {
 }
 
 function placeBlock() {
-  if (!target) return;
   const stack = inventory.selectedStack();
   if (!stack) {
     hud.showStatus('Nothing in hand');
     return;
   }
+  // An item is used, not placed. It never reaches world.setBlock, which is
+  // the whole reason items have their own range of ids.
+  if (isItem(stack.id)) {
+    useHeldItem(stack);
+    return;
+  }
+  if (!target) return;
   const bx = target.x + target.nx;
   const by = target.y + target.ny;
   const bz = target.z + target.nz;
@@ -427,6 +464,40 @@ function placeBlock() {
   inventory.consumeSelected(1);
   invUI.render();
   swingHand();
+  saveNeeded = true;
+}
+
+/**
+ * Use whatever is in hand on whatever the crosshair found.
+ *
+ * Buckets aim with their own raycast, because the one that drives block
+ * targeting goes straight through water on purpose — you build *in* the
+ * shallows — and a bucket that could not see the sea would be useless.
+ */
+function useHeldItem(stack) {
+  const dir = player.lookDirection();
+  const hit = needsFluidAim(stack.id)
+    ? raycastVoxel(world, lastEye, dir, REACH, { fluids: true })
+    : target;
+  const result = useBucket(world, hit, stack.id);
+  if (!result) return;
+  swingHand();
+  if (result.item === undefined) {
+    if (result.message) hud.showStatus(result.message);
+    return;
+  }
+  // Pouring water where the player is standing would drown them in their own
+  // bucket; Minecraft allows it, but Minecraft also lets you swim out.
+  if (result.block !== AIR
+    && blockIntersectsPlayer(result.x, result.y, result.z, player.pos, PLAYER_WIDTH, player.height)) {
+    hud.showStatus('Not on top of yourself');
+    return;
+  }
+  world.setBlock(result.x, result.y, result.z, result.block);
+  waterFlow.touch(result.x, result.y, result.z);
+  inventory.set(inventory.selected, { id: result.item, count: stack.count });
+  invUI.render();
+  if (result.message) hud.showStatus(result.message);
   saveNeeded = true;
 }
 
@@ -611,6 +682,11 @@ function frame(now) {
   }
 
   // ---- physics ----
+  // How fast we were falling *before* the step that puts us in the water:
+  // the moment the water has hold of you it has already taken most of it
+  // away, and the splash is a picture of the impact, not of the aftermath.
+  const fallSpeed = Math.max(0, -player.vel.y);
+  const wasInWater = player.inWater;
   if (playing) {
     acc += frameDt;
     let steps = 0;
@@ -623,6 +699,15 @@ function frame(now) {
   } else {
     acc = 0;
   }
+
+  // ---- water in the air ----
+  if (playing && !wasInWater && player.inWater && fallSpeed > 1.5) {
+    const top = player.waterTop === -Infinity ? player.pos.y : player.waterTop;
+    particles.splash(player.pos.x, top, player.pos.z, fallSpeed);
+  }
+  particles.followPlayer(animDt, player);
+  particles.scanFalls(animDt, world, player.pos.x, player.pos.y, player.pos.z);
+  particles.update(animDt, world);
 
   // ---- held use button auto-repeat ----
   if (playing) {
@@ -727,6 +812,7 @@ function frame(now) {
     y: player.pos.y + eyeHeight - eyeOffset + player.bobY,
     z: player.pos.z + right.z * player.bobX,
   };
+  lastEye = eye;
   view.apply(camera, world, eye, player.yaw, player.pitch, animDt);
 
   // ---- avatar ----
@@ -848,6 +934,7 @@ hud.bindMenu({
   },
   onReset: () => {
     savingDisabled = true;
+    particles.clear();
     savegame.clear();
     location.reload();
   },

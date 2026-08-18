@@ -303,6 +303,39 @@ export function geometryBytes(geo) {
 }
 
 /**
+ * A single flat sprite, centred on the origin and facing both ways — an item
+ * held in the hand.
+ *
+ * Two quads back to back rather than one double-sided one, because the hand
+ * shares the world's material and that material is single-sided; the seam
+ * between them is a hundredth of a block, which is thinner than the sprite's
+ * own pixels.
+ */
+export function buildSingleItemGeometry(itemId) {
+  const tile = atlasTile(itemId, 0);
+  const buf = { pos: [], uv: [], n: [] };
+  const T = 0.01; // half the sprite's thickness
+  for (const face of [1, -1]) {
+    // Wound so each side faces outward; the back one is mirrored in x so the
+    // sprite reads the right way round from behind as well.
+    const corners = face > 0
+      ? [[-0.5, -0.5], [0.5, -0.5], [0.5, 0.5], [-0.5, 0.5]]
+      : [[0.5, -0.5], [-0.5, -0.5], [-0.5, 0.5], [0.5, 0.5]];
+    const uvs = face > 0
+      ? [[0, 0], [1, 0], [1, 1], [0, 1]]
+      : [[1, 0], [0, 0], [0, 1], [1, 1]];
+    for (const vi of TRI_VERTICES) {
+      const [x, y] = corners[vi];
+      const [u, v] = uvs[vi];
+      buf.pos.push(x, y, face * T);
+      buf.uv.push(tileU(tile, u), v);
+      buf.n.push(0, 0, face);
+    }
+  }
+  return buildGeometry(buf);
+}
+
+/**
  * A single unit cube centred on the origin, textured from the atlas — the
  * block held in the player's hand in first person.
  */
