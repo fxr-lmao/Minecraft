@@ -20,10 +20,10 @@ import {
 } from './terrain.js';
 
 export {
-  GRASS, DIRT, STONE, SAND, BEDROCK, DEEPSLATE, WATER, AIR,
-  isWater, isOpaque, waterLevel, waterId,
+  GRASS, DIRT, STONE, SAND, BEDROCK, DEEPSLATE, WATER, AIR, ICE,
+  isWater, isOpaque, isIce, waterLevel, waterId,
 } from './terrain.js';
-import { BEDROCK, AIR, isOpaque, isWater } from './terrain.js';
+import { BEDROCK, AIR, isOpaque, isWater, temperatureAt } from './terrain.js';
 
 const AREA = CHUNK_SIZE * CHUNK_SIZE;
 const CHUNK_CELLS = AREA * WORLD_HEIGHT;
@@ -73,12 +73,20 @@ class Chunk {
 export class World {
   /**
    * @param {number} seed
-   * @param {{flat?: number}} [opts] `flat` generates a superflat world with
-   *   its surface at that height — deterministic ground for the tests.
+   * @param {{flat?: number, temperature?: number}} [opts] `flat` generates a
+   *   superflat world with its surface at that height, and `temperature`
+   *   fixes the climate — deterministic ground and deterministic weather for
+   *   the tests.
    */
   constructor(seed = WORLD_SEED, opts = {}) {
     this.seed = seed;
     this.flat = opts.flat ?? null;
+    /**
+     * A fixed temperature for the whole world, in place of the climate the
+     * biomes would give it. Superflat has no biomes worth the name, so this
+     * is how a test says "somewhere cold" and gets a deterministic answer.
+     */
+    this.temperature = opts.temperature ?? null;
     this.size = CHUNK_SIZE;
     this.chunkSize = CHUNK_SIZE;
     this.layers = WORLD_HEIGHT;
@@ -327,6 +335,15 @@ export class World {
   /** Which biome dominates a column — shown on the debug screen. */
   biomeAt(x, z) {
     return this.flat !== null ? 'superflat' : dominantBiome(biomeWeights(x, z, this.seed));
+  }
+
+  /**
+   * How cold it is here, on Minecraft's scale — below FREEZING_POINT and
+   * exposed water turns to ice. Height is part of the answer, so this takes
+   * a y rather than a column.
+   */
+  temperatureAt(x, y, z) {
+    return this.temperature !== null ? this.temperature : temperatureAt(x, y, z, this.seed);
   }
 
   /** A safe standing height for (x, z). */

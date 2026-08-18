@@ -10,18 +10,21 @@
 // test for it is exactly that: walk every pair of adjacent water quads and
 // assert their shared edge is the same edge.
 import { World, STONE } from '../src/world.js';
-import { WaterFlow, DROP_OFF, SLOPE_FIND_DISTANCE } from '../src/water.js';
+import { WaterFlow, Freeze, DROP_OFF, SLOPE_FIND_DISTANCE } from '../src/water.js';
 import { meshChunk } from '../src/blocks.js';
 import {
   fluidCornerHeight, fluidCornerInfo, fluidWaveAmount, fluidFlow, fluidOwnHeight,
   DEPTH_SCALE, STILL, FLOWING,
 } from '../src/water-mesh.js';
 import {
-  WATER, WATER_LEVELS, WATER_MAX_AMOUNT, AIR, GRASS,
+  WATER, WATER_LEVELS, WATER_MAX_AMOUNT, AIR, GRASS, ICE,
   isWater, waterLevel, waterId, waterHeight, waterAmount, waterIdForAmount,
   isOpaque, isWaterSource, SEA_LEVEL, WATER_LAST,
+  temperatureAt, temperatureWith, isFreezing, biomeWeights, LAPSE_BASE_Y,
 } from '../src/terrain.js';
-import { WORLD_SEED, CHUNK_SIZE, toLayer, FLOW_PUSH_SPEED } from '../src/constants.js';
+import {
+  WORLD_SEED, CHUNK_SIZE, toLayer, FLOW_PUSH_SPEED, WORLD_MAX_Y,
+} from '../src/constants.js';
 import * as THREE from '../vendor/three.module.min.js';
 import {
   WaterView, WATER_FAST, WATER_FANCY, WATER_ULTRA,
@@ -978,6 +981,281 @@ const F32 = 1e-4;
     && SWELL_GLSL.includes('void ripples('));
   assert('the caustic pattern does not depend on where the origin is',
     !/\/\s*\(?\s*sin/.test(CAUSTIC_GLSL) && !CAUSTIC_GLSL.includes('length('));
+}
+
+// ------------------------------------------------------------------ freezing
+//
+// The rules are Minecraft's `Biome.shouldFreeze`, and the one worth testing
+// hardest is the edge rule: ice only forms where the water meets something
+// that is not water, which is why a lake freezes from the bank inwards
+// instead of turning solid all at once. Everything below is either that rule
+// or one of the three that guard it — cold enough, a source, under open sky.
+
+/** Ground at FLAT, a basin dug into it, and a climate fixed below freezing. */
+function frozen(build, opts = {}) {
+  const w = new World(1, { flat: FLAT, temperature: opts.temperature ?? -0.1 });
+  for (let cx = -1; cx < 3; cx++) for (let cz = -1; cz < 2; cz++) w.chunk(cx, cz);
+  const flow = new WaterFlow(w);
+  // No prospecting: the tests say where the water is, and random columns
+  // would make what froze depend on the run.
+  const ice = new Freeze(w, flow, { samples: 0, ...opts });
+  build(w, flow, ice);
+  let steps = 0;
+  while (!flow.settled && steps < 400) { flow.step(20, 6, 20); steps++; }
+  return { w, flow, ice };
+}
+
+/** A pond of sources sunk into the flat ground, so its rim is stone. */
+function pond(w, flow, x0, z0, size, y = FLAT) {
+  for (let x = x0; x < x0 + size; x++) {
+    for (let z = z0; z < z0 + size; z++) {
+      w.setBlock(x, y, z, WATER);
+      flow.touch(x, y, z);
+    }
+  }
+}
+
+const iceAt = (w, x, y, z) => w.get(x, y, z) === ICE;
+
+// the climate
+{
+  const mountain = { ocean: 0, plains: 0, forest: 0, desert: 0, mountains: 1 };
+  const plains = { ocean: 0, plains: 1, forest: 0, desert: 0, mountains: 0 };
+  const half = { ocean: 0, plains: 0.5, forest: 0, desert: 0, mountains: 0.5 };
+
+  assert('mountain ground sits exactly at freezing',
+    temperatureWith(mountain, LAPSE_BASE_Y) === 0);
+  assert('...so water freezes anywhere the mountains clearly win',
+    isFreezing(temperatureWith(mountain, SEA_LEVEL)));
+  assert('...and by the snow line it is well below',
+    near(temperatureWith(mountain, 120), -0.2, 1e-12), temperatureWith(mountain, 120));
+  assert('a mountain half blended into plains does not freeze at sea level',
+    !isFreezing(temperatureWith(half, SEA_LEVEL)), temperatureWith(half, SEA_LEVEL));
+  assert('...but the same mix does up where the snow is',
+    isFreezing(temperatureWith(half, 175)), temperatureWith(half, 175));
+  // The sea must not ice over off a beach, and the world stops at 190.
+  assert('plains never reach freezing, at any height in the world',
+    !isFreezing(temperatureWith(plains, WORLD_MAX_Y)), temperatureWith(plains, WORLD_MAX_Y));
+  assert('the biome mix decides it, not the seed',
+    temperatureAt(0, SEA_LEVEL, 0, 1) === temperatureWith(biomeWeights(0, 0, 1), SEA_LEVEL));
+
+  const w = new World(1, { flat: FLAT, temperature: -0.3 });
+  assert('a world can be given one climate for the whole of it',
+    w.temperatureAt(0, 4, 0) === -0.3 && w.temperatureAt(900, 180, -900) === -0.3);
+}
+
+// the four rules
+{
+  const { w, ice } = frozen((world, flow) => pond(world, flow, 18, 18, 5));
+
+  assert('the rim of a pond is at an edge', ice.atEdge(18, FLAT, 18));
+  assert('...and the middle of it is not', !ice.atEdge(20, FLAT, 20));
+  assert('so the rim freezes', ice.canFreeze(18, FLAT, 18));
+  assert('...and the middle waits for it', !ice.canFreeze(20, FLAT, 20));
+
+  // Only a full block of water freezes. Flowing water is on its way
+  // somewhere, and Minecraft will not freeze it.
+  w.setBlockTransient(24, FLAT + 1, 24, waterId(2));
+  assert('flowing water never freezes', !ice.canFreeze(24, FLAT + 1, 24));
+
+  // A roof, which stands in for Minecraft's light check: the one case either
+  // rule was ever really about is building over a pond.
+  w.setBlock(18, FLAT + 3, 18, STONE);
+  assert('water under a roof does not freeze', !ice.canFreeze(18, FLAT, 18));
+  assert('...and the freeze does not even find it',
+    ice.surfaceWater(18, 18) === null);
+  w.setBlock(18, FLAT + 3, 18, AIR);
+  assert('take the roof off and it is a candidate again', ice.canFreeze(18, FLAT, 18));
+  assert('...and found by looking down the column',
+    ice.surfaceWater(18, 18) === FLAT);
+  assert('dry land holds no water to freeze', ice.surfaceWater(30, 30) === null);
+}
+
+// somewhere warm
+{
+  const { ice } = frozen((world, flow) => pond(world, flow, 18, 18, 5), { temperature: 0.8 });
+  assert('a pond in the warm never freezes, edge or no edge',
+    !ice.canFreeze(18, FLAT, 18) && ice.atEdge(18, FLAT, 18));
+}
+
+// the sheet grows inwards
+//
+// The rule says a cell can only freeze while something beside it is not
+// water, so the interesting question is not which cells end up as ice — all
+// of them do — but whether any cell ever froze out of turn. One cell a step,
+// and the whole order is there to check: every cell in it was either on the
+// rim, where the pond meets stone, or had a neighbour that had already
+// frozen. Nothing ices over in open water.
+{
+  const { w, ice } = frozen((world, flow) => pond(world, flow, 18, 18, 5), { budget: 1 });
+  const rim = (x, z) => x === 18 || x === 22 || z === 18 || z === 22;
+  const order = [];
+  let steps = 0;
+  while (steps < 200 && order.length < 25) {
+    const before = new Set(ice.frozen);
+    ice.step(20, 20, 20);
+    for (const key of ice.frozen) if (!before.has(key)) order.push(key.split(',').map(Number));
+    steps++;
+  }
+
+  assert('the first thing to freeze is at the bank', order.length > 0 && rim(order[0][0], order[0][2]),
+    order[0] && order[0].join(','));
+  let outOfTurn = null;
+  const already = new Set();
+  for (const [x, y, z] of order) {
+    const beside = [[1, 0], [-1, 0], [0, 1], [0, -1]]
+      .some(([dx, dz]) => already.has(`${x + dx},${y},${z + dz}`));
+    if (!rim(x, z) && !beside) outOfTurn = `${x},${z}`;
+    already.add(`${x},${y},${z}`);
+  }
+  assert('nothing freezes in open water', outOfTurn === null, outOfTurn);
+  assert('...and all twenty-five get there in the end', order.length === 25, order.length);
+
+  let all = true;
+  for (let x = 18; x < 23; x++) for (let z = 18; z < 23; z++) if (!iceAt(w, x, FLAT, z)) all = false;
+  assert('given long enough the whole pond is ice', all);
+  assert('...one cell a step, as budgeted', steps >= 25, steps);
+  assert('...and then it settles', ice.step(20, 20, 20) === 0);
+}
+
+// what freezing costs the save file: nothing
+{
+  const { w, ice } = frozen((world, flow) => pond(world, flow, 18, 18, 5));
+  const before = w.edits.size;
+  while (ice.step(20, 20, 20) > 0);
+  assert('ice is never recorded as an edit', w.edits.size === before, w.edits.size);
+  assert('...though the world is full of it', ice.frozen.size === 25, ice.frozen.size);
+}
+
+// ice is ground, as far as the water is concerned
+{
+  const { w, flow, ice } = frozen((world, f) => pond(world, f, 18, 18, 5));
+  while (ice.step(20, 20, 20) > 0);
+  assert('ice is opaque', isOpaque(ICE) && !isWater(ICE));
+  // A source poured against the sheet has nowhere to go through it.
+  w.setBlock(24, FLAT + 1, 24, WATER);
+  flow.touch(24, FLAT + 1, 24);
+  let steps = 0;
+  while (!flow.settled && steps < 200) { flow.step(20, 6, 20); steps++; }
+  assert('water does not flow into ice', iceAt(w, 22, FLAT, 22));
+  assert('...it runs over the top of it', isWater(w.get(22, FLAT + 1, 22)));
+}
+
+// thawing
+{
+  const { w, ice } = frozen((world, flow) => pond(world, flow, 18, 18, 5));
+  while (ice.step(20, 20, 20) > 0);
+  assert('the pond is frozen over', iceAt(w, 20, FLAT, 20));
+
+  // Build over it. Nothing touches the ice itself, so only the rolling
+  // review of what we have frozen can notice — which is the point of it.
+  for (let x = 18; x < 23; x++) for (let z = 18; z < 23; z++) w.setBlock(x, FLAT + 3, z, STONE);
+  let steps = 0;
+  while (steps < 200 && ice.frozen.size > 0) { ice.step(20, 20, 20); steps++; }
+  assert('a roof thaws the ice under it', !iceAt(w, 20, FLAT, 20));
+  assert('...back into the water it was made of', w.get(20, FLAT, 20) === WATER);
+  assert('...and the freeze forgets it', ice.frozen.size === 0);
+}
+
+// chipping it out
+{
+  const { w, ice } = frozen((world, flow) => pond(world, flow, 18, 18, 5));
+  while (ice.step(20, 20, 20) > 0);
+  assert('ice over water leaves water when broken',
+    ice.chip(20, FLAT, 20) && w.get(20, FLAT, 20) === WATER);
+  assert('...and is no longer ours to watch', ice.frozen.size === 24, ice.frozen.size);
+
+  // Ice hanging over a hole leaves nothing: break the floor out first and it
+  // is how you get rid of water you cannot carry away.
+  const { w: w2, ice: ice2 } = frozen((world, flow) => {
+    world.setBlock(20, FLAT + 1, 20, WATER);
+    flow.touch(20, FLAT + 1, 20);
+  });
+  ice2.freeze(20, FLAT + 1, 20);
+  w2.setBlock(20, FLAT, 20, AIR);
+  assert('ice over a hole leaves nothing',
+    ice2.chip(20, FLAT + 1, 20) && w2.get(20, FLAT + 1, 20) === AIR);
+  assert('breaking anything else is not the freeze pass\'s business',
+    !ice2.chip(20, FLAT, 20));
+}
+
+// a hole in the ice stays a hole, for a while
+{
+  const { w, ice } = frozen((world, flow) => pond(world, flow, 18, 18, 5),
+    { refreezeDelay: 4 });
+  while (ice.step(20, 20, 20) > 0);
+  ice.chip(20, FLAT, 20);
+  ice.step(20, 20, 20);
+  assert('a hole chopped in the ice does not close behind you',
+    w.get(20, FLAT, 20) === WATER, w.get(20, FLAT, 20));
+  for (let i = 0; i < 5; i++) ice.step(20, 20, 20);
+  assert('...but it does close', w.get(20, FLAT, 20) === ICE, w.get(20, FLAT, 20));
+}
+
+// the two halves talk
+{
+  const { w, flow, ice } = frozen((world, f) => pond(world, f, 18, 18, 5));
+  assert('the flow forwards what it touches to the freeze', flow.ice === ice);
+  while (!flow.settled) flow.step(20, 6, 20);
+  ice.freeze(18, FLAT, 18);
+  assert('...and freezing wakes the flow back up', !flow.settled);
+  assert('water taken by the ice is gone from the cell', w.get(18, FLAT, 18) === ICE);
+  const changed = ice.step(20, 20, 20);
+  assert('the freeze reports what it changed, for the debug screen',
+    ice.lastChanged === changed, `${ice.lastChanged} vs ${changed}`);
+}
+
+// and in a world that was not built for the test
+//
+// Everything above fixes the climate to take the biome noise out of it. This
+// one does not: it is the game's own seed, a real mountain 507 blocks from
+// spawn, bare rock at 97 — above the line where the stone comes through and
+// below the one where the snow starts — and a bucket poured out on it.
+{
+  const w = new World(WORLD_SEED);
+  const x = -507;
+  const z = 72;
+  const ground = w.heightAt(x, z);
+  assert('the seed has a mountain where this test says it does',
+    ground === 97 && biomeWeights(x, z, WORLD_SEED).mountains > 0.9, ground);
+  assert('...and it is below freezing up there',
+    isFreezing(w.temperatureAt(x, ground + 1, z)),
+    w.temperatureAt(x, ground + 1, z).toFixed(3));
+
+  const flow = new WaterFlow(w);
+  const ice = new Freeze(w, flow, { samples: 0 });
+  w.setBlock(x, ground + 1, z, WATER);
+  flow.touch(x, ground + 1, z);
+  let steps = 0;
+  while (!flow.settled && steps < 200) { flow.step(x, ground, z); steps++; }
+  // It runs off down the mountainside, as it would anywhere else.
+  const flowing = [];
+  for (let dx = -8; dx <= 8; dx++) {
+    for (let dz = -8; dz <= 8; dz++) {
+      for (let dy = -6; dy <= 1; dy++) {
+        const at = [x + dx, ground + 1 + dy, z + dz];
+        if (isWater(w.get(...at)) && !isWaterSource(w.get(...at))) flowing.push(at);
+      }
+    }
+  }
+  assert('the bucket runs off down the mountain', flowing.length > 20, flowing.length);
+
+  ice.step(x + 2, ground + 1, z);
+  assert('a bucket poured out in the snow freezes', w.get(x, ground + 1, z) === ICE,
+    w.get(x, ground + 1, z));
+  assert('...and the stream it fed does not, because it is still moving',
+    flowing.every(([fx, fy, fz]) => isWater(w.get(fx, fy, fz))));
+}
+
+// prospecting: water nothing has disturbed still freezes, eventually
+{
+  const { w, ice } = frozen((world, flow) => {
+    pond(world, flow, 18, 18, 5);
+  }, { samples: 64, random: (() => { let s = 7; return () => (s = (s * 1103515245 + 12345) % 2147483648) / 2147483648; })() });
+  ice.pending.clear();
+  let steps = 0;
+  while (steps < 400 && !iceAt(w, 18, FLAT, 18)) { ice.step(20, 20, 20); steps++; }
+  assert('random columns find water nothing has touched', iceAt(w, 18, FLAT, 18), `${steps} steps`);
 }
 
 for (const [name, ok, detail] of results) {

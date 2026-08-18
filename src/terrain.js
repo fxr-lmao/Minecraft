@@ -71,6 +71,20 @@ export const WATER_FLOW = 14;
 export const WATER_LEVELS = 7;
 export const WATER_LAST = WATER_FLOW + WATER_LEVELS;
 
+/**
+ * Ice: water's other state, and the only block here that the world is not
+ * *told* about. It is written transiently, like flowing water, because it is
+ * the same kind of fact — a consequence of where you are rather than a
+ * decision anyone made — so a frozen lake costs nothing in the save file and
+ * freezes again by itself when the chunk comes back.
+ *
+ * The id sits past the flowing levels because those own 14..21, and it is an
+ * ordinary opaque block from every other point of view: you walk on it, it
+ * hides what is under it, and water treats it as ground.
+ */
+export const ICE = 22;
+export const isIce = (id) => id === ICE;
+
 export const isWater = (id) => id >= WATER && id <= WATER_LAST;
 /** 0 at full strength, up to 7 at the far edge of a spread. */
 export const waterLevel = (id) => (id === WATER ? 0 : id - WATER_FLOW);
@@ -209,6 +223,68 @@ export function biomeWeights(x, z, seed) {
   const plains = Math.max(0, land - desert - forest);
   return { ocean, plains, forest, desert, mountains };
 }
+
+// ------------------------------------------------------------- climate
+//
+// Minecraft keeps a temperature per biome and freezes water below 0.15, on a
+// scale where a desert is 2.0 and a snowy plain is 0.0. The same number
+// decides whether rain falls as snow, which is why the mountain tops here are
+// white: they are the part of the world that is already below freezing.
+//
+// Two things set it. The biome mix gives the ground temperature, blended by
+// weight so a coast warms up gradually rather than at a line; and height
+// takes it away again, because air cools as you climb. Minecraft's own lapse
+// rate is a rounding error — 0.05 per 40 blocks, so a mountain would be
+// 0.15 colder at its peak than at its foot — and it leans on cold *biomes*
+// instead. There are none here, so the rate does the work: it is the reason
+// the snow line and the ice line are the same line.
+
+/** Below this, exposed water turns to ice. Minecraft's number. */
+export const FREEZING_POINT = 0.15;
+
+/** Ground temperature per biome, on Minecraft's scale. */
+export const BIOME_TEMPERATURE = {
+  ocean: 0.5,
+  plains: 0.8,
+  forest: 0.7,
+  desert: 2.0,
+  // Cold at any height, like Minecraft's snowy slopes, and colder still up
+  // top once the lapse rate is applied. It is the only biome here that
+  // freezes at all.
+  mountains: 0.0,
+};
+
+/** Where the air starts to cool, and by how much per block above it. */
+export const LAPSE_BASE_Y = 80;
+export const LAPSE_RATE = 0.005;
+
+/**
+ * Temperature for a column whose biome weights the caller already has —
+ * chunk generation has them, and so does anything asking about a lot of
+ * columns at once.
+ */
+export function temperatureWith(w, y) {
+  let t = 0;
+  for (const name of BIOMES) t += BIOME_TEMPERATURE[name] * w[name];
+  return t - Math.max(0, y - LAPSE_BASE_Y) * LAPSE_RATE;
+}
+
+/**
+ * How cold it is at a point. Mountain ground sits at freezing, so water
+ * freezes wherever the mountains clearly win the column, and higher up the
+ * lapse rate lets a thinner mountain weight do it: at the snow line, 120,
+ * everything mountainous is 0.2 below freezing.
+ *
+ * Nothing else comes close. Plains would have to reach y = 210 and the world
+ * stops at 190, which is the intended answer — the sea does not freeze off a
+ * beach in summer.
+ */
+export function temperatureAt(x, y, z, seed) {
+  return temperatureWith(biomeWeights(x, z, seed), y);
+}
+
+/** The whole question in one word, for the callers that only want the yes. */
+export const isFreezing = (t) => t < FREEZING_POINT;
 
 /** The biome with the largest weight, for the debug screen. */
 export function dominantBiome(weights) {

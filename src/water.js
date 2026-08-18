@@ -1,4 +1,10 @@
-// Flowing water: Minecraft's fluid rules, block for block.
+// Where the water is: Minecraft's fluid rules, block for block, and then
+// what happens when it gets cold enough to stop.
+//
+// The first half of the file is the flow. The second is freezing, which turns
+// out to be the same kind of fact — a consequence of where the water is and
+// what the world is like there, rather than anything anyone decided — and so
+// is written the same transient way, and never saved.
 //
 // The first version of this file computed a cell's level as its distance from
 // the nearest thing feeding it — a shortest-path relaxation. It gave the right
@@ -41,8 +47,8 @@
 //     from its source the next time something disturbs it.
 
 import {
-  AIR, WATER, WATER_MAX_AMOUNT,
-  isWater, isOpaque, isWaterSource, waterAmount, waterIdForAmount, waterId,
+  AIR, WATER, WATER_MAX_AMOUNT, ICE, FREEZING_POINT,
+  isWater, isOpaque, isWaterSource, isIce, waterAmount, waterIdForAmount, waterId,
 } from './terrain.js';
 
 const DX = [1, -1, 0, 0];
@@ -82,6 +88,8 @@ export class WaterFlow {
     this._work = 0;
     /** Per-spread memo of "is there a hole under this cell", as MC does. */
     this._holes = new Map();
+    /** The freeze pass, if one has attached itself — see `touch`. */
+    this.ice = null;
   }
 
   /** True once the water has nothing left to think about. */
@@ -91,6 +99,10 @@ export class WaterFlow {
 
   /** Something happened here: this cell and its neighbours may need to flow. */
   touch(x, y, z) {
+    // The freeze pass, if there is one, wants to hear about exactly the same
+    // cells: water that has just arrived somewhere cold is the case it is
+    // most often waiting for.
+    if (this.ice) this.ice.touch(x, y, z);
     this.pending.add(`${x},${y},${z}`);
     this.pending.add(`${x},${y + 1},${z}`);
     this.pending.add(`${x},${y - 1},${z}`);
@@ -364,3 +376,321 @@ export class WaterFlow {
 // can ever be, and reusing them keeps a flood from allocating per cell.
 const SPREAD_DIRS = new Int8Array(4);
 const SPREAD_IDS = new Int16Array(4);
+
+// ---------------------------------------------------------------- freezing
+//
+// The other thing water does: it stops.
+//
+// Minecraft's rule is four lines in `Biome.shouldFreeze` and every one of
+// them earns its place:
+//
+//   cold enough    the biome's temperature, adjusted for height, below 0.15
+//   a source       flowing water never freezes, only a full block does
+//   dark enough    light below 10, which is what stops a torch beside a pond
+//                  from being decorative
+//   at an edge     at least one of the four neighbours is not water
+//
+// The last one is the interesting one, and it is the reason a frozen lake
+// looks like a frozen lake. Ice can only form where the water meets
+// something that is not water, so freezing starts at the bank and works
+// inwards — and it *does* work inwards, because a cell that just froze is
+// exactly what makes the next one an edge. Drop that rule and an ocean turns
+// to ice in a single sheet from the middle out.
+//
+// Two of the four are translated rather than copied. There is no light
+// engine here, so "dark enough" becomes "under open sky", which is a
+// different rule that happens to draw the line in the same place for the only
+// case either of them was ever about: it is what makes roofing a pond thaw
+// it. And the temperature comes from the biome mix and the height (see
+// terrain.js), because this world has no snowy biome — the mountains are the
+// cold place, and the snow line and the ice line are the same line.
+//
+// Finding the water is the part Minecraft does not have to think about. It
+// random-ticks every loaded chunk, sixteen cubes at a time; here there are
+// three ways in, in descending order of how much anyone cares:
+//
+//   touch      anything the flow disturbed. Pouring a bucket out on a peak
+//              should freeze while you are still standing there watching it,
+//              and this is the path that does it.
+//   frontier   the water beside ice that has just formed, so a sheet grows
+//              without waiting to be found again.
+//   prospect   a few random columns a step, for water nothing has touched.
+//              Slow on purpose: it is the background, not the mechanism.
+//
+// And, like the flow, none of it is ever recorded. Ice is a consequence of
+// where the water is and how cold it is there, so it is written transiently:
+// a frozen lake adds nothing to the save file and freezes over again by
+// itself the next time you come back to it.
+
+/** How often the freeze looks at the water. */
+export const FREEZE_INTERVAL_MS = 1000;
+
+export class Freeze {
+  /**
+   * @param {object} world
+   * @param {WaterFlow} [flow] the flow to wake when ice takes water away or
+   *   gives it back, and the thing that tells this pass where to look: it
+   *   forwards every cell it touches.
+   * @param {object} [opts]
+   */
+  constructor(world, flow = null, opts = {}) {
+    this.world = world;
+    this.flow = flow;
+    if (flow) flow.ice = this;
+    /** How far out to prospect, and how far out ice is still ours to watch. */
+    this.radius = opts.radius ?? 48;
+    this.forget = opts.forget ?? 96;
+    /** Random columns tried per step. */
+    this.samples = opts.samples ?? 8;
+    /** Cells that may change per step — the ice sheet's growth rate. */
+    this.budget = opts.budget ?? 16;
+    /** Cells that may be *looked at* per step, change or no change. */
+    this.lookBudget = opts.lookBudget ?? 512;
+    /** Ice re-examined per step, for thawing. */
+    this.reviewBudget = opts.reviewBudget ?? 24;
+    /** Cap on the backlog, so a flood cannot grow one without bound. */
+    this.maxPending = opts.maxPending ?? 20000;
+    /**
+     * How many steps a hole chopped in the ice is left alone for.
+     *
+     * Minecraft closes one up too, but it gets there by random ticks — a
+     * particular block waits minutes for its turn — while this pass goes
+     * looking, and goes looking hardest at exactly the cell that just
+     * changed. Without the delay a hole would freeze over inside a second,
+     * which would make cutting one pointless: no filling a bucket from it,
+     * and no getting under the ice.
+     */
+    this.refreezeDelay = opts.refreezeDelay ?? 15;
+    this.random = opts.random ?? Math.random;
+    /** Cells worth another look. */
+    this.pending = new Set();
+    /** Every cell we have frozen, so the thaw has something to walk. */
+    this.frozen = new Set();
+    /** Cells changed by the last step, for the debug screen. */
+    this.lastChanged = 0;
+    /** Cell -> the step number it may freeze again on. */
+    this._chipped = new Map();
+    this._step = 0;
+    this._cursor = null;
+  }
+
+  /** Something happened here — the flow forwards every cell it touches. */
+  touch(x, y, z) {
+    if (this.pending.size >= this.maxPending) return;
+    this.pending.add(`${x},${y},${z}`);
+  }
+
+  // ------------------------------------------------------------- the rules
+
+  /** Is it below freezing at this exact block? */
+  isCold(x, y, z) {
+    return this.world.temperatureAt(x, y, z) < FREEZING_POINT;
+  }
+
+  /**
+   * Is there open sky above this cell? The top solid block in the column
+   * answers it: for water that is the ground underneath, for ice it is the
+   * ice itself, and for either of them with something built over the top it
+   * is that something.
+   */
+  seesSky(x, y, z) {
+    return this.world.heightAt(x, z) <= y;
+  }
+
+  /** Is this cell the edge of the water — is any neighbour not water? */
+  atEdge(x, y, z) {
+    for (let d = 0; d < 4; d++) {
+      if (!isWater(this.world.get(x + DX[d], y, z + DZ[d]))) return true;
+    }
+    return false;
+  }
+
+  /** Should this block of water turn to ice? */
+  canFreeze(x, y, z) {
+    if (!isWaterSource(this.world.get(x, y, z))) return false;
+    if (!this.isCold(x, y, z)) return false;
+    if (!this.atEdge(x, y, z)) return false;
+    return this.seesSky(x, y, z);
+  }
+
+  /** Should this block of ice turn back into water? */
+  canThaw(x, y, z) {
+    if (!isIce(this.world.get(x, y, z))) return false;
+    return !this.seesSky(x, y, z) || !this.isCold(x, y, z);
+  }
+
+  // ------------------------------------------------------------ the doing
+
+  freeze(x, y, z) {
+    if (!this.world.setBlockTransient(x, y, z, ICE)) return false;
+    this.frozen.add(`${x},${y},${z}`);
+    // The water below has lost its lid and the water beside it has lost a
+    // neighbour: both are the flow's business, not ours.
+    if (this.flow) this.flow.touch(x, y, z);
+    // Whatever was water beside this is now at an edge, by definition.
+    for (let d = 0; d < 4; d++) {
+      const nx = x + DX[d];
+      const nz = z + DZ[d];
+      if (isWater(this.world.get(nx, y, nz))) this.touch(nx, y, nz);
+    }
+    return true;
+  }
+
+  /** Back to a source: it is the block it froze from. */
+  thaw(x, y, z) {
+    if (!this.world.setBlockTransient(x, y, z, WATER)) return false;
+    this.frozen.delete(`${x},${y},${z}`);
+    if (this.flow) this.flow.touch(x, y, z);
+    return true;
+  }
+
+  /**
+   * Chip a block of ice out. Minecraft leaves the water it was made of —
+   * carrying ice away needs Silk Touch, which there is none of here — and
+   * leaves nothing at all if there is no floor to hold the water, which is
+   * how you get rid of it: break the block underneath first.
+   */
+  chip(x, y, z) {
+    if (!isIce(this.world.get(x, y, z))) return false;
+    const below = this.world.get(x, y - 1, z);
+    const left = isOpaque(below) || isWater(below) ? WATER : AIR;
+    this.world.setBlockTransient(x, y, z, left);
+    this.frozen.delete(`${x},${y},${z}`);
+    this._chipped.set(`${x},${y},${z}`, this._step + this.refreezeDelay);
+    if (this.flow) this.flow.touch(x, y, z);
+    return true;
+  }
+
+  // ----------------------------------------------------------- the looking
+
+  /**
+   * The top of the open water in a column, if it has any.
+   *
+   * `heightAt` is the top *solid* block and water sits on top of the ground
+   * rather than in it, so any water in the column starts one block above
+   * that. Which settles the sky question at the same time: a pond with
+   * something built over it has that roof as its top solid block, and the
+   * water underneath is never even looked at.
+   */
+  surfaceWater(x, z) {
+    let y = this.world.heightAt(x, z) + 1;
+    if (!isWater(this.world.get(x, y, z))) return null;
+    while (isWater(this.world.get(x, y + 1, z))) y++;
+    return y;
+  }
+
+  /** A few random columns near the player, for water nothing has disturbed. */
+  prospect(px, pz) {
+    for (let i = 0; i < this.samples; i++) {
+      const x = px + Math.round((this.random() * 2 - 1) * this.radius);
+      const z = pz + Math.round((this.random() * 2 - 1) * this.radius);
+      const y = this.surfaceWater(x, z);
+      if (y !== null) this.touch(x, y, z);
+    }
+  }
+
+  /**
+   * A rolling second look at the ice we have made, which is the only way a
+   * thaw is ever noticed: nothing touches a block that someone built a roof
+   * over three blocks above.
+   *
+   * It doubles as the bookkeeping. Ice is transient, so a chunk that was
+   * evicted and generated again has none of it, and the entries for it are
+   * dropped here rather than kept for a world that has forgotten them.
+   */
+  review(px, pz) {
+    let changed = 0;
+    for (let i = 0; i < this.reviewBudget && this.frozen.size > 0; i++) {
+      if (!this._cursor) this._cursor = this.frozen.values();
+      const next = this._cursor.next();
+      if (next.done) { this._cursor = null; break; } // one lap a step, at most
+      const key = next.value;
+      parseKey(key, CELL);
+      const [x, y, z] = CELL;
+      // Distance first: asking the world about a cell it has evicted would
+      // generate the chunk again just to answer.
+      if (Math.abs(x - px) > this.forget || Math.abs(z - pz) > this.forget
+          || !isIce(this.world.get(x, y, z))) {
+        this.frozen.delete(key);
+        continue;
+      }
+      if (this.canThaw(x, y, z) && this.thaw(x, y, z)) changed++;
+    }
+    return changed;
+  }
+
+  /**
+   * One cell's turn. Water may freeze, ice may thaw, and anything else is a
+   * cell that has changed since it was pending — which is most of them, in a
+   * flood, and costs one lookup to find out.
+   */
+  examine(x, y, z, px, py, pz) {
+    const id = this.world.get(x, y, z);
+    if (isIce(id)) return this.canThaw(x, y, z) && this.thaw(x, y, z);
+    if (!isWaterSource(id)) return false;
+    // A hole someone chopped, still within its grace period.
+    if (this._chipped.size > 0 && this._chipped.has(`${x},${y},${z}`)) return false;
+    // Not over the player's own head. Minecraft would happily seal you in;
+    // Minecraft also gives you a block to break your way out with, and the
+    // ice here cannot be carried, so being trapped under it is a longer
+    // afternoon than it sounds.
+    if (x === px && z === pz && (y === py || y === py + 1)) return false;
+    return this.canFreeze(x, y, z) && this.freeze(x, y, z);
+  }
+
+  /**
+   * Advance the freeze one step around (px, py, pz). Returns how many cells
+   * changed.
+   */
+  step(px, py, pz) {
+    this._step++;
+    for (const [key, until] of this._chipped) {
+      // A hole coming out of its grace period puts itself back up for
+      // consideration, because nothing else is going to: it was dropped from
+      // the backlog the first time it was looked at and turned down.
+      if (until <= this._step) {
+        this._chipped.delete(key);
+        this.pending.add(key);
+      }
+    }
+    let changed = this.review(px, pz);
+    this.prospect(px, pz);
+
+    let looked = 0;
+    const r2 = this.radius * this.radius;
+    for (const key of this.pending) {
+      if (changed >= this.budget || looked >= this.lookBudget) break;
+      // Deleting as we go: a cell that has had its turn is either settled or
+      // has put itself back through a neighbour. Cells added by a freeze
+      // *during* this loop are visited by it, which is what lets a small
+      // sheet finish in one step instead of one cell a second.
+      this.pending.delete(key);
+      looked++;
+      parseKey(key, CELL);
+      const dx = CELL[0] - px;
+      const dz = CELL[2] - pz;
+      if (dx * dx + dz * dz > r2) continue; // too far to be worth a look
+      if (this.examine(CELL[0], CELL[1], CELL[2], px, py, pz)) changed++;
+    }
+
+    this.lastChanged = changed;
+    return changed;
+  }
+}
+
+/** Scratch for one cell, so walking a set of keys allocates nothing. */
+const CELL = [0, 0, 0];
+
+/**
+ * "x,y,z" back into three numbers. The flow parses inline because it does
+ * this tens of thousands of times a step; the freeze does it tens of times,
+ * and can afford to be read.
+ */
+function parseKey(key, out) {
+  const a = key.indexOf(',');
+  const b = key.indexOf(',', a + 1);
+  out[0] = +key.slice(0, a);
+  out[1] = +key.slice(a + 1, b);
+  out[2] = +key.slice(b + 1);
+  return out;
+}

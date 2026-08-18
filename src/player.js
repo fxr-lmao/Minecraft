@@ -13,7 +13,7 @@ import * as THREE from '../vendor/three.module.min.js';
 import {
   GRAVITY, JUMP_VELOCITY,
   SPEED_WALK, SPEED_SNEAK, AIR_WALK,
-  DRAG_GROUND, DRAG_AIR,
+  DRAG_GROUND, DRAG_AIR, DRAG_ICE,
   PLAYER_WIDTH, PLAYER_HEIGHT, PLAYER_EYE,
   SWIM_HEIGHT, SWIM_EYE, SWIM_PITCH_GAIN,
   SWIM_FLOAT_RANGE, SWIM_FLOAT_PULL, SWIM_FLOAT_LIFT,
@@ -23,7 +23,7 @@ import {
   FLOW_PUSH_SPEED,
 } from './constants.js';
 import { lookVector } from './view.js';
-import { isWater, waterHeight } from './terrain.js';
+import { isWater, waterHeight, isIce, AIR } from './terrain.js';
 import { fluidFlow } from './water-mesh.js';
 
 const HALF = PLAYER_WIDTH / 2;
@@ -38,6 +38,8 @@ const SURFACE_SEARCH = 24;
  * mining down past -32 teleported you back to the surface.
  */
 const FALL_RESPAWN_Y = WORLD_MIN_Y - 16;
+/** The four corners of the hitbox, as signed half-widths. */
+const CORNERS = [[-1, -1], [1, -1], [-1, 1], [1, 1]];
 
 export class Player {
   constructor(world) {
@@ -50,6 +52,11 @@ export class Player {
     this.pitch = 0;
 
     this.onGround = false;
+    /**
+     * Standing on ice, which keeps the same top speed and takes five times
+     * as long to lose it: the slide is the whole of what ice feels like.
+     */
+    this.onIce = false;
     this.sprinting = false;
     this.sneaking = false;
     /**
@@ -98,6 +105,7 @@ export class Player {
     this.pos.copy(this.spawn);
     this.vel.set(0, 0, 0);
     this.onGround = false;
+    this.onIce = false;
   }
 
   /** Horizontal forward vector from yaw (camera forward projected on XZ). */
@@ -172,7 +180,10 @@ export class Player {
     // air, so you accelerate to a third of walking pace and coast to a stop
     // much faster.
     const grounded = this.onGround;
-    const k = this.inWater ? DRAG_WATER : (grounded ? DRAG_GROUND : DRAG_AIR);
+    this.onIce = grounded && !this.inWater && isIce(this._groundBlock());
+    const k = this.inWater
+      ? DRAG_WATER
+      : (grounded ? (this.onIce ? DRAG_ICE : DRAG_GROUND) : DRAG_AIR);
     const f = Math.exp(-k * dt); // per-step velocity retention factor
 
     // Base target speed; sprint multiplies acceleration by 1.3 (like MC),
@@ -448,6 +459,27 @@ export class Player {
     // Sliding along a wall falls out of the axis-separated resolve above:
     // the blocked axis stops, the free axis keeps moving.
     return { blockedHorizontal: blockedX || blockedZ };
+  }
+
+  /**
+   * What we are standing on, which on ice is the whole difference between
+   * walking and sliding.
+   *
+   * The centre answers it almost always; the corners are there for the case
+   * it gets wrong, which is standing on the lip of a block with your middle
+   * out over the drop. Minecraft asks the same question the same way round.
+   */
+  _groundBlock() {
+    const feet = Math.floor(this.pos.y + EPS) - 1;
+    const middle = this.world.get(Math.floor(this.pos.x), feet, Math.floor(this.pos.z));
+    if (middle !== AIR) return middle;
+    for (const [ox, oz] of CORNERS) {
+      const id = this.world.get(
+        Math.floor(this.pos.x + ox * (HALF - EPS)), feet, Math.floor(this.pos.z + oz * (HALF - EPS))
+      );
+      if (id !== AIR) return id;
+    }
+    return AIR;
   }
 
   /**

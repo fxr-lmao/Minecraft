@@ -247,6 +247,40 @@ function snowFace(rand) {
   return noiseCanvas(rand, 0xf4f4f4, { speckles: 20 });
 }
 
+/**
+ * Ice: pale blue, and cracked. The cracks are the whole tile, really — a flat
+ * blue square reads as painted glass, and three or four pale fractures
+ * running across it read as something frozen. They are drawn light rather
+ * than dark because a crack in ice scatters the light back at you instead of
+ * swallowing it, which is also why they show up from above on a dull day.
+ */
+function iceFace(rand) {
+  const cv = noiseCanvas(rand, 0x76a6d8, { speckles: 8 });
+  const ctx = cv.getContext('2d');
+  const half = TEX_SIZE / 2;
+  ctx.lineWidth = 1;
+  for (let i = 0; i < 5; i++) {
+    // Each crack starts somewhere on an edge, sets off roughly across the
+    // tile rather than straight back out of it, and wanders in short
+    // segments — so it breaks rather than curves.
+    let x = rand() * TEX_SIZE;
+    let y = rand() < 0.5 ? 0 : TEX_SIZE;
+    if (rand() < 0.5) { const t = x; x = y; y = t; }
+    let angle = Math.atan2(half - y, half - x) + (rand() - 0.5) * 1.2;
+    ctx.strokeStyle = `rgba(232,246,255,${0.5 + rand() * 0.4})`;
+    ctx.beginPath();
+    ctx.moveTo(x, y);
+    for (let seg = 0; seg < 3; seg++) {
+      angle += (rand() - 0.5) * 1.3;
+      x += Math.cos(angle) * (2 + rand() * 4);
+      y += Math.sin(angle) * (2 + rand() * 4);
+      ctx.lineTo(x, y);
+    }
+    ctx.stroke();
+  }
+  return cv;
+}
+
 /** Oak log: vertical bark grooves. */
 function logSideFace(rand) {
   const cv = document.createElement('canvas');
@@ -378,6 +412,8 @@ export const BLOCK_DEFS = [
   { id: 11, name: 'Leaves', side: leavesFace, top: leavesFace, bottom: leavesFace },
   { id: 12, name: 'Deepslate', side: deepslateFace, top: deepslateFace, bottom: deepslateFace },
   { id: 13, name: 'Water', side: waterFace, top: waterFace, bottom: waterFace },
+  // 14..21 are the flowing water levels, which share the source's tile.
+  { id: 22, name: 'Ice', side: iceFace, top: iceFace, bottom: iceFace },
 ];
 
 /**
