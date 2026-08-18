@@ -27,6 +27,24 @@ export const AIR_SPRINT = 5.778;
 export const DRAG_GROUND = -TICK_RATE * Math.log(0.546); // ~12.1 /s
 export const DRAG_AIR = -TICK_RATE * Math.log(0.91); // ~1.89 /s
 
+/**
+ * Ice. The 0.546 above is Minecraft's block friction 0.6 times the 0.91 the
+ * air takes anyway; ice is 0.98 instead of 0.6, so it is 0.98 * 0.91.
+ *
+ * What makes it *feel* like ice rather than simply like being fast is that
+ * Minecraft compensates for the friction in the acceleration: it scales by
+ * (0.6/friction)^3, which on ice is a twentieth. The two very nearly cancel —
+ *
+ *   ground   0.1     / (1 - 0.546)  = 0.220 blocks/tick = 4.4 blocks/s
+ *   ice      0.02295 / (1 - 0.892)  = 0.212             = 4.2
+ *
+ * — so you end up at the same speed you would have walked at, and the whole
+ * difference is in how long it takes to get there and how far you go after
+ * you stop asking. The model here already scales its acceleration by (1 - f),
+ * which is that same compensation exactly, so ice is this one number.
+ */
+export const DRAG_ICE = -TICK_RATE * Math.log(0.98 * 0.91); // ~2.3 /s
+
 // Water. Minecraft's per-tick water model is drag 0.8 (against 0.546 on the
 // ground), acceleration 0.02 — 0.026 sprinting — gravity 0.02, and +0.04 a
 // tick while jump is held. Those give the terminal speeds below, which is

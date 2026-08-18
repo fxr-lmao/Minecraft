@@ -11,12 +11,12 @@
 // game is paused or a menu is open — a paused game is completely still.
 
 import * as THREE from '../vendor/three.module.min.js';
-import { World, AIR, BEDROCK, toChunk } from './world.js';
+import { World, AIR, BEDROCK, ICE, toChunk } from './world.js';
 import { isWater, waterHeight, SEA_LEVEL } from './terrain.js';
 import { WorldRenderer, buildSingleBlockGeometry, buildSingleItemGeometry } from './blocks.js';
 import { Player } from './player.js';
 import { Input, LOOK_FREE, LOOK_TOUCH } from './input.js';
-import { WaterFlow, FLOW_INTERVAL_MS } from './water.js';
+import { WaterFlow, Freeze, FLOW_INTERVAL_MS, FREEZE_INTERVAL_MS } from './water.js';
 import { setCameraUnderwater, setSunDirection } from './water-shader.js';
 import { WaterView, HELD_LAYER, WATER_QUALITY_NAMES } from './water-render.js';
 import { Particles } from './particles.js';
@@ -53,6 +53,7 @@ const loadingEl = document.getElementById('loading');
 const loadingText = document.getElementById('loading-text');
 let firstFrame = true;
 let flowClock = 0; // ms of game time since the last water step
+let freezeClock = 0; // and since the last freeze step, which is slower
 
 function showFatal(message) {
   fatalMsg.textContent = message;
@@ -262,6 +263,9 @@ waterView.useMaterials(worldRenderer.waterMaterials);
 // again. That is true of the save file on load, and equally true of a chunk
 // coming back into memory after being evicted, which is what the hook is for.
 const waterFlow = new WaterFlow(world);
+// Attaches itself to the flow, which forwards every cell it touches: water
+// that has just arrived somewhere cold is the case the freeze waits for.
+const iceSheet = new Freeze(world, waterFlow);
 world.onEditReplayed = (x, y, z) => waterFlow.touch(x, y, z);
 if (restored) for (const e of restored.edits) waterFlow.touch(e.x, e.y, e.z);
 
@@ -426,6 +430,16 @@ function breakBlock() {
   if (id === AIR) return;
   if (id === BEDROCK) {
     hud.showStatus('Bedrock cannot be broken');
+    swingHand();
+    return;
+  }
+  // Ice is not a block you can carry — that needs Silk Touch, and there is
+  // none here — and it was never a block anyone *placed* either: it is
+  // written transiently, like flowing water, so breaking it puts the water
+  // back rather than recording a hole in the sea.
+  if (id === ICE) {
+    iceSheet.chip(target.x, target.y, target.z);
+    hud.showStatus('Ice melts in your hand');
     swingHand();
     return;
   }
@@ -778,6 +792,16 @@ function frame(now) {
         Math.floor(player.pos.x), Math.floor(player.pos.y), Math.floor(player.pos.z)
       );
     }
+    // Freezing is the slow half — Minecraft does it on random ticks — and it
+    // is meant to be: a pond you pour out up in the snow should ice over
+    // while you stand there, not the instant it stops moving.
+    freezeClock += frameDt * 1000;
+    if (freezeClock >= FREEZE_INTERVAL_MS) {
+      freezeClock = 0;
+      iceSheet.step(
+        Math.floor(player.pos.x), Math.floor(player.pos.y), Math.floor(player.pos.z)
+      );
+    }
   }
 
   // The camera decides this, not the feet: leaning out of the water should
@@ -885,9 +909,13 @@ function frame(now) {
     inputMode: input.lookModeLabel,
     edits: world.edits.size,
     biome: world.biomeAt(px, pz),
+    // Minecraft's scale, and the reason the mountain tops are white: below
+    // 0.15 and the water up there turns to ice.
+    temperature: world.temperatureAt(px, Math.floor(player.pos.y), pz),
     inWater: player.inWater,
     submerged: player.submerged,
     flowing: waterFlow.pending.size,
+    ice: iceSheet.frozen.size,
     chunk: `${pcx} ${pcz}`,
     renderDistance: settings.renderDistance,
     meshes: worldRenderer.stats.meshes,

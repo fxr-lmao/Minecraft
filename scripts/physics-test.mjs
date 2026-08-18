@@ -2,7 +2,7 @@
 // Runs on a superflat world (surface at y=3, so the player stands at y=4):
 // generated hills would make "walk forward for five seconds" untestable.
 import { Player } from '../src/player.js';
-import { World, GRASS, AIR, WATER } from '../src/world.js';
+import { World, GRASS, AIR, WATER, ICE } from '../src/world.js';
 import {
   PHYSICS_DT, WORLD_MIN_Y, SPEED_WALK, JUMP_VELOCITY, SWIM_UP_SPEED, GRAVITY,
   PLAYER_HEIGHT,
@@ -613,6 +613,51 @@ const assert = (name, cond, detail) => {
   assert('dry land is untouched by any of this',
     !walker.inWater && Math.abs(walker.horizontalSpeed - SPEED_WALK) < 0.02,
     walker.horizontalSpeed.toFixed(3));
+}
+
+// ---------------------------------------------------------------------- ice
+//
+// Minecraft's ice is friction 0.98 against the ground's 0.6, and it
+// compensates in the acceleration — (0.6/friction)^3 — so the top speed comes
+// out very nearly the same and the whole difference is how long it takes to
+// pick up and how far you carry on afterwards. The model here scales its
+// acceleration by (1 - f) already, which is that same compensation, so the
+// two assertions below are really one: the same speed, and a much longer
+// slide out of it.
+{
+  const rink = new World(2, { flat: 3 });
+  for (let x = -60; x <= 60; x++) for (let z = -60; z <= 60; z++) rink.setBlock(x, 3, z, ICE);
+
+  const walk = { forward: 1, strafe: 0, jump: false, sprint: false, sneak: false };
+  const stop = { forward: 0, strafe: 0, jump: false, sprint: false, sneak: false };
+
+  const skater = new Player(rink);
+  for (let i = 0; i < 600; i++) skater.update(PHYSICS_DT, walk); // 5 s
+  assert('standing on ice is noticed', skater.onIce && skater.onGround);
+  assert('walking on ice reaches the same speed as walking',
+    Math.abs(skater.horizontalSpeed - SPEED_WALK) < 0.05, skater.horizontalSpeed.toFixed(3));
+
+  const walker = new Player(world);
+  for (let i = 0; i < 600; i++) walker.update(PHYSICS_DT, walk);
+  assert('...and grass is not ice', !walker.onIce);
+
+  // Let go, and see how far each of them gets.
+  const slideFrom = skater.pos.z;
+  const walkFrom = walker.pos.z;
+  for (let i = 0; i < 60; i++) skater.update(PHYSICS_DT, stop); // half a second
+  for (let i = 0; i < 60; i++) walker.update(PHYSICS_DT, stop);
+  assert('half a second after you stop asking, grass has stopped you',
+    walker.horizontalSpeed < 0.05, walker.horizontalSpeed.toFixed(3));
+  assert('...and ice has not', skater.horizontalSpeed > 1.2, skater.horizontalSpeed.toFixed(3));
+
+  for (let i = 0; i < 600; i++) skater.update(PHYSICS_DT, stop);
+  for (let i = 0; i < 600; i++) walker.update(PHYSICS_DT, stop);
+  const slid = Math.abs(skater.pos.z - slideFrom);
+  const walked = Math.abs(walker.pos.z - walkFrom);
+  assert('the glide is five times the skid', slid > walked * 4,
+    `${slid.toFixed(2)} vs ${walked.toFixed(2)} blocks`);
+  assert('...and it does stop in the end', skater.horizontalSpeed < 0.05,
+    skater.horizontalSpeed.toFixed(4));
 }
 
 console.log(results.join('\n'));
