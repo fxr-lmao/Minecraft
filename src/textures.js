@@ -5,6 +5,7 @@
 import * as THREE from '../vendor/three.module.min.js';
 import { mulberry32, clamp } from './utils.js';
 import { WATER, isWater } from './terrain.js';
+import { BUCKET, WATER_BUCKET, isItem } from './items.js';
 
 export const TEX_SIZE = 16;
 
@@ -302,6 +303,63 @@ function leavesFace(rand) {
   return cv;
 }
 
+// ---------- items ----------
+// Items are drawn flat rather than as cubes, but their textures still live in
+// the world atlas: the block in your hand is a mesh with atlas UVs and one
+// shared material, and giving items a texture of their own would mean a
+// second material and a second draw call for the sake of two sprites. Three
+// identical tiles each is a rounding error against thirty-nine.
+
+/** An empty pail: a galvanised body, a rim, and a handle over the top. */
+function bucketFace(rand) {
+  return bucketCanvas(rand, null);
+}
+
+/** The same pail with water in it, which is what a full one looks like. */
+function waterBucketFace(rand) {
+  return bucketCanvas(rand, 0x3a63d2);
+}
+
+function bucketCanvas(rand, fill) {
+  const cv = document.createElement('canvas');
+  cv.width = cv.height = TEX_SIZE;
+  const ctx = cv.getContext('2d');
+  ctx.clearRect(0, 0, TEX_SIZE, TEX_SIZE);
+  const px = (x, y, hex) => {
+    ctx.fillStyle = `#${(hex >>> 0).toString(16).padStart(6, '0')}`;
+    ctx.fillRect(x, y, 1, 1);
+  };
+  const IRON = 0x9ea4ad;
+  const DARK = 0x6b7079;
+  const LIGHT = 0xc6ccd4;
+
+  // The handle: an arc of single pixels over the mouth.
+  for (const [x, y] of [[4, 3], [5, 2], [6, 2], [9, 2], [10, 2], [11, 3]]) px(x, y, DARK);
+
+  // The body tapers in toward the base, the way a pail does.
+  for (let y = 4; y <= 13; y++) {
+    const inset = y >= 11 ? 1 : 0;
+    for (let x = 3 + inset; x <= 12 - inset; x++) {
+      const edge = x === 3 + inset || x === 12 - inset;
+      const shade = 0.86 + rand() * 0.2;
+      px(x, y, shadeHex(edge ? DARK : IRON, shade));
+    }
+  }
+  // A rim, and a highlight down the left so it does not read as a flat slab.
+  for (let x = 3; x <= 12; x++) px(x, 4, shadeHex(LIGHT, 0.9 + rand() * 0.2));
+  for (let y = 5; y <= 12; y++) px(4, y, shadeHex(LIGHT, 0.9));
+
+  if (fill !== null) {
+    for (let y = 5; y <= 12; y++) {
+      const inset = y >= 11 ? 1 : 0;
+      for (let x = 5 + inset; x <= 11 - inset; x++) {
+        px(x, y, shadeHex(fill, 0.82 + rand() * 0.3));
+      }
+    }
+  }
+  return cv;
+}
+
 // ---------- block registry ----------
 
 // Each entry: { id, name, side, top, bottom } where side/top/bottom are
@@ -322,8 +380,26 @@ export const BLOCK_DEFS = [
   { id: 13, name: 'Water', side: waterFace, top: waterFace, bottom: waterFace },
 ];
 
-/** Blocks offered in the starting hotbar (9 slots, so not every block). */
-export const STARTER_BLOCKS = [1, 2, 3, 4, 5, 6, 7, 9, 10];
+/**
+ * Items. Same shape as a block def so one registry, one icon path and one
+ * name lookup serve both; the three faces are simply the same sprite, because
+ * a flat thing has no sides.
+ */
+export const ITEM_DEFS = [
+  { id: BUCKET, name: 'Bucket', item: true, side: bucketFace, top: bucketFace, bottom: bucketFace },
+  { id: WATER_BUCKET, name: 'Water Bucket', item: true, side: waterBucketFace, top: waterBucketFace, bottom: waterBucketFace },
+];
+
+/** Everything with a texture in the atlas: blocks first, then items. */
+export const ATLAS_DEFS = [...BLOCK_DEFS, ...ITEM_DEFS];
+
+/**
+ * What you start with. Nine slots and ten things worth having, so the oak log
+ * loses its place — it is the one you can get back by walking up to a tree,
+ * and the bucket is the one that turns every pond in the world into somewhere
+ * you can build.
+ */
+export const STARTER_BLOCKS = [1, 2, 3, 4, 5, 6, 7, 9, BUCKET];
 
 /**
  * Build a 48x16 atlas canvas for a block: [side | top | bottom].
@@ -372,6 +448,23 @@ function drawIconFace(ctx, img, m, shade) {
   ctx.restore();
 }
 
+/**
+ * An item icon is the sprite itself, scaled up. No cube: a bucket drawn as a
+ * cube would be a box with a picture of a bucket on three of its faces.
+ */
+function buildFlatIcon(face) {
+  const q = TEX_SIZE * ICON_SCALE;
+  const cv = document.createElement('canvas');
+  cv.width = cv.height = q * 2;
+  const ctx = cv.getContext('2d');
+  ctx.imageSmoothingEnabled = false;
+  // Inset a little so the sprite has the same visual weight as the cubes it
+  // sits beside in the hotbar, which fill their tile corner to corner.
+  const pad = q * 0.18;
+  ctx.drawImage(face, pad, pad, q * 2 - pad * 2, q * 2 - pad * 2);
+  return cv;
+}
+
 function buildIcon(side, top) {
   const q = TEX_SIZE * ICON_SCALE; // half-width of the cube (48)
   const cv = document.createElement('canvas');
@@ -398,20 +491,20 @@ function buildIcon(side, top) {
 // stone block bleeds into its neighbour in the atlas. Downsampling each tile
 // on its own and packing the results keeps every level clean.
 
-export const ATLAS_TILES = BLOCK_DEFS.length * 3;
+export const ATLAS_TILES = ATLAS_DEFS.length * 3;
 
 /** Tile index for a block id and face column (0 side, 1 top, 2 bottom). */
 export function atlasTile(blockId, column) {
   // Every water level shares the source's tiles: eight ids, one appearance,
   // and no reason to widen the atlas by 21 tiles that are all the same.
   const id = isWater(blockId) ? WATER : blockId;
-  const i = BLOCK_DEFS.findIndex((b) => b.id === id);
+  const i = ATLAS_DEFS.findIndex((b) => b.id === id);
   return (i < 0 ? 0 : i) * 3 + column;
 }
 
 function tileCanvases() {
   const tiles = [];
-  for (const block of BLOCK_DEFS) {
+  for (const block of ATLAS_DEFS) {
     const rand = mulberry32(block.id * 7919 + 13);
     tiles.push(block.side(rand), block.top(rand), block.bottom(rand));
   }
@@ -587,7 +680,7 @@ export function getBlockAssets(block) {
   texture.generateMipmaps = true;
   texture.colorSpace = THREE.SRGBColorSpace;
   texture.anisotropy = 4;
-  const iconUrl = buildIcon(side, top).toDataURL();
+  const iconUrl = (isItem(block.id) ? buildFlatIcon(side) : buildIcon(side, top)).toDataURL();
   const assets = { texture, iconUrl };
   cache.set(block.id, assets);
   return assets;
@@ -595,10 +688,10 @@ export function getBlockAssets(block) {
 
 /** Look up a block definition by id (null for air / unknown ids). */
 export function getBlockDefById(id) {
-  return BLOCK_DEFS.find((b) => b.id === id) ?? null;
+  return ATLAS_DEFS.find((b) => b.id === id) ?? null;
 }
 
-/** Display name for a block id. */
+/** Display name for a block or item id. */
 export function blockName(id) {
   return getBlockDefById(id)?.name ?? 'Air';
 }

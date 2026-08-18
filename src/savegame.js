@@ -10,6 +10,7 @@
 // localStorage wrapper around them is not.
 
 import { WORLD_MIN_Y, WORLD_MAX_Y } from './constants.js';
+import { ITEM_BASE } from './items.js';
 
 const KEY = 'mc-clone.save.v1'; // same slot; the payload carries its version
 const VERSION = 3;
@@ -62,7 +63,12 @@ export function decodeEdits(flat, floor = WORLD_MIN_Y) {
     // y is absolute and the world extends below zero, so only the real
     // vertical bounds may reject an edit — `y < 0` used to, and would now
     // silently drop everything anyone built underground.
-    if (id < 0 || id > 255 || y < floor || y > WORLD_MAX_Y) continue;
+    // Items are not blocks and must never end up in the world: an id from
+    // that range would be a solid, invisible, bucket-textured cube. Nothing
+    // this game writes can produce one, which is exactly why a corrupted or
+    // hand-edited save is the only way it could arrive, and why it is worth
+    // one comparison to make sure it does not.
+    if (id < 0 || id >= ITEM_BASE || y < floor || y > WORLD_MAX_Y) continue;
     out.push({ x, y, z, id });
   }
   return out;

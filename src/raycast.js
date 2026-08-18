@@ -4,13 +4,22 @@
 import { REACH } from './constants.js';
 
 /**
- * March a ray through the voxel grid and return the first solid block hit.
+ * March a ray through the voxel grid and return the first block hit.
  *
  * Returns { x, y, z, nx, ny, nz, dist } where (x, y, z) is the hit block and
  * (nx, ny, nz) is the face normal the ray entered through — so the adjacent
  * cell for placement is (x + nx, y + ny, z + nz). Returns null on a miss.
+ *
+ * `fluids` makes water stop the ray as well as rock. Block targeting wants it
+ * off — you break and build *through* the sea, and a crosshair that snagged
+ * on the surface would make the shallows unusable. A bucket wants it on, for
+ * the obvious reason that the sea is the thing it is aiming at.
+ *
+ * With it on, a ray that *starts* inside water ignores the cell it started in.
+ * Otherwise every use of a bucket while swimming would fill from the block
+ * your own head is in, whatever you were looking at.
  */
-export function raycastVoxel(world, origin, dir, maxDist = REACH) {
+export function raycastVoxel(world, origin, dir, maxDist = REACH, { fluids = false } = {}) {
   const len = Math.hypot(dir.x, dir.y, dir.z);
   if (len === 0) return null;
   const dx = dir.x / len;
@@ -40,8 +49,17 @@ export function raycastVoxel(world, origin, dir, maxDist = REACH) {
 
   // A generous iteration cap: at most ~3 cell crossings per block of reach.
   for (let i = 0; i < 3 * maxDist + 9; i++) {
-    if (world.inBounds(ix, iy, iz) && world.isSolid(ix, iy, iz)) {
-      return { x: ix, y: iy, z: iz, nx, ny, nz, dist: t };
+    if (world.inBounds(ix, iy, iz)) {
+      if (world.isSolid(ix, iy, iz)) {
+        return { x: ix, y: iy, z: iz, nx, ny, nz, dist: t };
+      }
+      // Water only counts once the ray has *entered* a cell. The cell the ray
+      // starts in is the one the camera is already inside, and a bucket used
+      // while swimming should fill from what you are looking at rather than
+      // from your own head. Solids need no such rule: you are never inside one.
+      if (fluids && i > 0 && world.isWaterAt(ix, iy, iz)) {
+        return { x: ix, y: iy, z: iz, nx, ny, nz, dist: t };
+      }
     }
     if (tMaxX < tMaxY && tMaxX < tMaxZ) {
       t = tMaxX;

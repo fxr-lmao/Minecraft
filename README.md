@@ -10,6 +10,8 @@ A from-scratch Minecraft-style game built with [Three.js](https://threejs.org/) 
 - **Water drawn as a surface, not as boxes** — the height of the water belongs to the *corners*, and a corner is the average of the four cells that touch it, so two neighbouring cells always agree about where their shared edge is. A spreading stream comes out as one sloping sheet rather than a staircase of floating slabs with the floor showing through the joints. Moving water and calm water are different textures, both scrolling; a flowing surface has its texture rotated to run downhill; a current pushes you along it at Minecraft's 1.4 blocks/s
 - **…and shaded by measuring, not guessing.** Water gets its own renderer: the world is drawn off-screen first, with a depth texture, so the surface can look up what is behind each of its pixels *and how far through the water that light travelled*. Everything else follows from that one number — **Beer-Lambert absorption** per channel (red is absorbed eight times faster than blue, which is why a hand's depth over sand is faintly green and six blocks of it is deep blue; there is no colour ramp anywhere, just one exponential); **refraction**, so the sea floor shifts under the ripples; a **shoreline** that finds itself wherever the water gets thin, so foam appears around a block standing in a pond as readily as along a coast, softly and with no line; and **caustics** cast onto the point behind the surface, which is why they can no longer land on dry sand. Then a second off-screen pass from a camera mirrored through the water plane puts **the actual world** in the reflection — trees, cliffs, the sun — scattered by the wave normal. On top: a real swell, four crossing waves summed in *world* space so neighbouring chunks agree along their shared edge without knowing about each other, with normals from the derivative of the same sum so highlights can never slide off the waves. And Fresnel over all of it, which is most of the difference between "blue glass" and "a lake"
 - **Underwater is its own grade, not a blue filter.** The same depth buffer gives the world position of every pixel, so being submerged means light absorbed per channel over the real distance it travelled (down from the surface to whatever it hit, then back to your eye — so a deep sea floor is dim as well as blue), caustics moving across everything the sun can still reach, shafts of light where you look toward it, and a vignette. Looking up you get **Snell's window**: the whole sky squeezed into a 97° cone overhead, a mirror of the depths outside it
+- **Buckets** — the water was only ever where the sea put it. Now you can dip a bucket in it and pour it out anywhere: a pond on a clifftop, a moat, a waterfall down the side of whatever you built. It fills from a *source* and never from flowing water, which is Minecraft's rule and the right one — scooping a stream would take a level that upstream replaces on the next tick, so the bucket would be a tap that never runs dry. What you pour out is a source like any other, so it spreads its seven blocks, finds holes, and makes a new source wherever two of them sit on solid ground. Buckets aim with their own raycast: block targeting goes *through* water on purpose, so that you can build in the shallows, and a bucket that could not see the sea would have nothing to fill from
+- **Splashes** — jumping into water throws a crown of droplets and a collar of foam, sized by how hard you hit it; bubbles come off you while you are under; a swimmer leaves a wake; and anything falling throws spray where it lands. One pooled buffer, one draw call, nothing allocated while the game is running. They are ordinary scene geometry, which is what makes them composite correctly with the water for free: a droplet above the surface writes depth so the water stays behind it, and a bubble below it gets absorbed and tinted like everything else down there
 - **Water quality is a setting**, because each level is another render of the world: *Fast* is one pass and shades the surface from a procedural sky, *Fancy* adds the depth pass, and *Reflections* adds the mirrored one. The debug screen reports what the water is costing you in milliseconds
 - **Swimming** — Minecraft's water constants: 2.0 blocks/s swimming and 2.6 sprinting against 4.317 walking, sinking at 2.0 rather than 78.4, and holding jump lifts you at 1.2 — a seventh of a jump, and enough to reach the surface
 - **Getting back out** — swimming up is *not* enough on its own, and the arithmetic says so: it tops out at the surface, gravity gives you 1.2²/2g = 0.022 blocks of coast, and the bank is 0.111 above the waterline. You end up ninety millimetres short, forever. Minecraft has a separate move for this and so does this — swim into the edge and you haul yourself onto it, no jump key needed. It only fires where the hitbox is free 0.6 higher, so a bank works and a cliff does not
@@ -46,6 +48,7 @@ A from-scratch Minecraft-style game built with [Three.js](https://threejs.org/) 
 | Left / right click | Break / place a block |
 | Middle click | Pick the block you're looking at |
 | `1`–`9` / scroll | Select a hotbar slot |
+| Right click with a bucket | Fill from water, or pour it out |
 | `Shift` + scroll | Zoom the third-person camera |
 | `E` (or `I`) | Open/close the inventory |
 | `V` (or `F5`) | Cycle first person → third person → front view |
@@ -100,7 +103,7 @@ All paths are relative and `.nojekyll` is present, so the game works from a proj
 npm test
 ```
 
-439 headless checks across eight suites: Minecraft movement speeds, jump height, wall collision, auto jump and the swimming pose; infinite-world chunking (negative coordinates, generation, eviction, edits surviving a regenerate), caves and the deepslate transition; the mesher (face culling, chunk seams, atlas UVs); the inventory model; block targeting; the save/settings/camera systems; pointer lock plus the native iPad bridge; and water, in both halves — how far it spreads, whether it finds the hole, what a drop does to it, what it refuses to touch, and then the geometry it turns into.
+473 headless checks across eight suites: Minecraft movement speeds, jump height, wall collision, auto jump and the swimming pose; infinite-world chunking (negative coordinates, generation, eviction, edits surviving a regenerate), caves and the deepslate transition; the mesher (face culling, chunk seams, atlas UVs); the inventory model; block targeting; the save/settings/camera systems; pointer lock plus the native iPad bridge; and water, in both halves — how far it spreads, whether it finds the hole, what a drop does to it, what it refuses to touch, and then the geometry it turns into.
 
 Four of them are worth calling out because they guard things that would otherwise fail silently:
 
@@ -114,7 +117,7 @@ The tests run on a superflat world (`new World(seed, { flat: 3 })`) so that "wal
 
 ## What's next
 
-Cave entrances, ores, lava, buckets, swords and tools, more block types, crafting, sounds.
+Cave entrances, ores, lava, swords and tools, more block types, crafting, sounds.
 
 ## How the water is put together
 
@@ -128,6 +131,8 @@ Four files, and they only talk to each other through data:
 | `src/water-shader.js` | The surface. Absorption, refraction, reflection, Fresnel, foam, glitter, Snell's window |
 | `src/underwater.js` | The composite, which above water is a copy and below it is the whole underwater grade |
 | `src/water-glsl.js` | The GLSL more than one of them needs — the swell and the caustics — in one place, so the surface and the underwater pass can never disagree at the waterline |
+| `src/particles.js` | Water in the air: splashes, spray, bubbles and wake, in one pooled buffer |
+| `src/items.js` | Things you carry that are not blocks. Buckets, and the rules for filling and emptying them — pure, so the rules are unit-tested |
 | `src/textures.js` | The two 16×16 tiles, which hold no colour at all any more — only light and shade around a mid grey, because the colour of water depends on how deep it is and which way you are looking, and a tile knows neither |
 
 The passes, in order, and what each one is for:
@@ -146,8 +151,8 @@ So the world is rasterised once at full resolution and once at half, against onc
 - **Caves stop at y = 70**, so the inside of a mountain is solid. Carving all the way to 150 would cost a third again per chunk for tunnels sealed inside a peak.
 - **The world is 255 layers and cannot simply be made taller.** Mesh vertex positions are packed into single bytes, and a block at the top layer needs a vertex one above it. Going higher means widening every position attribute from 3 bytes a vertex to 6.
 - No ores yet, and no lava. Caves are dry: water fills the sea and anything you dig into it, but it does not seep into caves under the sea floor.
-- Water has no bucket, so the only sources are the sea. You can dig channels from it and build waterfalls, but not carry it inland.
 - **A planar reflection has one plane.** The mirrored camera is aimed at the water surface nearest you, found by scanning a short way up and down the column you are standing in. Water at a *different* height — a pond up a hill while you stand at the shore — still reflects, but it reflects the procedural sky rather than the world, because it is not the plane the second pass was rendered for.
+- **A bucket is the only item.** There is no crafting and no way to get a second one, so the one in your starting hotbar is the one you have. Losing it means resetting the world.
 - **The reflection does not contain the water.** Nothing in a mirror can reflect a mirror without another pass, so a waterfall pouring into a lake does not appear in the lake.
 - **Refraction reads a depth buffer, so it can only bend light around things it can see.** A block hidden behind another block cannot be refracted into view, and at the very edge of the screen the refracted sample is clamped rather than invented.
 - Flowing water is never saved — it is a consequence of the terrain, so it is recomputed rather than stored, which is why a flood costs nothing in the save file. The cost is that a chunk coming back into memory comes back dry for a moment, until replaying its edits pokes the sea into finding the hole again.

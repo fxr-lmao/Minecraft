@@ -7,6 +7,7 @@ import {
   liftEdits, V2_LIFT,
 } from '../src/savegame.js';
 import { normalise, DEFAULTS } from '../src/settings.js';
+import { ITEM_BASE } from '../src/items.js';
 import { smoothDistance, ViewController } from '../src/view.js';
 import { wrapAngle, approachAngle } from '../src/player-model.js';
 import { THIRD_PERSON_MIN, THIRD_PERSON_MAX, VIEW_FIRST } from '../src/constants.js';
@@ -181,6 +182,24 @@ const assert = (name, cond, detail) =>
   let a = 0;
   for (let i = 0; i < 100; i++) a = approachAngle(a, 2, 9, 0.016);
   assert('converges on the target', Math.abs(a - 2) < 1e-6, a.toFixed(4));
+}
+
+// Items must never reach the world, however the save got that way.
+{
+  const withItem = decodeEdits([5, 10, 5, 1, 6, 10, 6, ITEM_BASE, 7, 10, 7, 3]);
+  assert('a save carrying an item id drops it rather than building with it',
+    withItem.length === 2 && withItem.every((e) => e.id < ITEM_BASE),
+    JSON.stringify(withItem.map((e) => e.id)));
+  assert('...and keeps the real blocks either side of it',
+    withItem[0].id === 1 && withItem[1].id === 3);
+
+  // The inventory is the one place an item id is legitimate.
+  const kit = parseSnapshot({
+    version: 3, seed: 1, edits: [],
+    inventory: { slots: [[ITEM_BASE, 1], 0], selected: 0 },
+  });
+  assert('a bucket survives a save and a load',
+    kit?.inventory.slots[0]?.id === ITEM_BASE, JSON.stringify(kit?.inventory.slots[0]));
 }
 
 for (const [name, ok, detail] of results) {

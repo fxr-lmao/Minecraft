@@ -19,7 +19,7 @@ import {
 import {
   WATER, WATER_LEVELS, WATER_MAX_AMOUNT, AIR, GRASS,
   isWater, waterLevel, waterId, waterHeight, waterAmount, waterIdForAmount,
-  isOpaque, isWaterSource, SEA_LEVEL,
+  isOpaque, isWaterSource, SEA_LEVEL, WATER_LAST,
 } from '../src/terrain.js';
 import { WORLD_SEED, CHUNK_SIZE, toLayer, FLOW_PUSH_SPEED } from '../src/constants.js';
 import * as THREE from '../vendor/three.module.min.js';
@@ -28,6 +28,11 @@ import {
 } from '../src/water-render.js';
 import { ABSORB } from '../src/water-shader.js';
 import { CAUSTIC_GLSL, SWELL_GLSL } from '../src/water-glsl.js';
+import {
+  ITEM_BASE, BUCKET, WATER_BUCKET, isItem, useBucket,
+} from '../src/items.js';
+import { raycastVoxel } from '../src/raycast.js';
+import { Particles, DROPLET, BUBBLE, FOAM, MAX_PARTICLES } from '../src/particles.js';
 
 const results = [];
 const assert = (name, cond, detail) =>
@@ -680,6 +685,175 @@ const F32 = 1e-4;
   let calm = true;
   for (let v = 0; v < still.pos.length / 3; v++) if (still.data[v * 4 + 3] > 0) calm = false;
   assert('a pool has no whitewater in it', calm);
+}
+
+// ----------------------------------------------------------------- buckets
+//
+// The rules are small and every one of them exists because the obvious
+// alternative is wrong, so they are all worth writing down.
+{
+  assert('items live above every block id', ITEM_BASE > WATER_LAST);
+  assert('...so no block is ever mistaken for one',
+    ![WATER, WATER_LAST, GRASS, AIR, 255 - 1].some((id) => id < ITEM_BASE && isItem(id)));
+  assert('a bucket is an item and water is not',
+    isItem(BUCKET) && isItem(WATER_BUCKET) && !isItem(WATER));
+
+  const { w } = pool((world) => {
+    world.setBlock(4, FLAT + 1, 4, WATER);           // a source, alone
+    world.setBlock(10, FLAT + 1, 10, waterId(3));    // some flowing water
+  });
+  const hit = (x, y, z, nx = 0, ny = 1, nz = 0) => ({ x, y, z, nx, ny, nz });
+
+  const filled = useBucket(w, hit(4, FLAT + 1, 4), BUCKET);
+  assert('an empty bucket fills from a source',
+    filled?.item === WATER_BUCKET && filled.block === AIR, JSON.stringify(filled));
+
+  const scooped = useBucket(w, hit(10, FLAT + 1, 10), BUCKET);
+  assert('...but not from flowing water',
+    scooped?.item === undefined && Boolean(scooped?.message), JSON.stringify(scooped));
+  assert('...and not from thin air', useBucket(w, hit(20, FLAT + 1, 20), BUCKET) === null);
+  assert('an empty bucket used on nothing at all does nothing',
+    useBucket(w, null, BUCKET) === null);
+
+  // Pouring. Onto the face of a solid it goes in front of it; onto flowing
+  // water it goes *into* it, or you could never finish filling a pond.
+  const onGround = useBucket(w, hit(6, FLAT, 6), WATER_BUCKET);
+  assert('a full bucket pours onto the face you are looking at',
+    onGround?.block === WATER && onGround.y === FLAT + 1, JSON.stringify(onGround));
+  assert('...and turns back into an empty one', onGround?.item === BUCKET);
+
+  const intoFlow = useBucket(w, hit(10, FLAT + 1, 10), WATER_BUCKET);
+  assert('pouring into flowing water makes it a source',
+    intoFlow?.block === WATER && intoFlow.x === 10 && intoFlow.y === FLAT + 1);
+
+  assert('pouring into a source does nothing, rather than eating the bucket',
+    useBucket(w, hit(4, FLAT + 1, 4), WATER_BUCKET) === null);
+  assert('...and neither does pouring into solid rock',
+    useBucket(w, { x: 6, y: FLAT, z: 6, nx: 0, ny: -1, nz: 0 }, WATER_BUCKET) === null);
+
+  // And the thing it is all for: water you carried somewhere spreads when it
+  // gets there, exactly like water that was always there.
+  const { w: dry, flow } = pool(() => {});
+  const poured = useBucket(dry, hit(16, FLAT, 16), WATER_BUCKET);
+  dry.setBlock(poured.x, poured.y, poured.z, poured.block);
+  flow.touch(poured.x, poured.y, poured.z);
+  let steps = 0;
+  while (!flow.settled && steps < 400) { flow.step(16, FLAT + 1, 16); steps++; }
+  assert('a bucket emptied on dry ground spreads like any other source',
+    level(dry, 16 + 3, FLAT + 1, 16) === 3, level(dry, 16 + 3, FLAT + 1, 16));
+  assert('...and reaches exactly as far as the sea would',
+    level(dry, 16 + 7, FLAT + 1, 16) === 7 && level(dry, 16 + 8, FLAT + 1, 16) === null);
+}
+
+// -------------------------------------------------------- aiming at water
+{
+  // Block targeting goes through water on purpose; a bucket must not.
+  const { w } = pool((world) => {
+    for (let x = 4; x <= 9; x++) world.setBlock(x, FLAT + 1, 4, WATER);
+  });
+  const from = { x: 0.5, y: FLAT + 1.5, z: 4.5 };
+  const east = { x: 1, y: 0, z: 0 };
+
+  const solid = raycastVoxel(w, from, east, 20);
+  assert('the block ray goes straight through the sea',
+    solid === null || solid.x > 9, JSON.stringify(solid));
+
+  const fluid = raycastVoxel(w, from, east, 20, { fluids: true });
+  assert('a bucket\'s ray stops at the water', fluid?.x === 4, JSON.stringify(fluid));
+  assert('...on the face it came in through', fluid?.nx === -1);
+
+  // Standing in it, the first cell is your own head and does not count.
+  const inside = { x: 4.5, y: FLAT + 1.5, z: 4.5 };
+  const ahead = raycastVoxel(w, inside, east, 20, { fluids: true });
+  assert('swimming, a bucket fills from what you are looking at',
+    ahead?.x === 5, JSON.stringify(ahead));
+}
+
+// --------------------------------------------------------------- particles
+//
+// The pool is the part worth testing: a fixed buffer, dead particles swapped
+// to the end of the live range so both spawning and killing are O(1), and
+// nothing allocated after the constructor. Get the swap wrong and particles
+// quietly inherit each other's velocities, which looks like a physics bug and
+// is a bookkeeping one.
+{
+  const { w } = pool((world) => {
+    for (let x = 0; x < 6; x++) {
+      for (let z = 0; z < 6; z++) world.setBlock(x, FLAT + 1, z, WATER);
+    }
+  });
+  const scene = new THREE.Scene();
+  const fx = new Particles(scene, { max: 64 });
+
+  assert('the pool starts empty', fx.count === 0);
+  assert('one draw call for all of it', scene.children.length === 1);
+
+  fx.spawn(1, 20, 1, 0, 0, 0, DROPLET, 1, 0.05, [1, 1, 1]);
+  fx.spawn(2, 20, 2, 0, 0, 0, FOAM, 1, 0.05, [1, 1, 1]);
+  fx.spawn(3, 20, 3, 0, 0, 0, DROPLET, 1, 0.05, [1, 1, 1]);
+  assert('spawning fills the live range', fx.count === 3);
+
+  // Kill the middle one; the last should take its place, not leave a hole.
+  fx._kill(1);
+  assert('killing swaps the last one down', fx.count === 2 && fx.px[1] === 3,
+    `${fx.count} left, slot 1 is at x=${fx.px[1]}`);
+
+  // Fill it past the brim.
+  fx.clear();
+  for (let i = 0; i < 200; i++) fx.spawn(0, 20, 0, 0, 0, 0, DROPLET, 1, 0.05, [1, 1, 1]);
+  assert('the pool never overflows', fx.count === 64, fx.count);
+  assert('...and says so rather than throwing',
+    fx.spawn(0, 20, 0, 0, 0, 0, DROPLET, 1, 0.05, [1, 1, 1]) === false);
+
+  // A paused game is a still one, particles included.
+  fx.clear();
+  fx.spawn(1.5, 20, 1.5, 0, -5, 0, DROPLET, 1, 0.05, [1, 1, 1]);
+  fx.update(0, w);
+  assert('nothing moves while the game is paused',
+    fx.count === 1 && fx.py[0] === 20, fx.py[0]);
+
+  // Falling into water ends a droplet: it has joined the water.
+  fx.clear();
+  fx.spawn(1.5, FLAT + 2.2, 1.5, 0, -6, 0, DROPLET, 4, 0.05, [1, 1, 1]);
+  for (let i = 0; i < 60 && fx.count > 0; i++) fx.update(1 / 60, w);
+  assert('a droplet that lands in water is gone', fx.count === 0);
+
+  // ...and so does hitting rock.
+  fx.clear();
+  fx.spawn(20.5, FLAT + 3, 20.5, 0, -6, 0, DROPLET, 4, 0.05, [1, 1, 1]);
+  for (let i = 0; i < 60 && fx.count > 0; i++) fx.update(1 / 60, w);
+  assert('a droplet that lands on the ground is gone too', fx.count === 0);
+
+  // A bubble rises and pops at the surface rather than flying off into the sky.
+  fx.clear();
+  fx.bubble(1.5, FLAT + 1.1, 1.5);
+  let popped = false;
+  for (let i = 0; i < 300; i++) {
+    fx.update(1 / 60, w);
+    if (fx.count === 0) { popped = true; break; }
+    if (fx.py[0] > FLAT + 3) break;
+  }
+  assert('a bubble pops when it reaches the surface', popped,
+    fx.count ? `still going at y=${fx.py[0].toFixed(2)}` : 'gone');
+
+  // How hard you hit the water is the only thing that decides the splash.
+  fx.clear();
+  fx.splash(1.5, FLAT + 2, 1.5, 2);
+  const gentle = fx.count;
+  fx.clear();
+  fx.splash(1.5, FLAT + 2, 1.5, 20);
+  const hard = fx.count;
+  assert('a bigger fall makes a bigger splash', hard > gentle * 1.8,
+    `${gentle} against ${hard}`);
+  assert('...and neither of them empties the pool', hard <= 64);
+
+  // The draw range only ever covers live particles: anything past it is stale
+  // memory, and pointing the GPU at it draws last frame's splash for ever.
+  fx.clear();
+  fx.spawn(1, 20, 1, 0, 0, 0, FOAM, 1, 0.05, [1, 1, 1]);
+  fx.update(1 / 60, w);
+  assert('the GPU is only shown the live range',
+    fx.geometry.drawRange.count === fx.count, fx.geometry.drawRange.count);
 }
 
 // ------------------------------------------------------- the render passes
