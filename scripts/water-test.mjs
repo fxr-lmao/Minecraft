@@ -14,7 +14,7 @@ import { WaterFlow, Freeze, DROP_OFF, SLOPE_FIND_DISTANCE } from '../src/water.j
 import { meshChunk } from '../src/blocks.js';
 import {
   fluidCornerHeight, fluidCornerInfo, fluidWaveAmount, fluidFlow, fluidOwnHeight,
-  DEPTH_SCALE, STILL, FLOWING,
+  DEPTH_SCALE, STILL, FLOWING, STILL_EDGE_CHURN,
 } from '../src/water-mesh.js';
 import {
   WATER, WATER_LEVELS, WATER_MAX_AMOUNT, AIR, GRASS, ICE,
@@ -688,6 +688,88 @@ const F32 = 1e-4;
   let calm = true;
   for (let v = 0; v < still.pos.length / 3; v++) if (still.data[v * 4 + 3] > 0) calm = false;
   assert('a pool has no whitewater in it', calm);
+}
+
+// -------------------------------------------------------------- a waterfall
+//
+// A fall is the case every one of these channels was getting wrong at once,
+// and the result was a sheet of white paper hanging in a shaft. The shader
+// reads three of them off a wall — how broken it is, how much it may bob, and
+// what is behind it — so this is where the mesher has to be right:
+//
+//   * the face of a fall is *fully* broken, and the exposed edge of a pool is
+//     hardly broken at all, and they cannot carry the same number, because
+//     the froth and the reflection are both scaled by it;
+//   * water inside a column must not bob. Its wall runs from the top of its
+//     cell to the bottom, the top edge is displaced by the swell and the
+//     bottom edge is pinned, so any amplitude at all pulses the fall once per
+//     block — the venetian blind you could see down every waterfall.
+{
+  const { w } = pool((world, flow) => {
+    // A pillar with a source on top of it: the water spreads over the top and
+    // falls off every side, which is the only way a fall has faces to draw —
+    // a shaft the same width as the water hides them behind the rock.
+    for (let y = FLAT + 1; y <= FLAT + 8; y++) world.setBlock(21, y, 21, GRASS);
+    world.setBlock(21, FLAT + 9, 21, WATER);
+    flow.touch(21, FLAT + 9, 21);
+  });
+
+  const { flowing } = meshChunk(w, 0, 0, true).water;
+  // Walls of the column: the quads standing in the shaft, above its floor.
+  let fallVerts = 0;
+  let bobbing = 0;
+  let slack = 0;
+  let fullChurn = 0;
+  let footChurn = 0;
+  for (let v = 0; v < flowing.pos.length / 3; v++) {
+    const x = flowing.pos[v * 3];
+    const y = flowing.pos[v * 3 + 1];
+    const z = flowing.pos[v * 3 + 2];
+    if (x < 19 || x > 24 || z < 19 || z > 24) continue;
+    // Between the foot and the lip: everything here is water on its way down
+    // the side of the pillar. The mesher works in layers rather than world
+    // heights — a chunk-local y fits in a byte and a world one does not — so
+    // the window is converted rather than guessed at.
+    if (y <= toLayer(FLAT + 2) || y >= toLayer(FLAT + 9)) continue;
+    fallVerts++;
+    if (flowing.data[v * 4 + 2] !== 0) bobbing++;      // wave amplitude
+    // Churn, as a byte. A wall is broken all the way down but not evenly:
+    // the top edge carries the cell's own churn and the foot a little over
+    // half of it, so the froth thins out as the fall crosses each block. Both
+    // edges of a full-height wall sit on whole numbers, so the two are told
+    // apart by their value rather than their height.
+    const churn = flowing.data[v * 4 + 3];
+    if (churn === 255) fullChurn++;
+    else if (churn === Math.round(255 * 0.55)) footChurn++;
+    else slack++;
+  }
+  assert('a fall has faces to draw', fallVerts > 0, fallVerts);
+  assert('...none of which bob', bobbing === 0, `${bobbing} of ${fallVerts}`);
+  assert('...every one of which is broken', slack === 0, `${slack} of ${fallVerts}`);
+  assert('...fully at the top of each block and less at its foot',
+    fullChurn > 0 && fullChurn === footChurn, `${fullChurn} vs ${footChurn}`);
+
+  // And the other half of the rule: the exposed edge of water that is not
+  // going anywhere is not a cataract.
+  const { w: ledge } = pool((world) => {
+    for (let x = 4; x <= 6; x++) world.setBlock(x, FLAT + 1, 4, WATER);
+    world.setBlock(4, FLAT, 4, GRASS); // something under it, so it is not falling
+    world.setBlock(5, FLAT, 4, GRASS);
+    world.setBlock(6, FLAT, 4, GRASS);
+  });
+  const edge = meshChunk(ledge, 0, 0, true).water.flowing;
+  let stillEdge = null;
+  for (let v = 0; v < edge.pos.length / 3; v++) {
+    // The top edge of the wall, which carries the cell's own churn; the foot
+    // of it carries a little over half as much.
+    if (Number.isInteger(edge.pos[v * 3 + 1])) continue;
+    const churn = edge.data[v * 4 + 3] / 255;
+    if (churn > 0 && churn < 1) stillEdge = churn;
+  }
+  assert('the edge of standing water is barely broken at all',
+    stillEdge !== null && stillEdge < 0.5, stillEdge);
+  assert('...which is the number the mesher says it is',
+    stillEdge === null || Math.abs(stillEdge - STILL_EDGE_CHURN) < 0.01, stillEdge);
 }
 
 // ----------------------------------------------------------------- buckets

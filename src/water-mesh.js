@@ -58,6 +58,13 @@ const FULL_ENOUGH = 0.8;
 /** The weight a full cell carries. Ten shallow cells to outvote one. */
 const FULL_WEIGHT = 10;
 
+/**
+ * How broken the exposed edge of water that is *not* falling counts as. The
+ * side of a pool that happens to have air beside it is water with a bit of a
+ * ripple, not a cataract.
+ */
+export const STILL_EDGE_CHURN = 0.3;
+
 /** Side faces sit this far inside the cell, so they never z-fight. */
 const SIDE_INSET = 0.001;
 
@@ -292,10 +299,24 @@ export class FluidMesher {
     this.corner(lx + 1, layer, lz, NE);
     const h = this._h;
 
+    // Is this water on its way down? Either it has water above it — it is a
+    // column, and the top of that column is somewhere else — or it is
+    // standing over nothing and about to be. Both are the face of a fall;
+    // anything else showing a wall is the cut edge of water that is
+    // essentially still, and the two should not be drawn the same way.
+    const falling = isWater(above) || (!isWater(below) && !isOpaque(below));
+    // Water *inside* a column is a special case of falling: it has no surface
+    // of its own — the top of the column is somewhere else — so its walls
+    // share their corners with nothing, and they are the one face that must
+    // not ride the swell. A wall whose top edge bobs and whose bottom edge is
+    // pinned to the floor of its cell pulses once per block, which is exactly
+    // the venetian-blind banding a tall fall used to have.
+    const column = isWater(above);
+
     let quads = 0;
     if (drawTop) quads += this._top(lx, layer, lz, id, h);
     if (drawBottom) quads += this._bottom(lx, layer, lz);
-    if (sides) quads += this._sides(lx, layer, lz, h, sides);
+    if (sides) quads += this._sides(lx, layer, lz, h, sides, falling, column);
     return quads;
   }
 
@@ -406,8 +427,14 @@ export class FluidMesher {
    * along its top edge down to the cell floor. They always use the flowing
    * texture: a visible wall of water is a waterfall or the cut face of a
    * stream, and both are moving.
+   *
+   * `falling` is the difference between those two, and it is carried in the
+   * churn channel. A curtain of falling water is broken all the way down; the
+   * exposed edge of a pool is barely broken at all. They used to be given the
+   * same number, which is a large part of why every fall in the game came out
+   * as a sheet of white paper.
    */
-  _sides(lx, layer, lz, h, mask) {
+  _sides(lx, layer, lz, h, mask, falling, column) {
     const v = this._v;
     const t = this._t;
     const c = this._d;
@@ -440,10 +467,13 @@ export class FluidMesher {
       // they take their bob from the same place the surface quad does and the
       // two stay welded. The bottom two are standing on the floor of the cell
       // and never move at all.
-      this._channels(0, e.a, 1);
-      this._channels(1, e.b, 1);
-      c[8] = c[4]; c[9] = c[5]; c[10] = 0; c[11] = 0.55; // below e.b
-      c[12] = c[0]; c[13] = c[1]; c[14] = 0; c[15] = 0.55; // below e.a
+      const churn = falling ? 1 : STILL_EDGE_CHURN;
+      const lower = churn * 0.55;
+      this._channels(0, e.a, churn);
+      this._channels(1, e.b, churn);
+      if (column) { c[2] = 0; c[6] = 0; } // mid-column: nothing here bobs
+      c[8] = c[4]; c[9] = c[5]; c[10] = 0; c[11] = lower; // below e.b
+      c[12] = c[0]; c[13] = c[1]; c[14] = 0; c[15] = lower; // below e.a
 
       this.buffers[FLOWING].quad(v, t, c, e.nx, 0, e.nz);
       quads++;
