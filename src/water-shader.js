@@ -367,6 +367,12 @@ void main() {
   // sea. Comparing heights cannot flip.
   bool fromAbove = !top || cameraPosition.y >= vWorld.y;
 
+  // How broken this piece of water is: 1 down the face of a fall, 0.3 on the
+  // exposed edge of something still, and whatever the flow is worth on a
+  // surface. Wanted twice — once here and once by the foam — so it is read
+  // out before either of them.
+  float churn = vData.w;
+
   // Fresnel, Schlick, with water's 2% at normal incidence. Look straight down
   // and you see the bottom; look across and it is a mirror. Most of the
   // difference between "blue glass" and "a lake" is this one term.
@@ -421,9 +427,28 @@ void main() {
     // mirror at ninety degrees, and water is neither perfect nor flat: at
     // that angle you are seeing a statistical average over wave slopes, and
     // some of every pixel is always the water underneath.
-    float mirror = min(fresnel * 0.92, 0.80) * (1.0 - uUnder * 0.62);
+    //
+    // And falling water is not a mirror at all. Schlick describes a smooth
+    // interface; a curtain coming off a ledge is broken and full of air, and
+    // it scatters what hits it instead of bouncing it. Left as a mirror it
+    // was catastrophic at exactly the angle you look at a fall from — down a
+    // shaft, or along a ravine — where grazing incidence put it at four
+    // fifths sky, and a waterfall came out as a sheet of white paper. So the
+    // sheen goes with the churn: a still edge keeps most of its reflection, a
+    // fall keeps a fifth of it.
+    // A *surface* loses some of it too, for the same reason and to a lesser
+    // degree: a stream tumbling down a chute is broken water, and its steep
+    // little facets were catching the sky and coming back as a sawtooth of
+    // white one wedge per block. Still water — the sea, a pond, anything with
+    // no flow at all — has churn zero and keeps every bit of its mirror.
+    float sheen = 1.0 - (top ? 0.5 : 0.8) * clamp(churn, 0.0, 1.0);
+    float mirror = min(fresnel * 0.92, 0.80) * (1.0 - uUnder * 0.62) * sheen;
     color = mix(transmitted, mirrored, mirror);
-    color += uSunColor * spec * (1.0 - uUnder * 0.85);
+    // The sun's highlight goes with the same sheen. A sharp specular is a
+    // property of a smooth surface; on broken water it is what was left of
+    // the sawtooth once the mirror had been damped, because it is added after
+    // the mix rather than through it.
+    color += uSunColor * spec * sheen * (1.0 - uUnder * 0.85);
     alpha = mix(alpha, 0.98, mirror);
   } else {
     // Seen from below. Refraction squeezes the entire sky into a cone 97°
@@ -446,7 +471,6 @@ void main() {
   // break. And churn, which the mesher sets on anything falling or running.
   float mottle = 0.55 + 0.45 * sin(vWorld.x * 2.7 + vWorld.z * 3.4 + uTime * 1.6)
                       * (0.6 + 0.4 * sin(vWorld.z * 1.3 - vWorld.x * 0.9 - uTime * 1.1));
-  float churn = vData.w;
 #if USE_REFRACTION
   float shallow = 1.0 - smoothstep(0.0, ${FOAM_DEPTH.toFixed(2)}, thickness);
 #else
@@ -456,10 +480,56 @@ void main() {
   // shoreline that comes and goes along its length reads as a bug, and the
   // waterline is the one edge in the scene the eye is looking for.
   float grain = 0.62 + 0.38 * mottle;
+
+  // Thin is not the same as *at the edge*, and treating them as the same is
+  // what turned every pool a bucket makes into a sheet of white: a bucket of
+  // water spread over flat rock is one ninth of a block deep everywhere, so
+  // everywhere was foam. The mesher already measures how much land surrounds
+  // each corner — that is what makes a shoreline a line — so the band is
+  // thinness *and* a shore to break against, and the middle of a shallow
+  // pool, which has no shore anywhere near it, keeps its water.
+  float ashore = smoothstep(0.05, 0.55, vData.y);
+  // A wall of water is a waterfall, and a waterfall is not a wash of white:
+  // it is water with threads of white running down it. This used to be half
+  // the churn flat across the face, which after the gain below is four fifths
+  // foam everywhere — every fall in the game came out as a sheet of paper,
+  // and the narrower the fall the more of it was paper.
+  //
+  // The threads come from the flowing tile itself, which is already scrolling
+  // down the face at the speed the water is going: its bright streaks are
+  // where the fall is broken, and everything between them stays water. So the
+  // froth moves *with* the fall for free, and a still edge (churn 0.3) barely
+  // shows any at all.
+  float threads = smoothstep(0.02, 0.62, pattern);
+  // Moving water is broken in *threads*, not painted. A third of foam flat
+  // across every flowing cell is what turned the pool at the foot of a fall
+  // into a white apron: a sheet a ninth of a block deep, racing, and entirely
+  // covered. Now the same white rides the flowing tile, which is scrolling
+  // the way the water is going, so a stream shows streaks that move with it
+  // and a wide sheet keeps most of the rock it is running over.
+  // On a *top* face the threads cannot come from the tile: a flowing surface
+  // samples a quarter of it, rotated to point downhill, so the bright part of
+  // the tile lands as a hard wedge per cell and a stream comes out as a
+  // fan of shards. The mottle is the right source there — it is a world-space
+  // function, so it crosses cell boundaries without knowing they exist.
+  float rapids = smoothstep(0.45, 0.95, mottle);
+  // The shoreline band is capped on its own, before anything is added to it.
+  // Thin water against rock is the commonest thing a bucket makes — a stream
+  // down a channel is thin and has a shore on both sides for its whole length
+  // — and at full strength the band paints every one of those white. Capped,
+  // it is surf where the sea meets the beach and a pale edge on a stream,
+  // which is what both of them look like.
+  float shoreFoam = min(
+    shallow * shallow * ashore * (0.55 + 0.45 * smoothstep(-0.5, 0.9, vCrest)),
+    0.34);
   float foam = top
-    ? shallow * shallow * (0.55 + 0.45 * smoothstep(-0.5, 0.9, vCrest)) + churn * 0.34
-    : churn * 0.50;
-  foam = clamp(foam * grain * 1.75, 0.0, 1.0);
+    ? shoreFoam + churn * (0.02 + 0.11 * rapids)
+    : churn * (0.06 + 0.26 * threads);
+  // Capped below one on purpose. Foam is water with air beaten into it, not
+  // paint: even the whitest of it should keep something of what is under it,
+  // and the cap is the difference between a wave breaking and a hole cut in
+  // the sea.
+  foam = clamp(foam * grain * 1.75, 0.0, 0.86);
   color = mix(color, uFoam, foam * 0.92);
   alpha = max(alpha, foam * 0.96);
 
