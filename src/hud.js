@@ -172,7 +172,7 @@ export class Hud {
       `Minecraft [browser clone] alpha 0.9`,
       ``,
       `XYZ: ${info.pos.x.toFixed(3)} / ${info.pos.y.toFixed(3)} / ${info.pos.z.toFixed(3)}`,
-      `Block: ${blockName(info.blockUnder)}  ·  Biome: ${info.biome}  ·  Temp: ${info.temperature.toFixed(2)}`,
+      `Block: ${blockName(info.blockUnder)}  ·  Biome: ${info.biome}  ·  Temp: ${info.temperature.toFixed(2)}  ·  ${info.weather}`,
       `Chunk: ${info.chunk}  (${CHUNK_SIZE}x${CHUNK_SIZE})`,
       `Facing: ${CARDINALS[idx]} (${((dir + 360) % 360).toFixed(1)} / ${info.pitchDeg.toFixed(1)})`,
       `Looking at: ${target}`,

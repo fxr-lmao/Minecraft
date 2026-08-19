@@ -111,6 +111,11 @@ export function createSky(scene) {
   clouds.position.y = 210;
   scene.add(clouds);
 
+  const domeTint = new THREE.Color(0xffffff);
+  const cloudTint = new THREE.Color(0xffffff);
+  /** How overcast it is, kept because the cloud drift wants it too. */
+  let overcast = 0;
+
   return {
     /** Hidden while the camera is under water — down there you see fog. */
     setVisible(on) {
@@ -118,13 +123,34 @@ export function createSky(scene) {
       sun.visible = on;
       clouds.visible = on;
     },
+    /**
+     * How overcast it is, 0 to 1, which is the weather's intensity.
+     *
+     * The sky is not repainted — the dome, the clouds and the sun are all
+     * multiplied down toward a flat grey, which is what an overcast sky
+     * actually is: the same sky with the light taken out of it. The sun goes
+     * first and fastest, because a sun you can still see through rain is the
+     * one thing that gives the whole effect away.
+     */
+    setOvercast(level) {
+      const l = Math.max(0, Math.min(1, level));
+      overcast = l;
+      domeTint.setRGB(1 - l * 0.52, 1 - l * 0.47, 1 - l * 0.38);
+      dome.material.color.copy(domeTint);
+      sun.material.opacity = Math.max(0, 1 - l * 1.6);
+      cloudTint.setRGB(1 - l * 0.45, 1 - l * 0.43, 1 - l * 0.38);
+      clouds.material.color.copy(cloudTint);
+      clouds.material.opacity = 0.85 + l * 0.15;
+    },
     update(_dt, playerPos) {
       dome.position.copy(playerPos);
       sun.position.set(playerPos.x - 420, 260, playerPos.z - 260);
       clouds.position.x = playerPos.x;
       clouds.position.z = playerPos.z;
-      cloudTex.offset.x += _dt * 0.0022;
-      cloudTex.offset.y += _dt * 0.0008;
+      // Weather moves, so the cloud deck moves with it.
+      const wind = 1 + overcast * 2.2;
+      cloudTex.offset.x += _dt * 0.0022 * wind;
+      cloudTex.offset.y += _dt * 0.0008 * wind;
     },
   };
 }

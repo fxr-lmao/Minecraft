@@ -17,9 +17,10 @@ import { WorldRenderer, buildSingleBlockGeometry, buildSingleItemGeometry } from
 import { Player } from './player.js';
 import { Input, LOOK_FREE, LOOK_TOUCH } from './input.js';
 import { WaterFlow, Freeze, FLOW_INTERVAL_MS, FREEZE_INTERVAL_MS } from './water.js';
-import { setCameraUnderwater, setSunDirection } from './water-shader.js';
+import { setCameraUnderwater, setSunDirection, setWaterOvercast } from './water-shader.js';
 import { WaterView, HELD_LAYER, WATER_QUALITY_NAMES } from './water-render.js';
 import { Particles } from './particles.js';
+import { Weather, SNOWING } from './weather.js';
 import { isItem, useBucket, needsFluidAim } from './items.js';
 import { installNativeBridge } from './native.js';
 import { Hud } from './hud.js';
@@ -145,6 +146,32 @@ function waterPlaneNear(x, y, z) {
 /** Under water everything is blue and you cannot see far, as in Minecraft. */
 const UNDERWATER_FOG = 0x1c3f8f;
 let wasSubmerged = null;
+/**
+ * What rain does to the light.
+ *
+ * Everything here is a multiplier on the clear-sky value rather than a
+ * second set of numbers, so there is exactly one place that decides how
+ * bright a clear day is. The sun loses more than half of itself, the sky
+ * loses a little, and the fog closes in and goes grey — which is the part
+ * that sells it, because the far chunks fading into an overcast horizon is
+ * what makes the weather look like it is happening to the whole world rather
+ * than to the twenty blocks with droplets in them.
+ */
+const RAIN_FOG = new THREE.Color(0x8e9aa6);
+const CLEAR_FOG = new THREE.Color(FOG_COLOR);
+function applyWeather(level, submerged) {
+  sky.setOvercast(level);
+  setWaterOvercast(level);
+  sun.intensity = 1.25 * (1 - 0.58 * level);
+  hemi.intensity = 0.75 * (1 - 0.22 * level);
+  ambient.intensity = 0.45 * (1 - 0.12 * level);
+  if (submerged) return; // down there the water grade owns the fog
+  scene.fog.color.lerpColors(CLEAR_FOG, RAIN_FOG, level);
+  const blocks = settings.renderDistance * CHUNK_SIZE;
+  scene.fog.near = blocks * (0.55 - 0.18 * level);
+  scene.fog.far = blocks * (0.98 - 0.26 * level);
+}
+
 function applyUnderwaterFog(submerged) {
   if (submerged === wasSubmerged) return;
   wasSubmerged = submerged;
@@ -266,6 +293,10 @@ const waterFlow = new WaterFlow(world);
 // Attaches itself to the flow, which forwards every cell it touches: water
 // that has just arrived somewhere cold is the case the freeze waits for.
 const iceSheet = new Freeze(world, waterFlow);
+// The other half of the water: the part that arrives from above. One clock
+// for the whole world, and the climate decides per column whether what falls
+// out of it is rain or snow.
+const weather = new Weather();
 world.onEditReplayed = (x, y, z) => waterFlow.touch(x, y, z);
 if (restored) for (const e of restored.edits) waterFlow.touch(e.x, e.y, e.z);
 
@@ -721,6 +752,14 @@ function frame(now) {
   }
   particles.followPlayer(animDt, player);
   particles.scanFalls(animDt, world, player.pos.x, player.pos.y, player.pos.z);
+  // Weather is spawned around the *camera*, not the player: in third person
+  // the rain you can see is the rain where the lens is.
+  weather.update(animDt);
+  if (!cameraUnderwater()) {
+    particles.precipitation(
+      animDt, world, weather, camera.position.x, camera.position.y, camera.position.z
+    );
+  }
   particles.update(animDt, world);
 
   // ---- held use button auto-repeat ----
@@ -810,6 +849,7 @@ function frame(now) {
   // out the screen when you crouch.
   const submerged = cameraUnderwater();
   applyUnderwaterFog(submerged);
+  applyWeather(weather.level, submerged);
   waterView.underwater = submerged;
   waterView.planeY = waterPlaneNear(camera.position.x, camera.position.y, camera.position.z);
 
@@ -916,6 +956,9 @@ function frame(now) {
     submerged: player.submerged,
     flowing: waterFlow.pending.size,
     ice: iceSheet.frozen.size,
+    weather: weather.level > 0
+      ? `${weather.fallAt(world, px, world.heightAt(px, pz) + 1, pz) === SNOWING ? 'snow' : 'rain'} ${(weather.level * 100).toFixed(0)}%`
+      : 'clear',
     chunk: `${pcx} ${pcz}`,
     renderDistance: settings.renderDistance,
     meshes: worldRenderer.stats.meshes,
