@@ -5,7 +5,7 @@ import { Player } from '../src/player.js';
 import { World, GRASS, AIR, WATER, ICE } from '../src/world.js';
 import {
   PHYSICS_DT, WORLD_MIN_Y, SPEED_WALK, JUMP_VELOCITY, SWIM_UP_SPEED, GRAVITY,
-  PLAYER_HEIGHT,
+  PLAYER_HEIGHT, MAX_HEALTH, MAX_AIR, FALL_SAFE, DROWN_DAMAGE, REGEN_DELAY,
 } from '../src/constants.js';
 
 const world = new World(1, { flat: 3 });
@@ -658,6 +658,120 @@ const assert = (name, cond, detail) => {
     `${slid.toFixed(2)} vs ${walked.toFixed(2)} blocks`);
   assert('...and it does stop in the end', skater.horizontalSpeed < 0.05,
     skater.horizontalSpeed.toFixed(4));
+}
+
+// ------------------------------------------------------------------ falling
+//
+// Minecraft's rule is ceil(distance - 3) hit points, and the interesting half
+// of it is what *cancels* the distance: water. A dive from any height costs
+// nothing, which is why a bucket is a parachute and a waterfall is a lift.
+{
+  const still = { forward: 0, strafe: 0, jump: false, sprint: false, sneak: false };
+
+  /** Drop the player from `height` above the ground and see what it cost. */
+  function drop(w, height, at = { x: 0.5, z: 0.5 }) {
+    const p = new Player(w);
+    p.pos.set(at.x, 4 + height, at.z);
+    p.vel.set(0, 0, 0);
+    for (let i = 0; i < 20 * 120 && !(p.onGround || p.inWater); i++) p.update(PHYSICS_DT, still);
+    for (let i = 0; i < 120; i++) p.update(PHYSICS_DT, still); // land, and settle
+    return p;
+  }
+
+  const flat = new World(3, { flat: 3 });
+  assert('a full player starts with full health', new Player(flat).health === MAX_HEALTH);
+  assert('three blocks are free', drop(flat, FALL_SAFE).health === MAX_HEALTH,
+    drop(flat, FALL_SAFE).health);
+  const four = drop(flat, 4);
+  assert('four blocks cost a hit point', four.health === MAX_HEALTH - 1, four.health);
+  const ten = drop(flat, 10);
+  assert('ten blocks cost seven', ten.health === MAX_HEALTH - 7, ten.health);
+  assert('...and leave you standing', ten.onGround && !ten.dead);
+  const fatal = drop(flat, 40);
+  assert('far enough is fatal', fatal.dead && fatal.health === 0, fatal.health);
+  assert('...and it says what happened', fatal.death === 'fell from a great height',
+    fatal.death);
+
+  // The same fall, into water.
+  const pond = new World(3, { flat: 3 });
+  for (let x = -3; x <= 3; x++) for (let z = -3; z <= 3; z++) pond.setBlock(x, 3, z, WATER);
+  const splashed = drop(pond, 40);
+  assert('water breaks any fall there is', splashed.health === MAX_HEALTH, splashed.health);
+  assert('...because it takes the distance away, not the damage',
+    splashed.fallDistance === 0);
+}
+
+// ----------------------------------------------------------------- drowning
+{
+  const sea = new World(4, { flat: 3 });
+  for (let x = -4; x <= 4; x++) {
+    for (let z = -4; z <= 4; z++) for (let y = 4; y <= 9; y++) sea.setBlock(x, y, z, WATER);
+  }
+  const still = { forward: 0, strafe: 0, jump: false, sprint: false, sneak: false };
+  const p = new Player(sea);
+  p.pos.set(0.5, 8, 0.5);
+  p.vel.set(0, 0, 0);
+
+  // Sink until the head is under, then count.
+  for (let i = 0; i < 240 && !p.submerged; i++) p.update(PHYSICS_DT, still);
+  assert('sinking puts your head under', p.submerged, p.pos.y.toFixed(2));
+  const airAt = p.air;
+  for (let i = 0; i < 120; i++) p.update(PHYSICS_DT, still); // one second
+  assert('a second under water is a second of air',
+    Math.abs((airAt - p.air) - 1) < 0.02, (airAt - p.air).toFixed(3));
+  assert('...and costs nothing while there is air left', p.health === MAX_HEALTH);
+
+  // Run the air out and keep going.
+  for (let i = 0; i < MAX_AIR * 120; i++) p.update(PHYSICS_DT, still);
+  assert('fifteen seconds is all the air there is', p.air <= 0, p.air.toFixed(2));
+  const hurtFrom = p.health;
+  for (let i = 0; i < 120; i++) p.update(PHYSICS_DT, still);
+  assert('after that it costs two hit points a second',
+    Math.abs((hurtFrom - p.health) - DROWN_DAMAGE) < 0.05, (hurtFrom - p.health).toFixed(2));
+
+  for (let i = 0; i < 20 * 120; i++) p.update(PHYSICS_DT, still);
+  assert('and drowning kills you', p.dead && p.death === 'drowned', p.death);
+
+  // Respawning is the way out, and it is a whole player that comes back.
+  p.respawn();
+  assert('a respawned player is whole and breathing',
+    p.health === MAX_HEALTH && p.air === MAX_AIR && !p.dead && p.death === null);
+}
+
+// air comes back, and so does health
+{
+  const sea = new World(5, { flat: 3 });
+  for (let x = -4; x <= 4; x++) {
+    for (let z = -4; z <= 4; z++) for (let y = 4; y <= 7; y++) sea.setBlock(x, y, z, WATER);
+  }
+  const still = { forward: 0, strafe: 0, jump: false, sprint: false, sneak: false };
+  const up = { forward: 0, strafe: 0, jump: true, sprint: false, sneak: false };
+  const p = new Player(sea);
+  p.pos.set(0.5, 5, 0.5);
+  for (let i = 0; i < 600 && !p.submerged; i++) p.update(PHYSICS_DT, still);
+  for (let i = 0; i < 5 * 120; i++) p.update(PHYSICS_DT, still);
+  const spent = p.air;
+  assert('five seconds down is five seconds of air', spent < MAX_AIR - 4, spent.toFixed(1));
+
+  // Up to the surface. Air comes back four times faster than it went.
+  for (let i = 0; i < 6 * 120; i++) p.update(PHYSICS_DT, up);
+  assert('a gulp at the surface is a gulp', p.air === MAX_AIR, p.air.toFixed(2));
+
+  // And with nothing hurting you, health comes back on its own.
+  const hurt = new Player(new World(6, { flat: 3 }));
+  hurt.hurt(6, 'a test');
+  assert('damage is remembered', hurt.health === MAX_HEALTH - 6 && hurt.sinceHurt === 0);
+  // A step either side of the delay: nothing has healed by the time it is up,
+  // and the tolerance is there because the healing starts on the very step
+  // that crosses it.
+  for (let i = 0; i < REGEN_DELAY * 120; i++) hurt.update(PHYSICS_DT, still);
+  assert('...and nothing heals while the wound is fresh',
+    Math.abs(hurt.health - (MAX_HEALTH - 6)) < 0.01, hurt.health.toFixed(4));
+  for (let i = 0; i < 8 * 120; i++) hurt.update(PHYSICS_DT, still);
+  assert('...but it comes back slowly once it is not',
+    hurt.health > MAX_HEALTH - 6 && hurt.health < MAX_HEALTH, hurt.health.toFixed(2));
+  for (let i = 0; i < 120 * 120; i++) hurt.update(PHYSICS_DT, still);
+  assert('...all the way, and no further', hurt.health === MAX_HEALTH, hurt.health);
 }
 
 console.log(results.join('\n'));

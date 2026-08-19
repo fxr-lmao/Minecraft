@@ -110,6 +110,9 @@ export function buildSnapshot({ world, inventory, player, viewMode }) {
     player: {
       x: player.pos.x, y: player.pos.y, z: player.pos.z,
       yaw: player.yaw, pitch: player.pitch,
+      // Two more numbers, and they are the difference between closing a tab
+      // to escape a drowning and having to swim out of it.
+      health: player.health, air: player.air,
     },
     view: viewMode,
   };

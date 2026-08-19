@@ -88,8 +88,8 @@ export function waterTarget(world, hit) {
  * Use a bucket on whatever the crosshair found.
  *
  * `hit` is a raycast result that was allowed to stop at fluid — see
- * `raycastVoxel(..., { fluids: true })` — because an empty bucket has to be
- * able to aim at the sea, which a solid-only ray goes straight through.
+ * `fluidAim` below and `raycastVoxel` — because a bucket has to be able to aim
+ * at the sea, which a solid-only ray goes straight through.
  *
  * Returns null when nothing happens, or:
  *   { item, x, y, z, block, message }
@@ -102,7 +102,12 @@ export function useBucket(world, hit, id) {
     if (!hit) return null;
     const at = world.get(hit.x, hit.y, hit.z);
     if (!canFillFrom(at)) {
-      return isWater(at)
+      // Either the ray stopped on flowing water (it does not, with a
+      // source-seeking aim, but the rule holds however it got here) or it went
+      // *through* some on its way to whatever it did hit. Both are the same
+      // disappointment and deserve the same sentence: there was water, and
+      // none of it was yours to take.
+      return isWater(at) || hit.throughWater
         ? { message: 'Flowing water runs through your fingers' }
         : null;
     }
@@ -132,7 +137,20 @@ export function useBucket(world, hit, id) {
   return null;
 }
 
-/** Does using this item need the raycast to be able to see water? */
-export function needsFluidAim(id) {
-  return id === BUCKET || id === WATER_BUCKET;
+/**
+ * What water should do to this item's aiming ray — the `fluids` mode for
+ * `raycastVoxel`, and false for anything that aims at blocks.
+ *
+ * The two buckets want different things and it took using one to notice.
+ * A full bucket is looking for somewhere to put water, and the shallow flowing
+ * edge of a pond is somewhere: it stops at any water. An empty one is looking
+ * for water it can actually take, which is only ever a source — so flowing
+ * water is transparent to it, and a stream running over the sea, or a
+ * waterfall in front of a pool, no longer stands between the bucket and the
+ * thing it is being pointed at.
+ */
+export function fluidAim(id) {
+  if (id === BUCKET) return 'source';
+  if (id === WATER_BUCKET) return true;
+  return false;
 }

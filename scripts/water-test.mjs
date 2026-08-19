@@ -32,7 +32,7 @@ import {
 import { ABSORB } from '../src/water-shader.js';
 import { CAUSTIC_GLSL, SWELL_GLSL } from '../src/water-glsl.js';
 import {
-  ITEM_BASE, BUCKET, WATER_BUCKET, isItem, useBucket,
+  ITEM_BASE, BUCKET, WATER_BUCKET, isItem, useBucket, fluidAim,
 } from '../src/items.js';
 import { raycastVoxel } from '../src/raycast.js';
 import { Particles, DROPLET, BUBBLE, FOAM, MAX_PARTICLES } from '../src/particles.js';
@@ -770,6 +770,61 @@ const F32 = 1e-4;
   const ahead = raycastVoxel(w, inside, east, 20, { fluids: true });
   assert('swimming, a bucket fills from what you are looking at',
     ahead?.x === 5, JSON.stringify(ahead));
+}
+
+// ------------------------------------------------- reaching past the flow
+//
+// The case that made this a rule: a source with flowing water in front of it.
+// A stream running over the sea, a waterfall in front of a pool, the thin
+// spreading edge of the pond you are trying to top up — all of them used to
+// stand between an empty bucket and the water it was pointed at, and all the
+// bucket would say was that flowing water runs through your fingers. It does,
+// which is why the ray should not have stopped on it.
+{
+  const { w } = pool((world) => {
+    // Three blocks of flow, then the source behind them.
+    for (let x = 4; x <= 6; x++) world.setBlock(x, FLAT + 1, 4, waterId(2));
+    world.setBlock(7, FLAT + 1, 4, WATER);
+    world.setBlock(9, FLAT + 1, 4, GRASS); // a wall past the water
+  });
+  const from = { x: 0.5, y: FLAT + 1.5, z: 4.5 };
+  const east = { x: 1, y: 0, z: 0 };
+
+  const anyWater = raycastVoxel(w, from, east, 20, { fluids: true });
+  assert('a full bucket still stops at the first water there is',
+    anyWater?.x === 4, JSON.stringify(anyWater));
+  assert('...and knows it went through none to get there', !anyWater.throughWater);
+
+  const source = raycastVoxel(w, from, east, 20, { fluids: 'source' });
+  assert('an empty bucket looks past the flow to the source behind it',
+    source?.x === 7, JSON.stringify(source));
+  assert('...and says that it passed through water on the way',
+    source.throughWater === true);
+  assert('...arriving on the face it came in through', source.nx === -1);
+
+  assert('the flow it passed is exactly what a bucket cannot fill from',
+    useBucket(w, anyWater, BUCKET)?.item === undefined);
+  const filled = useBucket(w, source, BUCKET);
+  assert('...while the source behind it fills the bucket',
+    filled?.item === WATER_BUCKET && filled.x === 7, JSON.stringify(filled));
+
+  // Nothing but flow between you and a wall: the ray gets to the wall, and
+  // the bucket still has something to say about why it came back empty.
+  const { w: dryish } = pool((world) => {
+    for (let x = 4; x <= 6; x++) world.setBlock(x, FLAT + 1, 4, waterId(2));
+    world.setBlock(7, FLAT + 1, 4, GRASS);
+  });
+  const wall = raycastVoxel(dryish, from, east, 20, { fluids: 'source' });
+  assert('with no source behind it the ray runs on to the rock',
+    wall?.x === 7 && wall.throughWater === true, JSON.stringify(wall));
+  const nothing = useBucket(dryish, wall, BUCKET);
+  assert('...and the bucket says what it found rather than nothing at all',
+    nothing?.item === undefined && Boolean(nothing?.message), JSON.stringify(nothing));
+
+  // Which item aims which way is the rule that makes the two cases different.
+  assert('an empty bucket seeks sources', fluidAim(BUCKET) === 'source');
+  assert('a full one takes any water it can pour into', fluidAim(WATER_BUCKET) === true);
+  assert('and a block is aimed at like a block', fluidAim(GRASS) === false);
 }
 
 // --------------------------------------------------------------- particles

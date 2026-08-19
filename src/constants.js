@@ -59,6 +59,51 @@ export const SPEED_SWIM = 2.0;
 export const SPEED_SWIM_SPRINT = 2.6;
 export const SINK_SPEED = 2.0; // terminal fall in water
 export const SWIM_UP_SPEED = 1.2; // holding jump under water
+// ------------------------------------------------------------------ damage
+//
+// Everything about the water so far has been something you *can* do: swim,
+// dive, pour it out, watch it freeze. None of it could go wrong, because
+// nothing in this world could hurt you — you could sit on the sea floor for an
+// hour. These are the numbers that make the water matter.
+
+/** Hit points. Minecraft's twenty, drawn as ten hearts. */
+export const MAX_HEALTH = 20;
+
+/**
+ * Seconds of air. Minecraft's 300 ticks, and the reason a dive has a shape:
+ * fifteen seconds down, and everything after that is costing you.
+ */
+export const MAX_AIR = 15;
+
+/**
+ * What drowning costs, and how fast it comes back.
+ *
+ * Minecraft takes two hit points every second once the air is gone, which is
+ * ten seconds from a full bar to dead — long enough to swim for the surface
+ * from most places you can get to, and short enough that you have to. Air
+ * refills at four times the rate it empties, so a gulp at the surface is
+ * genuinely a gulp rather than a wait.
+ */
+export const DROWN_DAMAGE = 2;
+export const AIR_REFILL = 4;
+
+/**
+ * Falling. Minecraft's rule exactly: ceil(distance - 3) hit points, so three
+ * blocks are free, four hurt for one, and twenty-three are fatal from full
+ * health. Water cancels the distance outright, which is why a waterfall is a
+ * lift and a bucket is a parachute.
+ */
+export const FALL_SAFE = 3;
+
+/**
+ * With no food in the game there is nothing to heal you, and a world where one
+ * bad landing leaves you on two hearts until you drown is not a world anyone
+ * would swim in. So health comes back on its own, slowly, once nothing has
+ * hurt you for a few seconds. It is the food system's job, standing in.
+ */
+export const REGEN_DELAY = 6;
+export const REGEN_RATE = 0.25;
+
 /**
  * How fast a current carries you. Minecraft adds 0.014 blocks/tick along the
  * flow every tick, which the same water drag settles at

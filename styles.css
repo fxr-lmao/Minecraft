@@ -116,10 +116,60 @@ body.nocursor #game { cursor: none; }
   cursor: pointer;
 }
 
+/* ---------- hearts and air ---------- */
+#vitals {
+  position: fixed;
+  left: 50%;
+  /* Clear of the hotbar: 10px gap + 52px slot + 2px border + 3px padding. */
+  bottom: calc(80px + env(safe-area-inset-bottom));
+  transform: translateX(-50%);
+  /* The hotbar's own width — nine 52px slots, 2px gaps, 3px padding, 2px
+     border — so the hearts sit over its left end and the air over its right,
+     which is where Minecraft puts them. */
+  width: 494px;
+  max-width: 92vw;
+  display: flex;
+  justify-content: space-between;
+  z-index: 10;
+  pointer-events: none;
+}
+
+#health, #air {
+  display: flex;
+  gap: 1px;
+}
+
+/*
+ * Each pip is an empty socket with the full sprite laid over it, clipped from
+ * the left — so a half heart is the same picture cut in two rather than a
+ * second drawing of one.
+ */
+#vitals i {
+  position: relative;
+  width: 18px;
+  height: 18px;
+  background-size: contain;
+  background-repeat: no-repeat;
+  image-rendering: pixelated;
+}
+
+#vitals i b {
+  position: absolute;
+  top: 0; left: 0;
+  height: 100%;
+  width: 100%;
+  background-size: 18px 18px;
+  background-repeat: no-repeat;
+  image-rendering: pixelated;
+}
+
+/* Air has no empty socket: a bubble that has gone is simply not there. */
+#air i { background-image: none; }
+
 #held-name {
   position: fixed;
   left: 50%;
-  bottom: calc(78px + env(safe-area-inset-bottom));
+  bottom: calc(104px + env(safe-area-inset-bottom));
   transform: translateX(-50%);
   color: var(--text);
   font-size: 15px;
@@ -473,6 +523,10 @@ body.touch #touch-ui { display: block; }
 /* ---------- small screens ---------- */
 @media (max-width: 620px) {
   .slot { width: 40px; height: 40px; }
+  #vitals { bottom: calc(68px + env(safe-area-inset-bottom)); width: 386px; }
+  #vitals i, #vitals i b { width: 14px; height: 14px; }
+  #vitals i b { background-size: 14px 14px; }
+  #held-name { bottom: calc(90px + env(safe-area-inset-bottom)); }
   .slot .count { font-size: 12px; }
   .overlay h1 { font-size: 30px; }
   .overlay .panel { padding: 18px 20px; }

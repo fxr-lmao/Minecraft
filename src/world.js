@@ -23,7 +23,7 @@ export {
   GRASS, DIRT, STONE, SAND, BEDROCK, DEEPSLATE, WATER, AIR, ICE,
   isWater, isOpaque, isIce, waterLevel, waterId,
 } from './terrain.js';
-import { BEDROCK, AIR, isOpaque, isWater, temperatureAt } from './terrain.js';
+import { BEDROCK, AIR, isOpaque, isWater, isWaterSource, temperatureAt } from './terrain.js';
 
 const AREA = CHUNK_SIZE * CHUNK_SIZE;
 const CHUNK_CELLS = AREA * WORLD_HEIGHT;
@@ -194,6 +194,16 @@ export class World {
   /** True when this cell is water of any level. */
   isWaterAt(x, y, z) {
     return isWater(this.get(x, y, z));
+  }
+
+  /**
+   * True only for a *source* — the sea, and anything a bucket poured out.
+   * The difference matters to anything that wants water that is really there
+   * rather than water that is on its way somewhere: a bucket fills from this
+   * and from nothing else.
+   */
+  isWaterSourceAt(x, y, z) {
+    return isWaterSource(this.get(x, y, z));
   }
 
   /**
