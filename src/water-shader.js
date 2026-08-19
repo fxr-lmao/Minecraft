@@ -126,6 +126,29 @@ export function setSunDirection(x, y, z) {
   waterUniforms.uSunDir.value.set(x, y, z).normalize();
 }
 
+/** The overcast sky, kept so the weather can mix toward it. */
+const OVERCAST_SUN = new THREE.Color(0x8d949c);
+const OVERCAST_SKY = new THREE.Color(0x7f8a97);
+const CLEAR_SUN = new THREE.Color(SUN_COLOR);
+const CLEAR_SKY_TOP = new THREE.Color(SKY_TOP);
+const CLEAR_SKY_HORIZON = new THREE.Color(SKY_HORIZON);
+
+/**
+ * How overcast it is, 0 to 1.
+ *
+ * The water is lit by three colours — the sun, the top of the sky and the
+ * horizon — and every one of them is wrong in the rain. The glitter is the
+ * giveaway: a sea sparkling with a sun that is not there reads as a bug
+ * rather than as weather, and it is the same three uniforms that put the sky
+ * in the reflection, so dulling them turns the whole surface leaden at once.
+ */
+export function setWaterOvercast(level) {
+  const l = Math.max(0, Math.min(1, level));
+  waterUniforms.uSunColor.value.copy(CLEAR_SUN).lerp(OVERCAST_SUN, l);
+  waterUniforms.uSkyTop.value.copy(CLEAR_SKY_TOP).lerp(OVERCAST_SKY, l);
+  waterUniforms.uSkyHorizon.value.copy(CLEAR_SKY_HORIZON).lerp(OVERCAST_SKY, l);
+}
+
 // ------------------------------------------------------------------- GLSL
 
 const WATER_VERTEX = /* glsl */ `

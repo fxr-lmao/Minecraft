@@ -286,6 +286,18 @@ export function temperatureAt(x, y, z, seed) {
 /** The whole question in one word, for the callers that only want the yes. */
 export const isFreezing = (t) => t < FREEZING_POINT;
 
+/**
+ * Above this, nothing falls out of the sky at all.
+ *
+ * Minecraft decides that per biome with a flag rather than a number, and
+ * every biome that sets it — desert, badlands — sits at temperature 2.0, so a
+ * threshold on the same scale picks out the same places. It also gives the
+ * desert a fading edge instead of a line you can stand on with one boot in
+ * the rain, because the mix here is blended rather than chosen: it stops
+ * raining once the desert has about three fifths of the column.
+ */
+export const NO_PRECIPITATION_TEMPERATURE = 1.5;
+
 /** The biome with the largest weight, for the debug screen. */
 export function dominantBiome(weights) {
   let best = 'plains';
