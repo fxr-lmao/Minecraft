@@ -21,6 +21,8 @@ import {
   WORLD_MIN_Y,
   DRAG_WATER, SPEED_SWIM, SPEED_SWIM_SPRINT, SINK_SPEED, SWIM_UP_SPEED,
   FLOW_PUSH_SPEED,
+  MAX_HEALTH, MAX_AIR, DROWN_DAMAGE, AIR_REFILL, FALL_SAFE,
+  REGEN_DELAY, REGEN_RATE,
 } from './constants.js';
 import { lookVector } from './view.js';
 import { isWater, waterHeight, isIce, AIR } from './terrain.js';
@@ -76,6 +78,26 @@ export class Player {
      */
     this.autoJump = true;
 
+    /**
+     * Hit points, and the breath to keep them.
+     *
+     * `air` is seconds of it and runs down only while the *head* is under —
+     * Minecraft's rule, and the one that makes wading different from
+     * swimming. It goes negative rather than stopping at zero, because what
+     * happens after it runs out is a rate and not an event.
+     */
+    this.health = MAX_HEALTH;
+    this.air = MAX_AIR;
+    /** What killed you, for the screen that says so. */
+    this.death = null;
+    /** Seconds since anything last hurt you — healing waits on this. */
+    this.sinceHurt = REGEN_DELAY;
+    /**
+     * How far you have fallen since you were last on something, in blocks.
+     * Water zeroes it, which is the whole of "water breaks your fall".
+     */
+    this.fallDistance = 0;
+
     this.horizontalSpeed = 0; // for head bob + HUD
     /** True while the player's feet are in water. */
     this.inWater = false;
@@ -100,12 +122,41 @@ export class Player {
     return new THREE.Vector3(this.pos.x, this.pos.y + this.eyeHeight, this.pos.z);
   }
 
-  /** Back to the spawn point. */
+  /** Back to the spawn point, whole and breathing. */
   respawn() {
     this.pos.copy(this.spawn);
     this.vel.set(0, 0, 0);
     this.onGround = false;
     this.onIce = false;
+    this.health = MAX_HEALTH;
+    this.air = MAX_AIR;
+    this.death = null;
+    this.sinceHurt = REGEN_DELAY;
+    this.fallDistance = 0;
+    // Forced rather than asked: `_setSwimming` can refuse when there is no
+    // headroom to stand up in, and a player being put back at the spawn point
+    // is not somewhere it should have to negotiate.
+    this.swimming = false;
+    this.height = PLAYER_HEIGHT;
+  }
+
+  /** True once the health has run out. Nothing here acts on it — main does. */
+  get dead() {
+    return this.health <= 0;
+  }
+
+  /**
+   * Take damage from something, and remember what it was.
+   *
+   * Fractional amounts are the point: drowning is two hit points a *second*
+   * and the physics runs at 120 Hz, so it arrives as a hundred and twentieth
+   * of that at a time and the bar goes down smoothly instead of in steps.
+   */
+  hurt(amount, cause) {
+    if (amount <= 0 || this.dead) return;
+    this.health = Math.max(0, this.health - amount);
+    this.sinceHurt = 0;
+    if (this.health === 0) this.death = cause;
   }
 
   /** Horizontal forward vector from yaw (camera forward projected on XZ). */
@@ -243,7 +294,9 @@ export class Player {
     }
 
     // ---- integrate + collide (axis separated, with auto-step) ----
+    const fellFrom = this.pos.y;
     const moved = this._moveWithCollision(dt);
+    this._settleFall(fellFrom, wasGrounded);
 
     // Climbing out. Swimming up cannot do it — it tops out at the surface,
     // and the bank is above the surface — so pushing against the edge is its
@@ -273,6 +326,58 @@ export class Player {
     }
 
     this.horizontalSpeed = Math.hypot(this.vel.x, this.vel.z);
+    this._breathe(dt);
+  }
+
+  /**
+   * How far this step fell, and what it costs on landing.
+   *
+   * Minecraft counts the distance rather than the speed, which is the same
+   * thing under constant gravity and a very different thing in water: the
+   * distance is simply zeroed while you are in it, so a dive from any height
+   * is free and so is a waterfall. That one line is the whole of "water
+   * breaks your fall", and it is why a bucket is a parachute.
+   */
+  _settleFall(fellFrom, wasGrounded) {
+    if (this.inWater) {
+      this.fallDistance = 0;
+      return;
+    }
+    if (!this.onGround) {
+      if (this.pos.y < fellFrom) this.fallDistance += fellFrom - this.pos.y;
+      return;
+    }
+    // Landed. Three blocks are free and every one after that is a hit point,
+    // rounded up, so four blocks hurt for one and twenty-three are fatal.
+    if (!wasGrounded && this.fallDistance > FALL_SAFE) {
+      this.hurt(Math.ceil(this.fallDistance - FALL_SAFE), 'fell from a great height');
+    }
+    this.fallDistance = 0;
+  }
+
+  /**
+   * Air, drowning, and the slow way back.
+   *
+   * The air runs down only while the head is under, which is `submerged` and
+   * not `inWater`: wading is not drowning, and Minecraft is careful about the
+   * same distinction. Once it is gone the bar keeps going negative and the
+   * damage is a rate — two hit points a second, ten seconds from full health
+   * to none, which is long enough to swim up from most places and short
+   * enough to be worth the swim.
+   */
+  _breathe(dt) {
+    if (this.dead) return;
+    if (this.submerged) {
+      this.air -= dt;
+      if (this.air < 0) this.hurt(DROWN_DAMAGE * dt, 'drowned');
+    } else if (this.air < MAX_AIR) {
+      // A gulp is a gulp: air comes back four times faster than it goes.
+      this.air = Math.min(MAX_AIR, this.air + AIR_REFILL * dt);
+    }
+    this.sinceHurt += dt;
+    if (this.sinceHurt >= REGEN_DELAY && this.health < MAX_HEALTH) {
+      this.health = Math.min(MAX_HEALTH, this.health + REGEN_RATE * dt);
+    }
   }
 
   /**

@@ -21,7 +21,7 @@ import { setCameraUnderwater, setSunDirection, setWaterOvercast } from './water-
 import { WaterView, HELD_LAYER, WATER_QUALITY_NAMES } from './water-render.js';
 import { Particles } from './particles.js';
 import { Weather, SNOWING } from './weather.js';
-import { isItem, useBucket, needsFluidAim } from './items.js';
+import { isItem, useBucket, fluidAim } from './items.js';
 import { installNativeBridge } from './native.js';
 import { Hud } from './hud.js';
 import { Inventory } from './inventory.js';
@@ -37,6 +37,7 @@ import {
   PHYSICS_DT, SPEED_WALK,
   PLAYER_WIDTH, PLAYER_EYE, REACH,
   CHUNK_SIZE, DATA_RADIUS,
+  MAX_HEALTH, MAX_AIR,
 } from './constants.js';
 import { clamp, lerp } from './utils.js';
 
@@ -310,6 +311,14 @@ if (restored?.player) {
   player.pos.set(restored.player.x, restored.player.y, restored.player.z);
   player.yaw = restored.player.yaw ?? player.yaw;
   player.pitch = restored.player.pitch ?? player.pitch;
+  // Saves from before there was anything to survive have neither, and a
+  // player restored from one starts whole rather than at zero hit points.
+  if (Number.isFinite(restored.player.health) && restored.player.health > 0) {
+    player.health = Math.min(MAX_HEALTH, restored.player.health);
+  }
+  if (Number.isFinite(restored.player.air)) {
+    player.air = Math.min(MAX_AIR, restored.player.air);
+  }
   // A v1 save came from the old flat world; the terrain under those
   // coordinates is now hilly, so drop the player onto the new surface.
   if (restored.migrated) {
@@ -521,8 +530,9 @@ function placeBlock() {
  */
 function useHeldItem(stack) {
   const dir = player.lookDirection();
-  const hit = needsFluidAim(stack.id)
-    ? raycastVoxel(world, lastEye, dir, REACH, { fluids: true })
+  const aim = fluidAim(stack.id);
+  const hit = aim
+    ? raycastVoxel(world, lastEye, dir, REACH, { fluids: aim })
     : target;
   const result = useBucket(world, hit, stack.id);
   if (!result) return;
@@ -584,11 +594,29 @@ function pause() {
 let hasPlayed = false;
 
 function startPlaying(source) {
+  // The death screen's button is the same button, and it has one more job:
+  // there is no game to go back to until the player is alive again.
+  if (player.dead) {
+    player.respawn();
+    particles.clear();
+    saveNeeded = true;
+  }
   input.start(source);
   if (input.active) {
     hasPlayed = true;
     hud.hideOverlay();
   }
+}
+
+/**
+ * Died. The overlay says what it was and offers the way back; everything else
+ * follows from `playing` going false, which is the same thing the pause menu
+ * does — the world keeps its state, the clock stops, and nothing moves.
+ */
+function die() {
+  input.release();
+  doSave();
+  hud.showDeath(player.death);
 }
 
 function cycleView() {
@@ -741,9 +769,16 @@ function frame(now) {
       steps++;
     }
     if (steps === 8) acc = 0; // drop backlog on huge hitches
+    // Drowning and falling are the only two things that can do this, and both
+    // of them happen inside the physics steps above.
+    if (player.dead && !hud.overlayVisible) die();
   } else {
     acc = 0;
   }
+
+  // Hearts and bubbles. Drawn whenever there is a world to be hurt in, which
+  // is any time the title screen is not up.
+  hud.setVitals(player.health, player.air, hasPlayed);
 
   // ---- water in the air ----
   if (playing && !wasInWater && player.inWater && fallSpeed > 1.5) {

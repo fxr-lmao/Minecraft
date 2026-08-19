@@ -701,6 +701,73 @@ export function getWaterTextures() {
   return waterTextures;
 }
 
+// ---------- HUD sprites ----------
+//
+// Hearts and bubbles, drawn the same way as everything else here: on a tiny
+// canvas, pixel by pixel, out of nothing. They are 9x9 because Minecraft's
+// are, and because at that size the shape has to be *stated* rather than
+// drawn — a heart is two arcs and a point, and at nine pixels each of those
+// is two or three cells you either fill or do not.
+
+/** 1 = filled, 2 = the darker outline. Nine rows of nine. */
+const HEART_PIXELS = [
+  '022002200',
+  '211211120',
+  '211111112',
+  '211111112',
+  '211111112',
+  '021111120',
+  '002111200',
+  '000212000',
+  '000020000',
+];
+
+/** A bubble: a ring with a highlight where the light gets in. */
+const BUBBLE_PIXELS = [
+  '000222000',
+  '002133200',
+  '021333320',
+  '213333312',
+  '213333312',
+  '213333312',
+  '021333320',
+  '002333200',
+  '000222000',
+];
+
+/** Paint a 9x9 sprite map with a palette and hand back a data URL. */
+function spriteUrl(rows, palette, scale = 4) {
+  const size = rows.length;
+  const cv = document.createElement('canvas');
+  cv.width = cv.height = size * scale;
+  const ctx = cv.getContext('2d');
+  for (let y = 0; y < size; y++) {
+    for (let x = 0; x < size; x++) {
+      const key = rows[y][x];
+      const colour = palette[key];
+      if (!colour) continue;
+      ctx.fillStyle = colour;
+      ctx.fillRect(x * scale, y * scale, scale, scale);
+    }
+  }
+  return cv.toDataURL();
+}
+
+const hudCache = new Map();
+const hudSprite = (name, rows, palette) => {
+  if (!hudCache.has(name)) hudCache.set(name, spriteUrl(rows, palette));
+  return hudCache.get(name);
+};
+
+/** A full heart, and the empty socket that shows where one used to be. */
+export const heartUrl = () =>
+  hudSprite('heart', HEART_PIXELS, { 1: '#e6202a', 2: '#4a0a10' });
+export const heartEmptyUrl = () =>
+  hudSprite('heart-empty', HEART_PIXELS, { 1: '#3b3b3b', 2: '#141414' });
+/** Half a heart is the same sprite with its right half cut away — see hud.js. */
+export const bubbleUrl = () =>
+  hudSprite('bubble', BUBBLE_PIXELS, { 1: '#ffffff', 2: '#0b1c3a', 3: '#8fd2ff' });
+
 const cache = new Map();
 
 /**

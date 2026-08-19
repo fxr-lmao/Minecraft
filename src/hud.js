@@ -3,8 +3,10 @@
 // live in inventory-ui.js; key bindings live in input.js — this file draws
 // and reports, it doesn't decide anything.
 
-import { blockName } from './textures.js';
-import { CHUNK_SIZE, WORLD_MIN_Y, WORLD_MAX_Y } from './constants.js';
+import { blockName, heartUrl, heartEmptyUrl, bubbleUrl } from './textures.js';
+import {
+  CHUNK_SIZE, WORLD_MIN_Y, WORLD_MAX_Y, MAX_HEALTH, MAX_AIR,
+} from './constants.js';
 import { LOOK_FREE, LOOK_TOUCH } from './input.js';
 
 const CARDINALS = ['South (+Z)', 'West (-X)', 'North (-Z)', 'East (+X)'];
@@ -22,8 +24,87 @@ export class Hud {
     this.relockEl = document.getElementById('btn-relock');
     this.fullscreenEl = document.getElementById('btn-fullscreen');
 
+    this.vitalsEl = document.getElementById('vitals');
+    this.healthEl = document.getElementById('health');
+    this.airEl = document.getElementById('air');
+
     this.debugVisible = false;
     this._statusTimer = null;
+    this._buildVitals();
+  }
+
+  /**
+   * Ten hearts and ten bubbles, built once.
+   *
+   * Minecraft's twenty hit points are drawn as ten hearts, so each pip is two
+   * points and half of one is a real state rather than a rounding: the last
+   * half heart is the difference between a swim you can just make and one you
+   * cannot.
+   */
+  _buildVitals() {
+    if (!this.healthEl) return;
+    const empty = heartEmptyUrl();
+    const full = heartUrl();
+    const bubble = bubbleUrl();
+    this.hearts = [];
+    this.bubbles = [];
+    for (let i = 0; i < MAX_HEALTH / 2; i++) {
+      const socket = document.createElement('i');
+      socket.style.backgroundImage = `url(${empty})`;
+      const fill = document.createElement('b');
+      fill.style.backgroundImage = `url(${full})`;
+      socket.appendChild(fill);
+      this.healthEl.appendChild(socket);
+      this.hearts.push(fill);
+    }
+    for (let i = 0; i < 10; i++) {
+      const pip = document.createElement('i');
+      const fill = document.createElement('b');
+      fill.style.backgroundImage = `url(${bubble})`;
+      pip.appendChild(fill);
+      this.airEl.appendChild(pip);
+      this.bubbles.push(fill);
+    }
+  }
+
+  /**
+   * Draw the health and the breath.
+   *
+   * The air row is only there when it is telling you something — Minecraft
+   * hides a full bar too, and a row of bubbles over the hotbar while you are
+   * walking across a field is just furniture.
+   */
+  setVitals(health, air, visible = true) {
+    if (!this.hearts) return;
+    this.vitalsEl.classList.toggle('hidden', !visible);
+    if (!visible) return;
+    for (let i = 0; i < this.hearts.length; i++) {
+      // Two hit points a heart, and the half is the sprite cut down the
+      // middle rather than a second picture of one.
+      //
+      // Health here is a continuous number — drowning takes it a hundred and
+      // twentieth of a hit point at a time — but a heart is empty, half or
+      // whole and nothing in between, so it rounds *up*: a sliver of health
+      // still shows as half a heart, and an empty socket always means empty.
+      const points = Math.max(0, Math.min(2, health - i * 2));
+      this.hearts[i].style.width = `${Math.ceil(points) * 50}%`;
+    }
+    const bubbles = Math.max(0, Math.ceil((air / MAX_AIR) * this.bubbles.length));
+    for (let i = 0; i < this.bubbles.length; i++) {
+      this.bubbles[i].style.width = i < bubbles ? '100%' : '0';
+    }
+    this.airEl.style.visibility = air >= MAX_AIR ? 'hidden' : 'visible';
+  }
+
+  /** The screen that says what got you, and offers to put you back. */
+  showDeath(cause) {
+    this.titleEl.textContent = 'YOU DIED';
+    this.subtitleEl.textContent = cause ? `You ${cause}` : '';
+    this.resumeEl.textContent = 'Respawn';
+    this.overlayEl.classList.remove('hidden');
+    this.hintEl.textContent = '';
+    this.hintEl.classList.add('hidden');
+    this.relockEl.classList.add('hidden');
   }
 
   toggleDebug() {

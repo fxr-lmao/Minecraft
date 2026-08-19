@@ -10,14 +10,28 @@ import { REACH } from './constants.js';
  * (nx, ny, nz) is the face normal the ray entered through — so the adjacent
  * cell for placement is (x + nx, y + ny, z + nz). Returns null on a miss.
  *
- * `fluids` makes water stop the ray as well as rock. Block targeting wants it
- * off — you break and build *through* the sea, and a crosshair that snagged
- * on the surface would make the shallows unusable. A bucket wants it on, for
- * the obvious reason that the sea is the thing it is aiming at.
+ * `fluids` says what water does to the ray, and there are three answers
+ * because there are three things asking:
  *
- * With it on, a ray that *starts* inside water ignores the cell it started in.
- * Otherwise every use of a bucket while swimming would fill from the block
- * your own head is in, whatever you were looking at.
+ *   false      water is not there. Block targeting: you break and build
+ *              *through* the sea, and a crosshair that snagged on the surface
+ *              would make the shallows unusable.
+ *   true       any water stops it. A full bucket, which can be poured into a
+ *              stream or the shallow edge of a spread as happily as onto the
+ *              ground.
+ *   'source'   only a *source* stops it, and flowing water is as transparent
+ *              as air. An empty bucket can only fill from a source, so this is
+ *              the ray that finds it: the sheet of flow running over the sea,
+ *              or the stream you are standing in, is not the thing you are
+ *              pointing at and should not be what you get.
+ *
+ * The result carries `throughWater`, true when the ray passed through water
+ * that did not stop it, so a caller can tell "nothing there" from "nothing
+ * there but flow" and say so.
+ *
+ * With water stopping the ray at all, a ray that *starts* inside water ignores
+ * the cell it started in. Otherwise every use of a bucket while swimming would
+ * fill from the block your own head is in, whatever you were looking at.
  */
 export function raycastVoxel(world, origin, dir, maxDist = REACH, { fluids = false } = {}) {
   const len = Math.hypot(dir.x, dir.y, dir.z);
@@ -46,19 +60,24 @@ export function raycastVoxel(world, origin, dir, maxDist = REACH, { fluids = fal
   let ny = 0;
   let nz = 0;
   let t = 0;
+  let throughWater = false;
 
   // A generous iteration cap: at most ~3 cell crossings per block of reach.
   for (let i = 0; i < 3 * maxDist + 9; i++) {
     if (world.inBounds(ix, iy, iz)) {
       if (world.isSolid(ix, iy, iz)) {
-        return { x: ix, y: iy, z: iz, nx, ny, nz, dist: t };
+        return { x: ix, y: iy, z: iz, nx, ny, nz, dist: t, throughWater };
       }
       // Water only counts once the ray has *entered* a cell. The cell the ray
       // starts in is the one the camera is already inside, and a bucket used
       // while swimming should fill from what you are looking at rather than
       // from your own head. Solids need no such rule: you are never inside one.
       if (fluids && i > 0 && world.isWaterAt(ix, iy, iz)) {
-        return { x: ix, y: iy, z: iz, nx, ny, nz, dist: t };
+        if (fluids !== 'source' || world.isWaterSourceAt(ix, iy, iz)) {
+          return { x: ix, y: iy, z: iz, nx, ny, nz, dist: t, throughWater };
+        }
+        // Flow the ray is allowed through — but remember that it was there.
+        throughWater = true;
       }
     }
     if (tMaxX < tMaxY && tMaxX < tMaxZ) {
