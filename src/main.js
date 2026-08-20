@@ -13,7 +13,10 @@
 import * as THREE from '../vendor/three.module.min.js';
 import { World, AIR, BEDROCK, ICE, CRAFTING_TABLE, FURNACE, TNT, toChunk } from './world.js';
 import { isWater, waterHeight, SEA_LEVEL } from './terrain.js';
-import { WorldRenderer, buildSingleBlockGeometry, buildSingleItemGeometry } from './blocks.js';
+import { WorldRenderer, buildSingleBlockGeometry } from './blocks.js';
+import { FirstPersonHand, warmItemModels } from './held-item.js';
+import { Drops, throwAlong } from './drops.js';
+import { DropsRenderer } from './drops-render.js';
 import { Player } from './player.js';
 import { Input, LOOK_FREE, LOOK_TOUCH, playSource } from './input.js';
 import { WaterFlow, Freeze, FLOW_INTERVAL_MS, FREEZE_INTERVAL_MS } from './water.js';
@@ -243,7 +246,7 @@ function applyUnderwaterFog(submerged) {
   // while the rest of the world is ten metres under.
   heldMaterial.color.setHex(submerged ? 0x6f9fc4 : 0xffffff);
   heldMaterial.emissive.setHex(submerged ? 0x25384a : 0x5a5a5a);
-  heldItemMaterial.color.setHex(submerged ? 0x86b4d2 : 0xffffff);
+  hand.setUnderwater(submerged);
   if (submerged) {
     scene.fog.color.setHex(UNDERWATER_FOG);
     scene.fog.near = graded ? 30 : 0.5;
@@ -374,6 +377,15 @@ if (restored) for (const e of restored.edits) waterFlow.touch(e.x, e.y, e.z);
 // pass picks them up and the water composites correctly around them.
 const particles = new Particles(scene);
 
+/**
+ * The things lying on the floor.
+ *
+ * Two objects, deliberately: `drops` is the simulation and knows nothing
+ * about THREE, `dropsRenderer` is one InstancedMesh per distinct id and knows
+ * nothing about the rules. The one thing they share is a list of positions.
+ */
+const drops = new Drops();
+
 const player = new Player(world);
 player.autoJump = settings.autoJump;
 if (restored?.player) {
@@ -455,7 +467,20 @@ let target = null; // { x, y, z, nx, ny, nz } from the last frame
 /** Where the camera was looking from last frame — items aim from here too. */
 let lastEye = { x: 0, y: 0, z: 0 };
 
-// ---------------- first-person held block ----------------
+// ---------------- first-person held item ----------------
+//
+// This used to be one mesh, one material and a lot of trigonometry: an item
+// was a flat sprite pinned to the corner of the screen and rotated by the
+// swing, with the pinning and the animation sharing the same three numbers.
+// It worked for blocks, which are cubes and look like cubes from anywhere,
+// and it fell apart for everything else — a sprite has no thickness, so
+// turning it edge-on made the tool vanish, and the avatar holding the same
+// sprite side-on held a line.
+//
+// Now the models are solid (held-geometry.js), the poses are data
+// (item-models.js), and the rig that holds them is a two-level group so the
+// swing is a rotation about a wrist rather than an offset bolted onto the
+// pinning maths. What is left here is the wiring.
 const HELD_DIST = 0.62; // metres in front of the camera
 const HELD_SIZE = 0.26; // fraction of the screen height the block takes up
 // Every block shares the atlas material; only the UVs differ, so the
@@ -466,87 +491,118 @@ const heldMaterial = new THREE.MeshLambertMaterial({
   emissiveMap: getAtlasTexture(),
   emissive: 0x5a5a5a, // never a black silhouette when the sun is behind you
 });
-/**
- * Items get their own material, and it is unlit.
- *
- * Two reasons. The cutout: an item sprite has transparent corners, and an
- * opaque material samples the colour under them regardless — which for a
- * cleared canvas is black, so the bucket arrives as a black tile with a
- * bucket painted on it. And the lighting: a flat sprite has one normal, so
- * Lambert shading turns the whole thing into whatever that one direction
- * happens to catch, and held at Minecraft's angle it catches almost nothing.
- * An icon is an icon — it should look like the picture it is.
- */
-const heldItemMaterial = new THREE.MeshBasicMaterial({
-  map: getAtlasTexture(),
-  transparent: true,
-  alphaTest: 0.5,
-  side: THREE.DoubleSide,
-});
 
-const heldMesh = new THREE.Mesh(new THREE.BufferGeometry(), heldMaterial);
-heldMesh.rotation.set(0.12, -0.6, 0.1);
-heldMesh.visible = false;
-heldMesh.frustumCulled = false;
-// Off the default layer, so the mirrored camera does not find a block
-// floating in the reflection where the player's hand would be.
-heldMesh.layers.set(HELD_LAYER);
-camera.add(heldMesh);
+/**
+ * The hand. Off the default layer, so the mirrored camera does not find a
+ * pickaxe floating in the reflection where the player's arm would be.
+ */
+const hand = new FirstPersonHand(camera, { layer: HELD_LAYER });
 
 let heldId = -1;
-let heldSwing = 0;
+
+/** The unit cube for a block id, built once and kept. */
+function blockGeometryFor(id) {
+  let geo = heldGeometries.get(id);
+  if (!geo) {
+    geo = buildSingleBlockGeometry(id);
+    heldGeometries.set(id, geo);
+  }
+  return geo;
+}
 
 /**
- * Sync the block in the hand with the selected hotbar slot. Called every
+ * Sync what is in the hand with the selected hotbar slot. Called every
  * frame: the selection can change from the number keys, the scroll wheel,
  * tapping a hotbar slot or dragging stacks in the inventory screen, and
- * missing any one of those routes leaves the wrong block in your hand.
+ * missing any one of those routes leaves the wrong thing in your hand.
  */
 function refreshHeldItem() {
   const id = inventory.selectedId();
   if (id !== heldId) {
     heldId = id;
-    if (id) {
-      let geo = heldGeometries.get(id);
-      if (!geo) {
-        geo = isItem(id) ? buildSingleItemGeometry(id) : buildSingleBlockGeometry(id);
-        heldGeometries.set(id, geo);
-      }
-      heldMesh.geometry = geo;
-      heldMesh.material = isItem(id) ? heldItemMaterial : heldMaterial;
-    }
+    const geo = id && !isItem(id) ? blockGeometryFor(id) : null;
+    hand.setItem(id, geo, heldMaterial);
+    // The avatar carries the same thing, so third person shows what you are
+    // about to use instead of an empty fist.
+    playerModel.setHeldItem(id, geo, heldMaterial);
   }
-  heldMesh.visible = view.isFirstPerson && heldId > 0;
-  // The avatar carries the same thing, so third person shows what you are
-  // about to use instead of an empty fist.
-  playerModel.setHeldItem(
-    heldId > 0 ? heldMesh.geometry : null,
-    isItem(heldId) ? heldItemMaterial : heldMaterial
-  );
-}
-
-/**
- * Size and pin the held block to the bottom-right corner whatever the aspect
- * ratio or FOV is — an iPad in portrait has a much narrower frustum than a
- * laptop, so fixed offsets would push the block off screen.
- */
-function positionHeldItem(swingT) {
-  const halfH = Math.tan((camera.fov * Math.PI) / 360) * HELD_DIST;
-  const halfW = halfH * camera.aspect;
-  const r = HELD_SIZE * Math.min(halfH, halfW * 0.95);
-  heldMesh.scale.setScalar(r / 0.85);
-  heldMesh.position.set(
-    halfW - r * 1.2 - swingT * r * 0.5,
-    -halfH + r * 0.7 - swingT * r * 1.1,
-    -HELD_DIST + swingT * 0.08
-  );
-  heldMesh.rotation.x = 0.12 + swingT * 0.8;
+  hand.setVisible(view.isFirstPerson && heldId > 0);
 }
 
 function swingHand() {
-  heldSwing = 1;
+  hand.strike();
   playerModel.swingArm();
   sound.playSwing();
+}
+
+/**
+ * The renderer for the drops, which needs the block-cube builder and the
+ * atlas material — so it is made here, after both exist, rather than up with
+ * the simulation.
+ */
+const dropsRenderer = new DropsRenderer(scene, blockGeometryFor, heldMaterial);
+
+/**
+ * Pick a drop up. Returns how many items actually went in, which is what
+ * lets a full inventory leave the rest of the stack on the floor rather than
+ * swallowing it.
+ */
+function collectDrop(drop) {
+  const stack = drop.toStack();
+  // A tool carries its durability, so it goes into a slot of its own rather
+  // than through `add`, which merges by id and would repair it to full.
+  if (stack.durability !== undefined) {
+    const free = inventory.slots.findIndex((sl) => !sl);
+    if (free < 0) return 0;
+    inventory.set(free, stack);
+    onPickedUp(stack.id, 1);
+    return 1;
+  }
+  const left = inventory.add(stack.id, stack.count);
+  const took = stack.count - left;
+  if (took > 0) onPickedUp(stack.id, took);
+  return took;
+}
+
+/** Common bookkeeping for anything that lands in the inventory. */
+function onPickedUp(id, count) {
+  invUI.render();
+  sound.playPickup();
+  hud.showPickup(id, count);
+  saveNeeded = true;
+}
+
+/**
+ * Throw the selected stack on the floor.
+ *
+ * Minecraft's Q drops one and Ctrl+Q drops the lot, and both are worth
+ * having: one is how you get rid of the cobblestone you did not want, and the
+ * lot is how you clear a slot. It goes where you are looking, hard enough to
+ * clear your own pickup radius, or it would come straight back.
+ */
+function dropSelected(whole = false) {
+  const stack = inventory.selectedStack();
+  if (!stack) {
+    hud.showStatus('Nothing in hand');
+    return;
+  }
+  const count = whole ? stack.count : 1;
+  const dir = player.lookDirection();
+  const eye = { x: lastEye.x, y: lastEye.y - 0.2, z: lastEye.z };
+  const d = drops.add(
+    eye.x + dir.x * 0.4, eye.y + dir.y * 0.4, eye.z + dir.z * 0.4,
+    stack.id, count, stack.durability
+  );
+  if (!d) {
+    hud.showStatus('Too much on the floor already');
+    return;
+  }
+  throwAlong(d, dir);
+  if (whole || stack.count <= 1) inventory.set(inventory.selected, null);
+  else inventory.consumeSelected(1);
+  invUI.render();
+  swingHand();
+  saveNeeded = true;
 }
 
 // ---------------- saving ----------------
@@ -684,7 +740,12 @@ function breakBlock() {
   if (id === FURNACE && furnaces.has(target.x, target.y, target.z)) {
     const f = furnaces.get(target.x, target.y, target.z);
     for (const stack of [f.input, f.fuel, f.output]) {
-      if (stack && stack.count > 0) inventory.add(stack.id, stack.count);
+      if (stack && stack.count > 0) {
+        // Out onto the floor with everything else, rather than into your
+        // pocket: a furnace full of iron broken by someone with no room used
+        // to swallow the lot.
+        drops.spawnFromBlock(target.x, target.y, target.z, stack.id, stack.count, stack.durability);
+      }
     }
     furnaces.delete(target.x, target.y, target.z);
     if (furnaceUI.isOpen && furnaceUI.current
@@ -708,12 +769,17 @@ function breakBlock() {
   // What it leaves behind is the mining rules' business, not this function's:
   // ore broken without a pickaxe is gone rather than collected, which is the
   // one thing that makes carrying the pickaxe matter.
+  //
+  // And it leaves it *on the floor* now rather than in your pocket. That is
+  // one line here and a real change everywhere else: a full inventory used to
+  // destroy the block (dig a diamond seam with no room and the diamonds were
+  // simply gone), and now it does not — the drop lies there until you make
+  // space. See drops.js.
   const drop = dropsFrom(id, held);
   if (!drop) {
     if (wrongTool(id, held)) hud.showStatus(`You need a ${toolNeeded(id)} for that`);
   } else {
-    const left = inventory.add(drop, 1);
-    if (left > 0) hud.showStatus('Inventory full');
+    drops.spawnFromBlock(target.x, target.y, target.z, drop, 1);
   }
 
   // Ore pays experience, and the deepslate twin pays the same as its stone
@@ -879,6 +945,15 @@ function explode(x, y, z) {
     if (Math.random() < 0.25) {
       particles.blockBreak(b.x + 0.5, b.y + 0.5, b.z + 0.5, blockTint(b.id), 3);
     }
+    // A blast used to leave nothing at all, and the reason given was that a
+    // hundred blocks will not fit in a 36-slot inventory. True — but on the
+    // floor they fit fine, and a crater with its rubble in it is a great deal
+    // more satisfying than a crater with nothing in it. Minecraft's own drop
+    // chance for an explosion is 1/radius, which at radius 3 is a third.
+    const dropped = gameMode.isCreative ? 0 : dropsFrom(b.id, PICKAXE);
+    if (dropped && Math.random() < 0.34) {
+      drops.spawnFromBlock(b.x, b.y, b.z, dropped, 1);
+    }
   }
   particles.blockBreak(x + 0.5, y + 0.5, z + 0.5, [0.95, 0.75, 0.35], 20);
   particles.dustPuff(x + 0.5, y + 0.5, z + 0.5, 10);
@@ -1022,6 +1097,10 @@ input.onAction = (name, arg) => {
     case 'pick':
       if (!screenOpen()) pickBlock();
       break;
+    case 'drop':
+      // Q throws one, Ctrl+Q (or Shift+Q) throws the stack.
+      if (!screenOpen()) dropSelected(Boolean(arg));
+      break;
   }
 };
 
@@ -1057,6 +1136,15 @@ let eyeOffset = 0; // smooth sneak crouch
 let eyeHeight = PLAYER_EYE;
 let placeRepeat = 0;
 let lastClock = null;
+/**
+ * Seconds of *unpaused* game time since the page loaded.
+ *
+ * Everything that animates on its own clock reads this rather than
+ * performance.now(), which is the rule the whole game is built on: paused
+ * means paused, down to the drifting clouds and the spin of an item lying on
+ * the floor. It is advanced by animDt, which is zero while a menu is up.
+ */
+let worldClock = 0;
 let stepClock = 0;      // distance walked since the last footstep
 let lastHealth = MAX_HEALTH;
 let lastChunk = { cx: NaN, cz: NaN };
@@ -1086,6 +1174,7 @@ function frame(now) {
   // Every animation runs off this. Paused means paused: no drifting clouds,
   // no swaying arms, no easing camera.
   const animDt = playing ? frameDt : 0;
+  worldClock += animDt;
 
   // A paused game renders an identical image every frame, so slow the redraw
   // right down instead of burning the GPU (and the battery) on it.
@@ -1181,6 +1270,19 @@ function frame(now) {
   }
   particles.update(animDt, world);
 
+  // ---- things on the floor ----
+  // On the game clock, so a paused world's rubble hangs exactly where it was.
+  drops.update(animDt, world, player, collectDrop);
+  dropsRenderer.update(drops, worldClock);
+  // One thud per frame at the volume of the biggest impact, scaled against
+  // the speed something reaches after falling about four blocks.
+  const impact = drops.loudestLanding();
+  if (impact) sound.playDropLand(Math.min(1, impact / 16));
+  // Wall-clock, not game time: the feed is a UI element, and a line that was
+  // half-faded when you opened the inventory should not still be there when
+  // you close it a minute later.
+  hud.updatePickups();
+
   // ---- digging, and the place button's auto-repeat ----
   // Breaking is no longer an event that repeats; it is a stopwatch that runs
   // while the button is down and resets the moment you look somewhere else.
@@ -1234,6 +1336,10 @@ function frame(now) {
   // memory; drop it again every frame so the resident set stays flat no
   // matter how far the render distance reaches.
   world.evictOutside(pcx, pcz, DATA_RADIUS);
+  // Drops live in loaded chunks only, like Minecraft's entities: an item
+  // forty chunks back is falling through a world that no longer has any
+  // blocks in it to land on.
+  drops.evictOutside(player.pos.x, player.pos.z, DATA_RADIUS * CHUNK_SIZE);
   lastChunk = { cx: pcx, cz: pcz };
   world.tick();
 
@@ -1315,10 +1421,10 @@ function frame(now) {
     });
   }
 
-  // ---- held block: keep it in sync with the hotbar, place it, swing it ----
+  // ---- held item: keep it in sync with the hotbar, place it, swing it ----
   refreshHeldItem();
-  if (heldSwing > 0) heldSwing = Math.max(0, heldSwing - animDt * 4.5);
-  positionHeldItem(heldSwing > 0 ? Math.sin((1 - heldSwing) * Math.PI) : 0);
+  hand.place(HELD_DIST, HELD_SIZE);
+  hand.update(animDt);
 
   // ---- block targeting ----
   if (playing) {
@@ -1487,6 +1593,11 @@ document.addEventListener('fullscreenchange', () => {
 
 // ---------------- go ----------------
 hud.initSettings(settings, LIMITS);
+// Build every item model now rather than the first time one is scrolled onto.
+// Twenty-six of them at a few hundred triangles each is about a millisecond,
+// spent behind the loading screen where nobody is looking, instead of
+// twenty-six one-frame hitches spread over the first minute of play.
+warmItemModels();
 refreshHeldItem();
 playerModel.group.visible = !view.isFirstPerson;
 requestAnimationFrame(frame);

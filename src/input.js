@@ -88,6 +88,11 @@ const ACTION_KEYS = {
   KeyF: 'fullscreen',
   F11: 'fullscreen',
   KeyC: 'gamemode',
+  // Q throws the selected stack on the floor, one at a time; Ctrl+Q throws
+  // the lot. Minecraft's binding exactly, and the modifier is read at the
+  // keydown rather than from the movement state, because Ctrl is also
+  // sprint and the sprint flag says nothing about whether it is down *now*.
+  KeyQ: 'drop',
   Escape: 'escape',
 };
 
@@ -439,7 +444,11 @@ export class Input {
       if (e.repeat) return;
 
       if (action) {
-        this.onAction(action);
+        // `drop` is the one action with a modifier: Ctrl+Q throws the whole
+        // stack. The flag is read off the event rather than from `this.keys`,
+        // because Ctrl is also sprint and the sprint key being *held* is a
+        // different question from Ctrl being down at this instant.
+        this.onAction(action, action === 'drop' ? e.ctrlKey || e.shiftKey : undefined);
         return;
       }
       if (/^Digit[1-9]$/.test(e.code)) {

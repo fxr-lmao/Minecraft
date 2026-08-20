@@ -121,6 +121,63 @@ export function playSwing() {
   burstNoise(ctx, 0.04, 2000, 0.12, master);
 }
 
+// ---- picking things up ----
+
+let lastPickup = 0;
+
+/**
+ * Minecraft's pop: a short sine blip that slides *up* in pitch.
+ *
+ * The rise is the whole of it. A falling blip reads as something being spent
+ * and a rising one as something being gained, which is why every game that
+ * has ever made a coin noise has made it go up. The pitch varies a little
+ * per pickup so that walking through a scattered pile is an arpeggio rather
+ * than a stuck key, and it is rate-limited hard, because a stack of thirty
+ * cobblestone collected in one stride is thirty of these at once and that is
+ * a buzz, not a sound.
+ */
+export function playPickup() {
+  if (muted) return;
+  const now = performance.now();
+  if (now - lastPickup < 55) return;
+  lastPickup = now;
+  const { ctx, master } = getCtx();
+  const t = ctx.currentTime;
+  const osc = ctx.createOscillator();
+  osc.type = 'sine';
+  const base = 620 + Math.random() * 120;
+  osc.frequency.setValueAtTime(base, t);
+  osc.frequency.exponentialRampToValueAtTime(base * 1.5, t + 0.07);
+  const g = ctx.createGain();
+  g.gain.setValueAtTime(0.0001, t);
+  g.gain.exponentialRampToValueAtTime(0.18, t + 0.012);
+  g.gain.exponentialRampToValueAtTime(0.0001, t + 0.11);
+  osc.connect(g).connect(master);
+  osc.start(t);
+  osc.stop(t + 0.13);
+}
+
+/**
+ * Something hitting the floor: a dropped item landing, or a thrown one.
+ * Quieter and duller than a block break, because it is a thing settling
+ * rather than a thing coming apart.
+ */
+let lastLand = 0;
+export function playDropLand(force = 1) {
+  if (muted) return;
+  // Rate limited hard: a broken furnace spills its contents in one frame and
+  // a TNT crater rains rubble for a second afterwards. Without this it is not
+  // a series of thuds, it is a roar.
+  const now = performance.now();
+  if (now - lastLand < 70) return;
+  lastLand = now;
+  const { ctx, master } = getCtx();
+  const f = Math.max(0, Math.min(1, force));
+  // Harder impacts are louder, longer and brighter — the difference between
+  // a block nudged off a ledge and one dropped down a ravine.
+  burstNoise(ctx, 0.035 + f * 0.03, 620 + f * 260, 0.06 + f * 0.12, master);
+}
+
 // ---- water ----
 
 export function playSplash(force) {

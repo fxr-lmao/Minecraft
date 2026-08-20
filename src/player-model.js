@@ -8,6 +8,7 @@
 import * as THREE from '../vendor/three.module.min.js';
 import { PLAYER_HEIGHT } from './constants.js';
 import { mulberry32, clamp } from './utils.js';
+import { AvatarHand } from './held-item.js';
 
 const PX = PLAYER_HEIGHT / 32; // one skin pixel in world units
 
@@ -153,16 +154,23 @@ export function createPlayerModel() {
   const armR = limb(SKIN, 32, 4, 12, 4, 6, 24, sleeve);
 
   // What the avatar is holding, parented to the right arm so it swings with
-  // it. A block sits in the fist at Minecraft's angle; anything flat and
-  // long — a sword, a tool — goes in the same socket and only needs its own
-  // scale and tilt, which is why this is a group rather than a mesh.
+  // it. A block sits in the fist at Minecraft's angle; a tool goes in the
+  // same socket with its own pose, which is why this is a group rather than
+  // a mesh — and why the pose lives in item-models.js rather than here.
   const hand = new THREE.Group();
   hand.position.set(1.5 * PX, -13 * PX, -3 * PX); // the fist, a little ahead of the arm
   hand.rotation.set(-0.5, 0.5, 0.1);
   armR.add(hand);
-  let heldMesh = null;
-  /** Source material -> the avatar's own copy of it. */
-  const heldClones = new Map();
+  /**
+   * The hand rig.
+   *
+   * This used to be a bare mesh and a scale factor, which was exactly right
+   * for a block and exactly wrong for everything else: a tool needs a pose,
+   * a grip offset and a model of its own, and a *flat sprite* held side-on by
+   * a figure you are looking at from behind is one pixel wide — which is why
+   * the pickaxe used to disappear as you turned. AvatarHand owns all of that.
+   */
+  const heldHand = new AvatarHand(hand);
   const legL = limb(PANTS, 41, 4, 12, 4, -2, 12, shoe);
   const legR = limb(PANTS, 42, 4, 12, 4, 2, 12, shoe);
 
@@ -195,39 +203,42 @@ export function createPlayerModel() {
     },
 
     /**
-     * Put a block in the avatar's hand, or nothing. Takes geometry and a
-     * material rather than a mesh so it can share exactly what the
-     * first-person view already built for the same block.
+     * Put something in the avatar's hand, or nothing.
+     *
+     * Takes an id now rather than a geometry, because what an item looks like
+     * in three dimensions is a property of the item and not of whatever the
+     * first-person view happens to have built. Blocks still come in as
+     * geometry + material, since a block *is* the same cube in both hands and
+     * building it twice would be two copies of the same 36 triangles.
      */
-    setHeldItem(geometry, material) {
-      if (!geometry) {
-        if (heldMesh) heldMesh.visible = false;
-        return;
+    setHeldItem(id, blockGeometry, blockMaterial) {
+      heldHand.set(id ?? 0, blockGeometry, blockMaterial);
+      // Any material the hand has just cloned has to join the fade list, or
+      // the avatar goes translucent while the thing it is carrying does not.
+      //
+      // ...and it has to be caught up to the *current* opacity as it joins,
+      // because setOpacity below short-circuits when the value has not
+      // changed. Without this, switching to a pickaxe while the camera is
+      // pushed up against your back hands you a perfectly opaque pickaxe
+      // floating in front of a transparent arm.
+      let added = false;
+      for (const m of heldHand.materials()) {
+        if (materials.includes(m)) continue;
+        materials.push(m);
+        added = true;
       }
-      // A clone, not the shared material: the avatar fades out when the
-      // camera comes close, and the first-person copy drawn from the same
-      // material must not fade with it. Cloned once per source material and
-      // kept, because there is more than one now — a block is lit and opaque,
-      // an item is a flat unlit sprite with cut-out corners — and reusing the
-      // first clone for both puts black corners on the bucket.
-      let own = heldClones.get(material);
-      if (!own) {
-        own = material.clone();
-        heldClones.set(material, own);
-        materials.push(own);
+      if (added && opacity < 0.999) {
+        for (const m of heldHand.materials()) {
+          m.opacity = opacity;
+          m.transparent = true;
+          m.depthWrite = false;
+          m.needsUpdate = true;
+        }
       }
-      if (!heldMesh) {
-        heldMesh = new THREE.Mesh(geometry, own);
-        // Minecraft holds a block at about 0.4 of its world size — big
-        // enough to tell grass from stone across the third-person camera.
-        heldMesh.scale.setScalar(0.46);
-        hand.add(heldMesh);
-      } else {
-        heldMesh.geometry = geometry;
-        heldMesh.material = own;
-      }
-      heldMesh.visible = true;
     },
+
+    /** The hand rig itself, for anything that needs to reach past this API. */
+    hand: heldHand,
 
     /**
      * Fade the avatar out when the third-person camera is right on top of it.

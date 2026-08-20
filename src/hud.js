@@ -11,6 +11,13 @@ import { LOOK_FREE, LOOK_TOUCH } from './input.js';
 
 const CARDINALS = ['South (+Z)', 'West (-X)', 'North (-Z)', 'East (+X)'];
 
+/** Pickup feed: how long a line sits, how long it fades, how many at once. */
+const PICKUP_HOLD_MS = 2600;
+const PICKUP_FADE_MS = 400;
+const PICKUP_MAX = 5;
+/** Two pickups of the same thing inside this window are one counting line. */
+const PICKUP_MERGE_MS = 4000;
+
 export class Hud {
   constructor() {
     this.debugEl = document.getElementById('debug');
@@ -33,8 +40,12 @@ export class Hud {
     this.xpBar = document.getElementById('xp-bar');
     this.xpLevel = document.getElementById('xp-level');
 
+    this.pickupEl = document.getElementById('pickups');
+
     this.debugVisible = false;
     this._statusTimer = null;
+    /** Live rows in the pickup feed, oldest first. */
+    this._pickups = [];
     this._buildVitals();
   }
 
@@ -152,6 +163,74 @@ export class Hud {
     }
     this.clockEl.textContent = timeStr;
     this.clockEl.classList.remove('hidden');
+  }
+
+  /**
+   * The pickup feed: the little stack of "+3 Cobblestone" lines that rises
+   * above the hotbar as you walk over things.
+   *
+   * Minecraft merges repeats rather than printing a new line per item, and
+   * that is not cosmetic — mining a seam of gravel produces a drop a second,
+   * and thirty separate lines would scroll the screen. A repeat of something
+   * already on the feed bumps its count and restarts its clock instead, so
+   * digging a stack of cobblestone shows one line counting up.
+   *
+   * The rows are pooled and reused because this is called from the collect
+   * path, which can fire several times in a frame when a pile is picked up.
+   */
+  showPickup(id, count) {
+    if (!this.pickupEl || count <= 0) return;
+    const name = blockName(id);
+    const now = performance.now();
+
+    const existing = this._pickups.find((p) => p.id === id && now - p.at < PICKUP_MERGE_MS);
+    if (existing) {
+      existing.count += count;
+      existing.at = now;
+      existing.el.textContent = `+${existing.count} ${name}`;
+      // Restart the fade: re-adding the class on the same frame does nothing,
+      // so it is dropped and forced to reflow first.
+      existing.el.classList.remove('show');
+      void existing.el.offsetWidth;
+      existing.el.classList.add('show');
+      return;
+    }
+
+    const el = document.createElement('div');
+    el.className = 'pickup-line';
+    el.textContent = `+${count} ${name}`;
+    this.pickupEl.appendChild(el);
+    void el.offsetWidth;
+    el.classList.add('show');
+
+    const entry = { id, count, at: now, el };
+    this._pickups.push(entry);
+
+    // Oldest first, and never more than a handful on screen at once.
+    while (this._pickups.length > PICKUP_MAX) {
+      const old = this._pickups.shift();
+      old.el.remove();
+    }
+  }
+
+  /**
+   * Retire pickup lines that have had their time. Driven from the frame loop
+   * rather than a timer per line, so a hundred pickups do not leave a hundred
+   * pending timeouts behind.
+   */
+  updatePickups() {
+    if (!this._pickups.length) return;
+    const now = performance.now();
+    for (let i = this._pickups.length - 1; i >= 0; i--) {
+      const p = this._pickups[i];
+      const age = now - p.at;
+      if (age > PICKUP_HOLD_MS + PICKUP_FADE_MS) {
+        p.el.remove();
+        this._pickups.splice(i, 1);
+      } else if (age > PICKUP_HOLD_MS) {
+        p.el.classList.remove('show');
+      }
+    }
   }
 
   /** Transient centre message (view change, sprinting, ...). */

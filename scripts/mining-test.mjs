@@ -13,11 +13,18 @@
 import { World } from '../src/world.js';
 import {
   breakTime, dropsFrom, toolMatches, blockRule, canHarvest, destroySpeed,
-  toolNeeded, wrongTool, HAND, PICK, SPADE, TICK,
+  toolNeeded, wrongTool, toolFamily, toolAdvantage,
+  HAND, PICK, SPADE, AXE, BLADE, TICK, TOOLS,
 } from '../src/mining.js';
-import { BUCKET, PICKAXE, SHOVEL } from '../src/items.js';
+import {
+  BUCKET, PICKAXE, SHOVEL, WOOD_AXE, STONE_AXE, IRON_AXE, DIAMOND_AXE,
+  WOOD_SWORD, IRON_SWORD, DIAMOND_SWORD,
+  DIAMOND_PICKAXE, DIAMOND_SHOVEL, WOOD_PICKAXE, STONE_PICKAXE,
+  COAL, RAW_IRON, RAW_GOLD, REDSTONE, DIAMOND, oreDrop,
+} from '../src/items.js';
 import {
   STONE, DEEPSLATE, DIRT, GRASS, SAND, LOG, LEAVES, BEDROCK, AIR, WATER, ICE,
+  COBBLESTONE, PLANKS,
   COAL_ORE, IRON_ORE, GOLD_ORE, REDSTONE_ORE, DIAMOND_ORE, ORES, ORE_BANDS,
   DEEPSLATE_ORES, DEEPSLATE_DIAMOND_ORE, ORE_IDS, deepslateOre,
   VEIN_CELL, isOre, oreAt, generatedBlock, surfaceHeight, deepslateTop,
@@ -111,13 +118,28 @@ const near = (a, b, eps = 1e-9) => Math.abs(a - b) < eps;
 
 // ------------------------------------------------------------------- drops
 {
-  assert('stone comes away with a pickaxe', dropsFrom(STONE, PICKAXE) === STONE);
+  // Stone breaks into cobblestone, which is Minecraft's oldest rule and the
+  // one that gives the furnace a job: you cannot dig stone out of the ground,
+  // you cook it out of cobble.
+  assert('stone comes away as cobblestone', dropsFrom(STONE, PICKAXE) === COBBLESTONE);
   // Minecraft's rule, and a surprising one the first time: bare hands break
   // stone eventually and get nothing for it.
   assert('...and by hand it breaks and gives nothing', dropsFrom(STONE, 0) === 0);
+  // Ore drops what is *in* it, not the block it was in. This is the change
+  // that turns the mine into a supply chain rather than a quarry for
+  // decorative ore blocks.
   for (const ore of ORE_IDS) {
-    assert(`ore needs the pickaxe (${ore})`, dropsFrom(ore, PICKAXE) === ore);
+    assert(`ore needs the pickaxe (${ore})`, dropsFrom(ore, PICKAXE) === oreDrop(ore));
   }
+  assert('coal ore drops coal', dropsFrom(COAL_ORE, PICKAXE) === COAL);
+  assert('iron ore drops raw iron, for the furnace',
+    dropsFrom(IRON_ORE, PICKAXE) === RAW_IRON);
+  assert('gold ore drops raw gold', dropsFrom(GOLD_ORE, PICKAXE) === RAW_GOLD);
+  assert('redstone ore drops dust', dropsFrom(REDSTONE_ORE, PICKAXE) === REDSTONE);
+  assert('diamond ore drops a diamond, finished',
+    dropsFrom(DIAMOND_ORE, PICKAXE) === DIAMOND);
+  assert('the deepslate twins drop exactly the same thing',
+    DEEPSLATE_ORES.every((id, i) => dropsFrom(id, PICKAXE) === dropsFrom(ORES[i], PICKAXE)));
   assert('the deepslate twins are ore too', DEEPSLATE_ORES.every(isOre)
     && DEEPSLATE_ORES.every((id) => dropsFrom(id, 0) === 0));
   assert('...and break in exactly the same time',
@@ -132,7 +154,8 @@ const near = (a, b, eps = 1e-9) => Math.abs(a - b) < eps;
   assert('a snow block wants the shovel, and gives nothing without it',
     dropsFrom(9, 0) === 0 && dropsFrom(9, SHOVEL) === 9 && wrongTool(9, PICKAXE));
   assert('...and the message names the tool it wanted',
-    toolNeeded(9) === 'shovel' && toolNeeded(STONE) === 'pickaxe');
+    toolNeeded(9) === 'shovel' && toolNeeded(STONE) === 'pickaxe'
+    && toolNeeded(LOG) === 'axe' && toolNeeded(LEAVES) === 'sword');
   assert('harvesting is what the drop keys off',
     ORE_IDS.every((id) => canHarvest(id, PICKAXE) && !canHarvest(id, 0))
     && canHarvest(DIRT, 0) && canHarvest(DIRT, PICKAXE));
@@ -145,12 +168,20 @@ const near = (a, b, eps = 1e-9) => Math.abs(a - b) < eps;
     toolMatches(STONE, PICKAXE) && !toolMatches(STONE, SHOVEL));
   assert('a shovel is what dirt answers to',
     toolMatches(DIRT, SHOVEL) && !toolMatches(DIRT, PICKAXE));
-  assert('logs answer to nothing in particular', blockRule(LOG).tool === HAND);
+  // The axe. Until it existed, `tool: HAND` meant every wooden block in the
+  // game ignored what you were carrying, and the forest was the one place a
+  // full hotbar of tools bought you nothing.
+  assert('logs answer to the axe', blockRule(LOG).tool === AXE);
+  assert('an axe is what a log answers to',
+    toolMatches(LOG, IRON_AXE) && !toolMatches(LOG, PICKAXE) && !toolMatches(LOG, SHOVEL));
+  assert('leaves answer to the sword', blockRule(LEAVES).tool === BLADE);
   assert('cobblestone and bricks are stone, and want the pickaxe stone wants',
     blockRule(4).tool === PICK && blockRule(4).needsTool
     && blockRule(7).tool === PICK && blockRule(7).needsTool);
-  assert('planks are wood and want nothing', blockRule(5).tool === HAND
-    && !blockRule(5).needsTool && near(breakTime(5, 0), breakTime(LOG, 0)));
+  assert('planks are wood and want the axe', blockRule(PLANKS).tool === AXE
+    && !blockRule(PLANKS).needsTool && near(breakTime(PLANKS, 0), breakTime(LOG, 0)));
+  assert('...and wood still comes away bare-handed, only slowly',
+    dropsFrom(LOG, 0) === LOG && dropsFrom(PLANKS, 0) === PLANKS);
   // Anything with no entry at all — an id from a future block — is stone-ish
   // and harvestable, so a block nobody has written a rule for is diggable
   // rather than a thing you can destroy and never collect.
