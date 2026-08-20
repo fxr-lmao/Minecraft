@@ -200,8 +200,10 @@ export function meshChunk(world, cx, cz, deep = true) {
           const neighbour = blockAt(chunk, world, x0, z0, lx + d[0], ny, lz + d[2]);
 
           // A face is hidden only by another solid — you can see the sea floor
-          // through the sea, so water does not count as cover.
-          if (isOpaque(neighbour)) continue;
+          // through the sea, so water does not count as cover. Glass is the
+          // other exception: it is solid but you see through it, so its own
+          // faces are never culled and neither are the faces beside it.
+          if (isOpaque(id) && isOpaque(neighbour)) continue;
 
           const face = FACES[f];
           const tile = atlasTile(id, face.col);
@@ -364,7 +366,10 @@ export class WorldRenderer {
     this.world = world;
     this.scene = scene;
     this.budgetMs = budgetMs;
-    this.material = new THREE.MeshLambertMaterial({ map: getAtlasTexture() });
+    // alphaTest cuts the transparent pixels of the glass tile out of the
+    // otherwise-opaque atlas; every other block is fully opaque so it is a
+    // no-op for them.
+    this.material = new THREE.MeshLambertMaterial({ map: getAtlasTexture(), alphaTest: 0.4 });
     // Water is drawn after everything else and does not write depth, so a
     // surface never hides the water behind it and the sea floor shows
     // through. DoubleSide keeps the surface visible from underneath.

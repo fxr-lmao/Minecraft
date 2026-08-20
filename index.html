@@ -15,11 +15,19 @@
 
   <div id="crosshair"></div>
 
+  <div id="mode-badge" class="hidden">SURVIVAL</div>
+  <div id="clock" class="hidden"></div>
+
   <div id="held-name"></div>
   <!-- hearts on the left, air bubbles on the right, above the hotbar -->
   <div id="vitals" class="hidden">
     <div id="health"></div>
     <div id="air"></div>
+  </div>
+  <!-- experience: the bar above the hotbar and the level number -->
+  <div id="xp-wrap" class="hidden">
+    <div id="xp-bar"><i></i></div>
+    <div id="xp-level">0</div>
   </div>
   <div id="hotbar"></div>
 
@@ -27,12 +35,25 @@
 
   <pre id="debug"></pre>
 
-  <!-- inventory: 9 x 3 main grid + the 9 hotbar slots -->
+  <!-- inventory: 9 x 3 main grid + the 9 hotbar slots + a crafting area -->
   <div id="inventory" class="hidden">
     <div class="inv-panel">
       <div class="inv-head">
         <h2>Inventory</h2>
-        <button id="inv-close" class="btn small" type="button">Close</button>
+        <div class="inv-head-btns">
+          <button id="inv-sort" class="btn small" type="button">Sort</button>
+          <button id="inv-close" class="btn small" type="button">Close</button>
+        </div>
+      </div>
+      <div class="inv-craft-row">
+        <div class="inv-craft">
+          <div class="inv-label">Crafting</div>
+          <div id="craft-grid"></div>
+        </div>
+        <div class="inv-craft-out">
+          <div class="inv-label">Result</div>
+          <div id="craft-result" class="slot"></div>
+        </div>
       </div>
       <div id="inv-main"></div>
       <div class="inv-label">Hotbar (in hand)</div>
@@ -40,11 +61,45 @@
       <p class="inv-hint">
         Click or tap a slot to pick the stack up, then tap another slot to drop it.
         <b>Right-click</b> takes half / places one · <b>Shift-click</b> sends a stack to the other section ·
+        <b>Click the result</b> to craft · Looking at a <b>crafting table</b> opens 3×3 crafting ·
         <b>E</b> or <b>Esc</b> closes.
       </p>
     </div>
   </div>
   <div id="cursor-stack" class="hidden"><img alt="" /><span class="count"></span></div>
+
+  <!-- furnace: input + fuel on the left, flame, arrow, output on the right -->
+  <div id="furnace" class="hidden">
+    <div class="inv-panel">
+      <div class="inv-head">
+        <h2>Furnace</h2>
+        <button id="furnace-close" class="btn small" type="button">Close</button>
+      </div>
+      <div class="furnace-row">
+        <div class="furnace-slot-col">
+          <div class="inv-label">Smelt</div>
+          <div id="furnace-input" class="slot"></div>
+        </div>
+        <div class="furnace-slot-col">
+          <div class="inv-label">Fuel</div>
+          <div id="furnace-fuel" class="slot"></div>
+        </div>
+        <div class="furnace-gauge">
+          <div class="furnace-flame" id="furnace-flame"></div>
+          <div class="furnace-arrow" id="furnace-arrow"></div>
+        </div>
+        <div class="furnace-slot-col">
+          <div class="inv-label">Result</div>
+          <div id="furnace-output" class="slot"></div>
+        </div>
+      </div>
+      <p class="inv-hint">
+        Put something smeltable (sand, cobblestone) in <b>Smelt</b> and fuel
+        (logs, planks, sticks) in <b>Fuel</b>. Sand becomes glass, cobblestone
+        becomes stone. Click the result to take it.
+      </p>
+    </div>
+  </div>
 
   <!-- touch controls (shown only while a finger is being used) -->
   <div id="joy-base"><div id="joy-knob"></div></div>

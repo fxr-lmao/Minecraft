@@ -41,14 +41,33 @@ export const WATER_BUCKET = 201;
 export const PICKAXE = 202;
 export const SHOVEL = 203;
 
+// Crafting-era items: sticks and the tool tiers, which the crafting table
+// makes from planks and stone. Wooden tools are slower than the iron ones
+// you start with, stone sits between them — which is what makes the starter
+// kit still feel like a gift, and the furnace worth building (cobblestone
+// smelts into the stone the mid tier needs).
+export const STICKS = 204;
+export const WOOD_PICKAXE = 205;
+export const WOOD_SHOVEL = 206;
+export const STONE_PICKAXE = 207;
+export const STONE_SHOVEL = 208;
+
 /** Item ids, in the order their textures are packed into the atlas. */
-export const ITEM_IDS = [BUCKET, WATER_BUCKET, PICKAXE, SHOVEL];
+export const ITEM_IDS = [
+  BUCKET, WATER_BUCKET, PICKAXE, SHOVEL, STICKS,
+  WOOD_PICKAXE, WOOD_SHOVEL, STONE_PICKAXE, STONE_SHOVEL,
+];
 
 export const ITEM_NAMES = {
   [BUCKET]: 'Bucket',
   [WATER_BUCKET]: 'Water Bucket',
   [PICKAXE]: 'Iron Pickaxe',
   [SHOVEL]: 'Iron Shovel',
+  [STICKS]: 'Sticks',
+  [WOOD_PICKAXE]: 'Wooden Pickaxe',
+  [WOOD_SHOVEL]: 'Wooden Shovel',
+  [STONE_PICKAXE]: 'Stone Pickaxe',
+  [STONE_SHOVEL]: 'Stone Shovel',
 };
 
 /**

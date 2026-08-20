@@ -136,6 +136,35 @@ const assert = (name, cond, detail) =>
 for (const [name, ok, detail] of results) {
   console.log(`${ok ? 'PASS' : 'FAIL'}  ${name}${detail ? '  (' + detail + ')' : ''}`);
 }
+// --- sort ---
+{
+  // Sorting used to reference an unimported `isTool` and threw the moment
+  // the button was pressed, so the plain case is worth pinning down.
+  const inv = new Inventory();
+  inv.slots[5] = { id: 3, count: 10 };
+  inv.slots[20] = { id: 1, count: 4 };
+  inv.slots[31] = { id: 3, count: 12 };
+  inv.sort();
+  assert('sort packs to the front', inv.slots[0] && inv.slots[1] && !inv.slots[2]);
+  assert('sort merges same ids', inv.countOf(3) === 22, inv.countOf(3));
+  assert('sort keeps the other stack', inv.countOf(1) === 4, inv.countOf(1));
+}
+{
+  // Tools carry their own durability, so they must never be folded together.
+  const inv = new Inventory();
+  inv.slots[0] = { id: PICKAXE, count: 1, durability: 40 };
+  inv.slots[9] = { id: PICKAXE, count: 1, durability: 200 };
+  inv.slots[17] = { id: SHOVEL, count: 1, durability: 120 };
+  inv.sort();
+  const picks = inv.slots.filter((s) => s && s.id === PICKAXE);
+  assert('tools do not stack', picks.length === 2 && picks.every((s) => s.count === 1),
+    picks.map((s) => s.count).join(','));
+  assert('each tool keeps its own durability',
+    picks.some((s) => s.durability === 40) && picks.some((s) => s.durability === 200));
+  assert('the healthiest tool sorts first', inv.slots[0].durability === 200, inv.slots[0].durability);
+  assert('nothing is lost', inv.countOf(PICKAXE) === 2 && inv.countOf(SHOVEL) === 1);
+}
+
 const passed = results.filter((r) => r[1]).length;
 console.log(`\n${passed}/${results.length} passed`);
 process.exit(passed === results.length ? 0 : 1);

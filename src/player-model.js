@@ -359,10 +359,16 @@ export function createPlayerModel() {
       armL.position.z = armR.position.z = bend * 1.8 * PX;
       legL.position.y = legR.position.y = (12 - 1 * bend) * PX;
 
-      // swing decay
+      // swing decay — a fast strike and a slower recovery, the same curve
+      // the first-person hand uses, so both views tell the same story.
       if (swing > 0) {
-        swing = Math.max(0, swing - s.dt * 4);
-        armR.rotation.x -= Math.sin((1 - swing) * Math.PI) * 1.5;
+        swing = Math.max(0, swing - s.dt * 6);
+        const t = 1 - swing; // 0 -> 1
+        const curve = t < 0.35
+          ? Math.sin((t / 0.35) * Math.PI * 0.5)
+          : Math.cos(((t - 0.35) / 0.65) * Math.PI * 0.5);
+        armR.rotation.x -= curve * 1.7;
+        armR.rotation.z -= curve * 0.25;
       }
     },
   };

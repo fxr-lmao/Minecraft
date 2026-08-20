@@ -97,15 +97,16 @@ export function migrateV1Edits(flat, size = 128) {
 }
 
 /** Build the serialisable snapshot. Pure — takes plain data, returns data. */
-export function buildSnapshot({ world, inventory, player, viewMode }) {
+export function buildSnapshot({ world, inventory, player, viewMode, furnaces, xp }) {
   return {
     version: VERSION,
     at: Date.now(),
     seed: world.seed,
     edits: encodeEdits(world.editList()),
     inventory: {
-      slots: inventory.slots.map((s) => (s ? [s.id, s.count] : 0)),
+      slots: inventory.slots.map((s) => (s ? [s.id, s.count, s.durability ?? 0] : 0)),
       selected: inventory.selected,
+      craft: inventory.craftGrid.cells.map((c) => (c ? [c.id, c.count] : 0)),
     },
     player: {
       x: player.pos.x, y: player.pos.y, z: player.pos.z,
@@ -115,18 +116,28 @@ export function buildSnapshot({ world, inventory, player, viewMode }) {
       health: player.health, air: player.air,
     },
     view: viewMode,
+    furnaces: furnaces ?? [],
+    xp: xp ?? { points: 0, level: 0 },
   };
 }
 
 function parseInventory(raw) {
   const slots = Array.isArray(raw?.slots) ? raw.slots : [];
+  const craftRaw = Array.isArray(raw?.craft) ? raw.craft : [];
   return {
     slots: slots.map((s) =>
       Array.isArray(s) && Number.isInteger(s[0]) && Number.isInteger(s[1]) && s[1] > 0
-        ? { id: s[0], count: s[1] }
+        // The third element is durability; saves that predate it come back
+        // without the field, and ensureDurability fills it in on first use.
+        ? { id: s[0], count: s[1], durability: Number.isFinite(s[2]) ? s[2] : undefined }
         : null
     ),
     selected: Number.isInteger(raw?.selected) ? raw.selected : 0,
+    craft: craftRaw.map((c) =>
+      Array.isArray(c) && Number.isInteger(c[0]) && Number.isInteger(c[1]) && c[1] > 0
+        ? { id: c[0], count: c[1] }
+        : null
+    ),
   };
 }
 
@@ -165,6 +176,8 @@ export function parseSnapshot(raw) {
     inventory: parseInventory(raw.inventory),
     player: raw.player && Number.isFinite(raw.player.x) ? raw.player : null,
     view: Number.isInteger(raw.view) ? raw.view : 0,
+    furnaces: Array.isArray(raw.furnaces) ? raw.furnaces : [],
+    xp: raw.xp && typeof raw.xp === 'object' ? raw.xp : null,
   };
 }
 

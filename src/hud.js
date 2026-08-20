@@ -27,6 +27,11 @@ export class Hud {
     this.vitalsEl = document.getElementById('vitals');
     this.healthEl = document.getElementById('health');
     this.airEl = document.getElementById('air');
+    this.modeEl = document.getElementById('mode-badge');
+    this.clockEl = document.getElementById('clock');
+    this.xpWrap = document.getElementById('xp-wrap');
+    this.xpBar = document.getElementById('xp-bar');
+    this.xpLevel = document.getElementById('xp-level');
 
     this.debugVisible = false;
     this._statusTimer = null;
@@ -110,6 +115,43 @@ export class Hud {
   toggleDebug() {
     this.debugVisible = !this.debugVisible;
     this.debugEl.classList.toggle('visible', this.debugVisible);
+  }
+
+  /**
+   * Mode badge: shows CREATIVE in creative mode (with a flight indicator),
+   * hides itself in survival. Minecraft does not draw a mode badge, but this
+   * game has no F3-only mode line players can be assumed to read.
+   */
+  refreshMode(gameMode) {
+    if (!this.modeEl) return;
+    if (!gameMode.isCreative) {
+      this.modeEl.classList.add('hidden');
+      return;
+    }
+    this.modeEl.textContent = `CREATIVE${gameMode.flying ? ' · FLYING' : ''}`;
+    this.modeEl.classList.remove('hidden');
+  }
+
+  /**
+   * Experience: the green bar above the hotbar and the level number. The
+   * bar is hidden at level 0 with an empty bar, like Minecraft's.
+   */
+  setXp(fraction, level) {
+    if (!this.xpBar) return;
+    this.xpLevel.textContent = String(level);
+    this.xpBar.firstElementChild.style.width = `${Math.round(fraction * 100)}%`;
+    this.xpWrap.classList.toggle('hidden', level === 0 && fraction === 0);
+  }
+
+  /** In-game clock, top-right, only drawn once it has something to say. */
+  setClock(timeStr) {
+    if (!this.clockEl) return;
+    if (!timeStr) {
+      this.clockEl.classList.add('hidden');
+      return;
+    }
+    this.clockEl.textContent = timeStr;
+    this.clockEl.classList.remove('hidden');
   }
 
   /** Transient centre message (view change, sprinting, ...). */
@@ -254,6 +296,7 @@ export class Hud {
       ``,
       `XYZ: ${info.pos.x.toFixed(3)} / ${info.pos.y.toFixed(3)} / ${info.pos.z.toFixed(3)}`,
       `Block: ${blockName(info.blockUnder)}  ·  Biome: ${info.biome}  ·  Temp: ${info.temperature.toFixed(2)}  ·  ${info.weather}`,
+      `Time: ${info.clock ?? '—'}  ·  Mode: ${info.gameMode ?? 'Survival'}`,
       `Chunk: ${info.chunk}  (${CHUNK_SIZE}x${CHUNK_SIZE})`,
       `Facing: ${CARDINALS[idx]} (${((dir + 360) % 360).toFixed(1)} / ${info.pitchDeg.toFixed(1)})`,
       `Looking at: ${target}`,

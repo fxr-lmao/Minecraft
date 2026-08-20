@@ -9,6 +9,8 @@
 // This file is pure data — no DOM, no THREE — so it is unit-tested in Node.
 
 import { isItem } from './items.js';
+import { ensureDurability, isTool } from './durability.js';
+import { CraftingGrid, GRID_2X2 } from './crafting.js';
 
 export const HOTBAR_SIZE = 9;
 export const MAIN_COLS = 9;
@@ -26,6 +28,12 @@ export class Inventory {
     this.selected = 0;
     /** Stack picked up while rearranging (follows the cursor/finger). */
     this.cursor = null;
+    /**
+     * The crafting grid. 2x2 in the player inventory; resized to 3x3 while
+     * the player is using a crafting table. Its contents are part of the
+     * inventory and saved with it.
+     */
+    this.craftGrid = new CraftingGrid(GRID_2X2);
   }
 
   static isHotbar(i) {
@@ -83,7 +91,7 @@ export class Inventory {
     for (let i = 0; i < TOTAL_SLOTS && left > 0; i++) {
       if (!this.slots[i]) {
         const move = Math.min(STACK_MAX, left);
-        this.slots[i] = { id, count: move };
+        this.slots[i] = ensureDurability({ id, count: move });
         left -= move;
       }
     }
@@ -175,6 +183,55 @@ export class Inventory {
     const moved = src.count === 0;
     if (moved) this.slots[i] = null;
     return moved;
+  }
+
+  /**
+   * Sort: group stacks by id, largest first, then merge any that fit, and
+   * pack everything to the front. Crafting grid and cursor are untouched.
+   * Returns true if anything moved.
+   */
+  sort() {
+    const stacks = this.slots.filter(Boolean).map((s) => ({ ...s }));
+    // Tools never merge: each one carries its own durability, and folding
+    // three part-used pickaxes into one stack would throw two of those
+    // numbers away. They pass through as they are.
+    const tools = stacks.filter((s) => isTool(s.id)).map(ensureDurability);
+    // Merge everything else by id (a full sort of 36 slots is trivial here).
+    const byId = new Map();
+    for (const s of stacks) {
+      if (isTool(s.id)) continue;
+      const cur = byId.get(s.id);
+      if (cur) cur.count += s.count;
+      else byId.set(s.id, s);
+    }
+    // Collapse overflow into multiple stacks, then order: tools first
+    // (durability descending), then blocks by id, count descending.
+    const merged = [...tools];
+    for (const [id, s] of byId) {
+      let left = s.count;
+      while (left > 0) {
+        const take = Math.min(STACK_MAX, left);
+        merged.push({ id, count: take });
+        left -= take;
+      }
+    }
+    merged.sort((a, b) => {
+      const aTool = isTool(a.id) ? 1 : 0;
+      const bTool = isTool(b.id) ? 1 : 0;
+      if (aTool !== bTool) return bTool - aTool;
+      if (a.id !== b.id) return a.id - b.id;
+      if (aTool) return (b.durability ?? 0) - (a.durability ?? 0);
+      return b.count - a.count;
+    });
+    // Write back, padded with nulls.
+    const changed = merged.length !== this.slots.filter(Boolean).length
+      || merged.some((s, i) => {
+        const old = this.slots[i];
+        return !old || old.id !== s.id || old.count !== s.count;
+      });
+    this.slots = new Array(TOTAL_SLOTS).fill(null);
+    merged.forEach((s, i) => { this.slots[i] = s; });
+    return changed;
   }
 
   /** Put the cursor stack back into the grid (used when closing the screen). */
