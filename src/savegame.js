@@ -97,7 +97,7 @@ export function migrateV1Edits(flat, size = 128) {
 }
 
 /** Build the serialisable snapshot. Pure — takes plain data, returns data. */
-export function buildSnapshot({ world, inventory, player, viewMode, furnaces, xp }) {
+export function buildSnapshot({ world, inventory, player, viewMode, furnaces, xp, mode }) {
   return {
     version: VERSION,
     at: Date.now(),
@@ -118,6 +118,7 @@ export function buildSnapshot({ world, inventory, player, viewMode, furnaces, xp
     view: viewMode,
     furnaces: furnaces ?? [],
     xp: xp ?? { points: 0, level: 0 },
+    mode: mode ?? 0,
   };
 }
 
@@ -178,6 +179,7 @@ export function parseSnapshot(raw) {
     view: Number.isInteger(raw.view) ? raw.view : 0,
     furnaces: Array.isArray(raw.furnaces) ? raw.furnaces : [],
     xp: raw.xp && typeof raw.xp === 'object' ? raw.xp : null,
+    mode: Number.isInteger(raw.mode) ? raw.mode : 0,
   };
 }
 

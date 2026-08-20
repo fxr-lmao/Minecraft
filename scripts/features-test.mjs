@@ -78,5 +78,44 @@ check('sunlight dies at night', sunLight(0.75) < 0.05);
 check('moonlight is dim', moonLight(0.75) > 0 && moonLight(0.75) < 0.2);
 check('clock reads six at dawn', clockString(0) === '06:00' || clockString(0) === '06:00');
 
+// ---- blastBlocks actually reaches the blocks around the charge ----
+// It takes the charge's block coordinates and adds the half itself; feeding
+// it a world-space centre made the loop walk half-blocks and return nothing.
+const stone = new Map();
+const fakeWorld = {
+  inBounds: () => true,
+  get: (x, y, z) => stone.get(`${x},${y},${z}`) ?? 0,
+};
+// a 7x7x7 cube of stone centred on the charge
+for (let y = 2; y <= 8; y++) for (let z = 2; z <= 8; z++) for (let x = 2; x <= 8; x++) {
+  stone.set(`${x},${y},${z}`, 3);
+}
+const hit = blastBlocks(fakeWorld, 5, 5, 5);
+check('blast finds the blocks around the charge', hit.length > 20);
+check('blast includes the charge cell itself',
+  hit.some((h) => h.x === 5 && h.y === 5 && h.z === 5));
+// The edge of a blast is a lottery by design, so this counts rather than
+// asserting: a neighbour one block out has a ~78% chance each time, and over
+// 200 blasts it must come up most of the time and not every time.
+let neighbourHits = 0;
+for (let i = 0; i < 200; i++) {
+  const h = blastBlocks(fakeWorld, 5, 5, 5);
+  if (h.some((c) => c.x === 6 && c.y === 5 && c.z === 5)) neighbourHits++;
+}
+check('the immediate neighbours are usually taken', neighbourHits > 120);
+check('...but not always', neighbourHits < 200);
+check('blast returns whole block coordinates',
+  hit.every((h) => Number.isInteger(h.x) && Number.isInteger(h.y) && Number.isInteger(h.z)));
+check('blast never reaches past its radius',
+  hit.every((h) => Math.hypot(h.x + 0.5 - 5.5, h.y + 0.5 - 5.5, h.z + 0.5 - 5.5) <= BLAST_RADIUS));
+check('blast is sorted from the charge outward', hit[0].strength >= hit[hit.length - 1].strength);
+
+// air and bedrock are not in the list
+stone.set('6,5,5', 8); // bedrock
+stone.set('4,5,5', 0); // air
+const hit2 = blastBlocks(fakeWorld, 5, 5, 5);
+check('blast leaves bedrock alone', !hit2.some((h) => h.x === 6 && h.y === 5 && h.z === 5));
+check('blast skips air', !hit2.some((h) => h.x === 4 && h.y === 5 && h.z === 5));
+
 console.log(`\n${passed} passed, ${failed} failed`);
 process.exit(failed ? 1 : 0);

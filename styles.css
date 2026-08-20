@@ -434,8 +434,9 @@ body.nocursor #game { cursor: none; }
 }
 #clock {
   position: fixed;
-  right: calc(8px + env(safe-area-inset-right));
-  top: calc(8px + env(safe-area-inset-top));
+  right: calc(10px + env(safe-area-inset-right));
+  /* Under the button row, which owns this corner and is always on screen. */
+  top: calc(50px + env(safe-area-inset-top));
   color: #fff;
   font-family: Consolas, "Courier New", monospace;
   font-size: 12px;
@@ -625,8 +626,25 @@ body.nocursor #game { cursor: none; }
 .btn.small { font-size: 13px; padding: 5px 14px; }
 
 /* ---------- touch controls (shown only while a finger is in use) ---------- */
-#touch-ui { display: none; }
-body.touch #touch-ui { display: block; }
+/*
+ * The overlay is live whenever the pointer is.
+ *
+ * The top row — pause, inventory, view, debug — used to be hidden until a
+ * finger touched the screen, so with a mouse those four buttons did not
+ * exist at all. Showing them always is no better: while the pointer is
+ * locked to the canvas there is no cursor to click them with, so they would
+ * be four buttons that visibly do nothing. `body.pointer-locked` is the
+ * honest condition — they appear exactly when they can be pressed, which is
+ * touch, free-look, and anywhere pointer lock was refused (iPadOS Safari).
+ * During locked play the keyboard has all four: E, V, G/F3 and Esc.
+ *
+ * The movement pads stay touch-only either way. On a keyboard they would be
+ * five buttons duplicating WASD, space and the mouse buttons.
+ */
+#touch-ui { display: block; }
+body.pointer-locked .tui-top { display: none; }
+.tui-right { display: none; }
+body.touch .tui-right { display: flex; }
 #touch-ui {
   position: fixed;
   inset: 0;
@@ -644,7 +662,6 @@ body.touch #touch-ui { display: block; }
   position: absolute;
   right: calc(16px + env(safe-area-inset-right));
   bottom: calc(96px + env(safe-area-inset-bottom));
-  display: flex;
   flex-direction: column;
   align-items: flex-end;
   gap: 10px;
