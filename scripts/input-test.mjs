@@ -260,6 +260,174 @@ function teardown() {
   teardown();
 }
 
+// ------------------------------------------------- touch: the on-screen pad
+// Three regressions live here, all of them things that only show up with two
+// thumbs on a real phone and none of them visible to a pure unit test.
+
+/** A stub element with the bits Input touches: style, classes, capture, rect. */
+function makeEl(rect = { left: 0, top: 0, width: 128, height: 128 }, capture = true) {
+  const el = makeTarget();
+  el.style = {};
+  const classes = new Set();
+  el.classList = {
+    add: (c) => classes.add(c),
+    remove: (c) => classes.delete(c),
+    toggle: (c, on) => (on ? classes.add(c) : classes.delete(c)),
+    contains: (c) => classes.has(c),
+  };
+  el.getBoundingClientRect = () => rect;
+  el.setPointerCapture = () => {
+    if (!capture) throw new Error('capture refused');
+    el.captured = true;
+  };
+  return el;
+}
+
+/** installDom, but with the touch elements present so the pad actually binds. */
+function installTouchDom({ capture = true } = {}) {
+  const dom = installDom({ native: false });
+  const els = new Map();
+  dom.doc.getElementById = (id) => {
+    if (!els.has(id)) {
+      const rect = id === 'joy-home'
+        ? { left: 20, top: 500, width: 128, height: 128 }
+        : { left: 0, top: 0, width: 64, height: 64 };
+      els.set(id, makeEl(rect, capture));
+    }
+    return els.get(id);
+  };
+  dom.els = els;
+  return dom;
+}
+
+const touches = (...list) => ({
+  changedTouches: list,
+  preventDefault() {},
+});
+
+// --- the stick's own sprint. The controls text promises "push the stick all
+// the way forward to sprint"; getMovementInput used to have its own copy of
+// the joystick maths that had no sprint in it at all, so the promise was a lie.
+{
+  const { canvas } = installTouchDom();
+  const input = new Input(canvas);
+  input.start('touch');
+
+  canvas.fire('touchstart', touches({ identifier: 0, clientX: 100, clientY: 400 }));
+  assert('a left-half touch starts the stick', input.touch.joy !== null);
+
+  canvas.fire('touchmove', touches({ identifier: 0, clientX: 100, clientY: 400 - 200 }));
+  const full = input.getMovementInput();
+  assert('a stick pushed fully forward walks', Math.abs(full.forward - 1) < 1e-6, full.forward);
+  assert('a stick pushed fully forward sprints', full.sprint === true);
+
+  // Sideways is the same deflection and must NOT sprint, or every strafe
+  // would run.
+  canvas.fire('touchmove', touches({ identifier: 0, clientX: 100 + 200, clientY: 400 }));
+  const side = input.getMovementInput();
+  assert('a full strafe does not sprint', side.sprint === false, `f=${side.forward}`);
+
+  // A thumb resting inside the deadzone must not drift the player.
+  canvas.fire('touchmove', touches({ identifier: 0, clientX: 103, clientY: 402 }));
+  const rest = input.getMovementInput();
+  assert('a resting thumb is still', rest.forward === 0 && rest.strafe === 0);
+
+  // Sneak beats sprint, the same way the player already resolves it.
+  canvas.fire('touchmove', touches({ identifier: 0, clientX: 100, clientY: 200 }));
+  input.touch.sneak = true;
+  assert('sneak suppresses a stick sprint', input.getMovementInput().sprint === false);
+  input.touch.sneak = false;
+
+  canvas.fire('touchend', touches({ identifier: 0, clientX: 100, clientY: 200 }));
+  assert('lifting the thumb stops the walk', input.getMovementInput().forward === 0);
+  teardown();
+}
+
+// --- the home pad is keyed by pointerId; canvas fingers are keyed by
+// Touch.identifier. Those are different number spaces, and they collide: on
+// Chrome the first canvas touch is identifier 0 while the pad may well be
+// pointerId 0 too. Matching across them let a look finger drive the pad.
+{
+  const { canvas, doc } = installTouchDom();
+  const input = new Input(canvas);
+  input.start('touch');
+  const pad = doc.getElementById('joy-home');
+
+  pad.fire('pointerdown', {
+    pointerId: 0, pointerType: 'touch', clientX: 84, clientY: 564,
+    preventDefault() {}, stopPropagation() {},
+  });
+  assert('the pad starts a home stick', input.touch.joy?.home === true);
+
+  // Right thumb lands on the canvas and happens to be identifier 0.
+  canvas.fire('touchstart', touches({ identifier: 0, clientX: 800, clientY: 300 }));
+  assert('the right thumb becomes the look finger', input.touch.look.id === 0);
+
+  canvas.fire('touchmove', touches({ identifier: 0, clientX: 900, clientY: 300 }));
+  assert('a look drag does not move the pad',
+    input.touch.joy.x === 84 && input.touch.joy.y === 564,
+    `${input.touch.joy.x},${input.touch.joy.y}`);
+  assert('a look drag still turns the view', input.touch.look.dx === 100, input.touch.look.dx);
+
+  canvas.fire('touchend', touches({ identifier: 0, clientX: 900, clientY: 300 }));
+  assert('lifting the look finger does not drop the pad', input.touch.joy !== null);
+  assert('lifting the look finger clears the look', input.touch.look.id === null);
+
+  pad.fire('pointerup', { pointerId: 0, pointerType: 'touch' });
+  assert('the pad releases on its own pointerup', input.touch.joy === null);
+  teardown();
+}
+
+// --- if setPointerCapture is refused the finger lifts over the canvas, not
+// over the pad, and the pad never hears about it. Without the window fallback
+// the stick stays pushed and the player walks away on their own.
+{
+  const { canvas, doc, win } = installTouchDom({ capture: false });
+  const input = new Input(canvas);
+  input.start('touch');
+  const pad = doc.getElementById('joy-home');
+
+  pad.fire('pointerdown', {
+    pointerId: 3, pointerType: 'touch', clientX: 84, clientY: 500,
+    preventDefault() {}, stopPropagation() {},
+  });
+  assert('a refused capture still starts the stick', input.touch.joy !== null);
+  assert('and it is pushed forward', input.getMovementInput().forward > 0);
+
+  win.fire('pointerup', { pointerId: 99, pointerType: 'touch' });
+  assert('another finger lifting does not release it', input.touch.joy !== null);
+
+  win.fire('pointerup', { pointerId: 3, pointerType: 'touch' });
+  assert('the stick releases on a stray pointerup', input.touch.joy === null);
+  assert('and the player stops', input.getMovementInput().forward === 0);
+  teardown();
+}
+
+// --- Safari fires pointerleave right after pointerdown on a <button>, which
+// is what made Jump do nothing. Pinned end to end through the real listeners.
+{
+  const { canvas, doc, win } = installTouchDom();
+  const input = new Input(canvas);
+  input.start('touch');
+  const jump = doc.getElementById('btn-jump');
+  const ev = (id) => ({
+    pointerId: id, pointerType: 'touch', preventDefault() {}, stopPropagation() {},
+  });
+
+  jump.fire('pointerdown', ev(1));
+  assert('the jump button presses', input.touch.jump === true);
+  jump.fire('pointerleave', ev(1));
+  assert('a Safari pointerleave keeps Jump held', input.touch.jump === true);
+  jump.fire('pointerup', ev(1));
+  assert('pointerup releases Jump', input.touch.jump === false);
+
+  // A cancel that arrives somewhere other than the button must still release.
+  jump.fire('pointerdown', ev(2));
+  win.fire('pointercancel', ev(2));
+  assert('a stray pointercancel releases Jump', input.touch.jump === false);
+  teardown();
+}
+
 // ---------------------------------------------------------------- report
 let failures = 0;
 for (const [name, ok, detail] of results) {
