@@ -1,31 +1,36 @@
 // How long a block takes to break, and what you get for it.
 //
-// Until now breaking was instant and every block was the same: tap, and a
-// mountain came apart as fast as you could point at it. Nothing in the world
-// cost anything, which is most of why digging felt like deleting rather than
-// like mining.
+// Minecraft computes this per tick, not per block, and the arithmetic is
+// worth having exactly rather than approximately:
 //
-// Minecraft's rule is one line and everything else is a table:
+//   speed  = the tool's mining speed, if it is the right tool, else 1
+//   speed /= 5   if your head is under water
+//   speed /= 5   if your feet are off the ground
+//   damage = speed / hardness / (the block will drop ? 30 : 100)
+//   ticks  = ceil(1 / damage)
 //
-//   time = hardness * (right tool ? 1.5 : 5) / speed
+// Three things in that are easy to get wrong, and I had two of them wrong:
 //
-// Hardness is a property of the block; speed is a property of the tool, and
-// is 1 for a bare hand. The 1.5 and the 5 are the interesting part — the
-// penalty for using the wrong thing is not that it is slower, it is that it
-// is *three and a third times* slower, and that ratio is the whole reason a
-// pickaxe is worth carrying.
+// The 30-against-100 is not "right tool against wrong tool". It is *can you
+// harvest this at all* — so a pickaxe swung at dirt is only missing the speed
+// bonus and still takes the short constant, while a shovel swung at stone
+// takes the long one because stone is a block that wants a pickaxe. Dirt by
+// hand is three quarters of a second, not two and a half.
 //
-// Two blocks are special. Bedrock has no hardness at all and never breaks.
-// And ore needs a pickaxe: without one it still breaks, and gives you
-// nothing, which is Minecraft's rule and the one that makes finding a vein
-// and finding a pickaxe two different problems.
+// The in-air and in-water penalties are a fifth each, and they multiply: mine
+// while swimming and you are at a twenty-fifth speed. This is why Minecraft
+// players stand on the floor to dig, and why treading water in front of a
+// wall of stone is a bad plan.
 //
-// Pure: a block id and a held item in, seconds and a drop out. No world, no
-// THREE, no DOM.
+// And it is quantised to ticks, which is why the wiki says an iron pickaxe
+// takes 0.4 s on stone rather than 0.375 — 7.5 ticks is 8 ticks.
+//
+// Pure: a block id, a held item and where you are standing in, seconds and a
+// drop out. No world, no THREE, no DOM.
 
 import {
   BEDROCK, GRASS, DIRT, SAND, SNOW, LEAVES, LOG, STONE, DEEPSLATE, ICE,
-  ORE_IDS, isWater, AIR,
+  COBBLESTONE, PLANKS, BRICKS, ORE_IDS, isWater, AIR,
 } from './terrain.js';
 import { PICKAXE, SHOVEL } from './items.js';
 
@@ -34,21 +39,28 @@ export const HAND = 0;
 export const PICK = 1;
 export const SPADE = 2;
 
+/** Minecraft's tick, in seconds. Every break time is a whole number of these. */
+export const TICK = 0.05;
+
 /**
  * Minecraft's hardnesses, and which tool each block answers to.
  *
- * `needs` is the tool that makes it quick. `drops: false` means the wrong
- * tool breaks it for nothing — only the ores do that, and only for want of a
- * pickaxe.
+ * `needsTool` is Minecraft's `requiresCorrectToolForDrops`: without the right
+ * tool the block still breaks, five times slower, and gives nothing. Stone,
+ * cobblestone, bricks, deepslate and every ore want a pickaxe; a snow block
+ * wants a shovel; dirt, wood and leaves want nothing at all.
  */
 const BLOCKS = {
   [GRASS]: { hardness: 0.6, tool: SPADE },
   [DIRT]: { hardness: 0.5, tool: SPADE },
   [SAND]: { hardness: 0.5, tool: SPADE },
-  [SNOW]: { hardness: 0.2, tool: SPADE },
+  [SNOW]: { hardness: 0.2, tool: SPADE, needsTool: true },
   [LEAVES]: { hardness: 0.2, tool: HAND },
   [LOG]: { hardness: 2.0, tool: HAND },
+  [PLANKS]: { hardness: 2.0, tool: HAND },
   [STONE]: { hardness: 1.5, tool: PICK, needsTool: true },
+  [COBBLESTONE]: { hardness: 2.0, tool: PICK, needsTool: true },
+  [BRICKS]: { hardness: 2.0, tool: PICK, needsTool: true },
   [DEEPSLATE]: { hardness: 3.0, tool: PICK, needsTool: true },
   [ICE]: { hardness: 0.5, tool: PICK },
 };
@@ -64,10 +76,13 @@ for (const id of ORE_IDS) BLOCKS[id] = ORE;
 /** Anything not in the table: the built blocks, which are all stone-ish. */
 const DEFAULT = { hardness: 1.5, tool: PICK, needsTool: false };
 
-/** What each tool is good at, and how much faster it makes it. */
+/**
+ * What each tool is good at, and how fast. Minecraft's numbers for iron,
+ * which is the tier both of these are: wood 2, stone 4, iron 6, diamond 8.
+ */
 const TOOLS = {
   [PICKAXE]: { kind: PICK, speed: 6 },
-  [SHOVEL]: { kind: SPADE, speed: 4 },
+  [SHOVEL]: { kind: SPADE, speed: 6 },
 };
 
 /** The block's entry, or the default for anything built rather than dug. */
@@ -82,31 +97,53 @@ export function toolMatches(id, held) {
 }
 
 /**
- * How long breaking this block takes, in seconds. Infinity for anything that
- * cannot be broken at all, and zero for air.
+ * Will this break give you the block? Minecraft's `hasCorrectToolForDrops`,
+ * and the thing the 30-against-100 actually keys off.
  */
-export function breakTime(id, held) {
+export function canHarvest(id, held) {
+  const rule = blockRule(id);
+  return !rule.needsTool || toolMatches(id, held);
+}
+
+/**
+ * How fast you are digging, before the block gets a say: the tool's speed,
+ * quartered and quartered again by the two things Minecraft docks you for.
+ *
+ * @param {{onGround?: boolean, underwater?: boolean}} [where]
+ *   `underwater` is head-under, not feet-wet — Minecraft's `isEyeInFluid`,
+ *   the same test that decides whether you are drowning.
+ */
+export function destroySpeed(id, held, where = {}) {
+  const { onGround = true, underwater = false } = where;
+  let speed = toolMatches(id, held) ? TOOLS[held].speed : 1;
+  if (underwater) speed /= 5;
+  if (!onGround) speed /= 5;
+  return speed;
+}
+
+/**
+ * How long breaking this block takes, in seconds — always a whole number of
+ * ticks. Infinity for anything that cannot be broken at all, and zero for air.
+ */
+export function breakTime(id, held, where) {
   if (id === AIR || isWater(id)) return 0;
   if (id === BEDROCK) return Infinity;
   const rule = blockRule(id);
-  const tool = TOOLS[held];
-  const right = toolMatches(id, held);
-  const speed = right ? tool.speed : 1;
-  return rule.hardness * (right ? 1.5 : 5) / speed;
+  const damage = destroySpeed(id, held, where)
+    / rule.hardness / (canHarvest(id, held) ? 30 : 100);
+  return Math.ceil(1 / damage) * TICK;
 }
 
 /**
  * What breaking it puts in your hand: the block itself, or nothing.
  *
- * Ore mined without a pickaxe is the only thing here that gives nothing, and
- * it is worth the special case: it means a vein you find before you have
- * anything to dig it with is still there when you come back.
+ * The one thing here that gives nothing is a block broken without the tool it
+ * wanted, and it is worth the special case: it means a vein you find before
+ * you have anything to dig it with is still there when you come back.
  */
 export function dropsFrom(id, held) {
   if (id === AIR || id === BEDROCK || isWater(id)) return 0;
-  const rule = blockRule(id);
-  if (rule.needsTool && !toolMatches(id, held)) return 0;
-  return id;
+  return canHarvest(id, held) ? id : 0;
 }
 
 /**
@@ -116,4 +153,7 @@ export function dropsFrom(id, held) {
  * Minecraft's rule and a surprising one the first time it happens, so it is
  * worth a sentence on screen rather than a block that quietly evaporates.
  */
-export const wrongTool = (id, held) => blockRule(id).needsTool && !toolMatches(id, held);
+export const wrongTool = (id, held) => !canHarvest(id, held);
+
+/** What the block wanted, for that sentence. */
+export const toolNeeded = (id) => (blockRule(id).tool === SPADE ? 'shovel' : 'pickaxe');

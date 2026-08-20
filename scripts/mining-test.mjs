@@ -12,7 +12,8 @@
 // exactly the class of bug the cave tests already exist to catch.
 import { World } from '../src/world.js';
 import {
-  breakTime, dropsFrom, toolMatches, blockRule, HAND, PICK, SPADE,
+  breakTime, dropsFrom, toolMatches, blockRule, canHarvest, destroySpeed,
+  toolNeeded, wrongTool, HAND, PICK, SPADE, TICK,
 } from '../src/mining.js';
 import { BUCKET, PICKAXE, SHOVEL } from '../src/items.js';
 import {
@@ -31,32 +32,69 @@ const near = (a, b, eps = 1e-9) => Math.abs(a - b) < eps;
 
 // ------------------------------------------------------------------- times
 {
-  // Minecraft's formula, and the numbers everyone who has played it knows:
-  // stone by hand is seven and a half seconds, and with a pickaxe it is not.
-  assert('stone by hand is the seven and a half seconds it is in Minecraft',
-    near(breakTime(STONE, 0), 7.5), breakTime(STONE, 0));
-  assert('...and a pickaxe makes it a quarter of a second',
-    near(breakTime(STONE, PICKAXE), 0.375), breakTime(STONE, PICKAXE));
-  assert('...which is twenty times faster',
-    near(breakTime(STONE, 0) / breakTime(STONE, PICKAXE), 20));
+  // The numbers the wiki lists, which is the point of doing the arithmetic in
+  // ticks: an iron pickaxe on stone is 0.4 s and not 0.375, because seven and
+  // a half ticks is eight ticks.
+  const cases = [
+    ['stone by hand', STONE, 0, {}, 7.5],
+    ['stone, iron pickaxe', STONE, PICKAXE, {}, 0.4],
+    ['stone, wrong tool', STONE, SHOVEL, {}, 7.5],
+    ['cobblestone, iron pickaxe', 4, PICKAXE, {}, 0.5],
+    ['deepslate, iron pickaxe', DEEPSLATE, PICKAXE, {}, 0.75],
+    ['dirt by hand', DIRT, 0, {}, 0.75],
+    ['dirt, iron shovel', DIRT, SHOVEL, {}, 0.15],
+    ['grass by hand', GRASS, 0, {}, 0.9],
+    ['grass, iron shovel', GRASS, SHOVEL, {}, 0.15],
+    ['sand, iron shovel', SAND, SHOVEL, {}, 0.15],
+    ['leaves by hand', LEAVES, 0, {}, 0.3],
+    ['oak log by hand', LOG, 0, {}, 3.0],
+    ['snow block by hand', 9, 0, {}, 1.0],
+    ['snow block, iron shovel', 9, SHOVEL, {}, 0.05],
+    ['ice, iron pickaxe', ICE, PICKAXE, {}, 0.15],
+    // ...and the two Minecraft docks you for, which multiply.
+    ['stone, iron pickaxe, in the air', STONE, PICKAXE, { onGround: false }, 1.9],
+    ['stone, iron pickaxe, head under', STONE, PICKAXE, { underwater: true }, 1.9],
+    ['stone, iron pickaxe, swimming', STONE, PICKAXE,
+      { onGround: false, underwater: true }, 9.4],
+    ['dirt by hand, in the air', DIRT, 0, { onGround: false }, 3.75],
+  ];
+  for (const [name, id, held, where, want] of cases) {
+    assert(name, near(breakTime(id, held, where), want), breakTime(id, held, where));
+  }
 
-  assert('deepslate is twice the stone', near(breakTime(DEEPSLATE, PICKAXE), 0.75),
-    breakTime(DEEPSLATE, PICKAXE));
-  assert('dirt is quick even with your hands', breakTime(DIRT, 0) < 3,
-    breakTime(DIRT, 0));
-  assert('...and quicker with a shovel',
-    breakTime(DIRT, SHOVEL) < breakTime(DIRT, 0) / 3, breakTime(DIRT, SHOVEL));
-  assert('leaves come away in no time at all', breakTime(LEAVES, 0) < 1.1,
-    breakTime(LEAVES, 0));
+  // The penalty is a fifth, and it is a fifth of the *speed*, so it lands as
+  // five times the time on anything whose tick count was not already rounded.
+  assert('off the ground is five times the work',
+    near(breakTime(DIRT, 0, { onGround: false }), breakTime(DIRT, 0) * 5));
+  assert('...and so is being under the water',
+    near(breakTime(DIRT, 0, { underwater: true }), breakTime(DIRT, 0) * 5));
+  assert('...and together they are twenty-five times',
+    near(breakTime(DIRT, 0, { onGround: false, underwater: true }),
+      breakTime(DIRT, 0) * 25));
+  assert('standing on the floor in the air is the default',
+    near(breakTime(STONE, PICKAXE), breakTime(STONE, PICKAXE, { onGround: true })));
 
-  // The wrong tool is not the same as no tool in Minecraft — it is exactly
-  // the same as no tool, which is the point of the 1.5-against-5.
-  assert('a shovel is no help against stone',
+  // The 30-against-100 is *can you harvest it*, not *is it the right tool* —
+  // which is the whole difference between a pickaxe being no use on dirt and
+  // a pickaxe being a penalty on dirt. It is neither: it is merely no help.
+  assert('a pickaxe is no help against dirt, and no hindrance either',
+    near(breakTime(DIRT, PICKAXE), breakTime(DIRT, 0)), breakTime(DIRT, PICKAXE));
+  assert('a shovel against stone is the long constant',
     near(breakTime(STONE, SHOVEL), breakTime(STONE, 0)));
-  assert('nor a pickaxe against dirt',
-    near(breakTime(DIRT, PICKAXE), breakTime(DIRT, 0)));
   assert('and a bucket is not a tool at all',
     near(breakTime(STONE, BUCKET), breakTime(STONE, 0)));
+  assert('the wrong tool is ten times the right one on stone, not three',
+    near(breakTime(STONE, SHOVEL) / breakTime(STONE, PICKAXE), 18.75),
+    breakTime(STONE, SHOVEL) / breakTime(STONE, PICKAXE));
+
+  assert('every break time is a whole number of ticks',
+    [STONE, DIRT, GRASS, LEAVES, LOG, DEEPSLATE, ...ORE_IDS].every((id) =>
+      [0, PICKAXE, SHOVEL].every((h) => {
+        const t = breakTime(id, h);
+        return Math.abs(t / TICK - Math.round(t / TICK)) < 1e-9;
+      })));
+  assert('nothing takes less than one tick',
+    breakTime(9, SHOVEL) === TICK, breakTime(9, SHOVEL));
 
   assert('bedrock never breaks', breakTime(BEDROCK, PICKAXE) === Infinity);
   assert('air takes no time', breakTime(AIR, 0) === 0);
@@ -91,13 +129,34 @@ const near = (a, b, eps = 1e-9) => Math.abs(a - b) < eps;
   assert('dirt does not care what you use', dropsFrom(DIRT, 0) === DIRT
     && dropsFrom(DIRT, SHOVEL) === DIRT && dropsFrom(DIRT, PICKAXE) === DIRT);
 
+  assert('a snow block wants the shovel, and gives nothing without it',
+    dropsFrom(9, 0) === 0 && dropsFrom(9, SHOVEL) === 9 && wrongTool(9, PICKAXE));
+  assert('...and the message names the tool it wanted',
+    toolNeeded(9) === 'shovel' && toolNeeded(STONE) === 'pickaxe');
+  assert('harvesting is what the drop keys off',
+    ORE_IDS.every((id) => canHarvest(id, PICKAXE) && !canHarvest(id, 0))
+    && canHarvest(DIRT, 0) && canHarvest(DIRT, PICKAXE));
+  assert('the speed penalty is on the speed, not the block',
+    destroySpeed(STONE, PICKAXE) === 6
+    && destroySpeed(STONE, PICKAXE, { onGround: false }) === 1.2
+    && destroySpeed(STONE, 0) === 1);
+
   assert('a pickaxe is what stone answers to',
     toolMatches(STONE, PICKAXE) && !toolMatches(STONE, SHOVEL));
   assert('a shovel is what dirt answers to',
     toolMatches(DIRT, SHOVEL) && !toolMatches(DIRT, PICKAXE));
   assert('logs answer to nothing in particular', blockRule(LOG).tool === HAND);
-  assert('and anything built is treated as stone-ish',
-    blockRule(4).tool === PICK && !blockRule(4).needsTool);
+  assert('cobblestone and bricks are stone, and want the pickaxe stone wants',
+    blockRule(4).tool === PICK && blockRule(4).needsTool
+    && blockRule(7).tool === PICK && blockRule(7).needsTool);
+  assert('planks are wood and want nothing', blockRule(5).tool === HAND
+    && !blockRule(5).needsTool && near(breakTime(5, 0), breakTime(LOG, 0)));
+  // Anything with no entry at all — an id from a future block — is stone-ish
+  // and harvestable, so a block nobody has written a rule for is diggable
+  // rather than a thing you can destroy and never collect.
+  assert('and an id nobody has a rule for falls back to something usable',
+    blockRule(199).tool === PICK && !blockRule(199).needsTool
+    && dropsFrom(199, 0) === 199);
 
   // The hotbar has to be able to do the job it is handed.
   assert('you start with the pickaxe the ore needs',

@@ -22,7 +22,7 @@ import { WaterView, HELD_LAYER, WATER_QUALITY_NAMES } from './water-render.js';
 import { Particles } from './particles.js';
 import { Weather, SNOWING } from './weather.js';
 import { isItem, useBucket, fluidAim } from './items.js';
-import { breakTime, dropsFrom, wrongTool } from './mining.js';
+import { breakTime, dropsFrom, wrongTool, toolNeeded } from './mining.js';
 import { installNativeBridge } from './native.js';
 import { Hud } from './hud.js';
 import { Inventory } from './inventory.js';
@@ -501,7 +501,7 @@ document.addEventListener('visibilitychange', () => {
  * `breakTime`, and the only state it needs is *which* block — point somewhere
  * else and the progress is gone, because you have stopped digging that one.
  */
-let mining = null; // { x, y, z, id, progress, need }
+let mining = null; // { x, y, z, id, fraction, told }
 let swingClock = 0;
 
 /** Stop digging, and take the crack off whatever was being dug. */
@@ -513,6 +513,14 @@ function stopMining() {
 /**
  * Hold the button down and this runs every frame. It is the whole of digging:
  * the same block for long enough and it comes out.
+ *
+ * What is kept is the *fraction*, not the seconds, because how long the block
+ * takes is not a constant for as long as you are digging it. Minecraft asks
+ * again every tick, and docks you four fifths of your speed for having your
+ * feet off the ground and four fifths again for having your head under water
+ * — so jumping in the middle of a dig has to slow the dig down while you are
+ * in the air, and adding up seconds against a number fixed when you started
+ * could not do that.
  */
 function mine(dt) {
   if (!target) return stopMining();
@@ -521,19 +529,24 @@ function mine(dt) {
 
   if (!mining || mining.x !== target.x || mining.y !== target.y || mining.z !== target.z
       || mining.id !== id) {
-    const held = inventory.selectedStack()?.id ?? 0;
-    mining = { x: target.x, y: target.y, z: target.z, id, progress: 0, need: breakTime(id, held) };
+    mining = { x: target.x, y: target.y, z: target.z, id, fraction: 0, told: false };
     swingClock = 0;
   }
 
-  if (!Number.isFinite(mining.need)) {
+  const held = inventory.selectedStack()?.id ?? 0;
+  const need = breakTime(id, held, {
+    onGround: player.onGround,
+    underwater: player.submerged,
+  });
+
+  if (!Number.isFinite(need)) {
     // Bedrock. Say so once rather than every frame the button is held.
-    if (mining.progress === 0) hud.showStatus('Bedrock cannot be broken');
-    mining.progress = 1;
+    if (!mining.told) hud.showStatus('Bedrock cannot be broken');
+    mining.told = true;
     return;
   }
 
-  mining.progress += dt;
+  mining.fraction += need > 0 ? dt / need : 1;
   // The arm keeps swinging while you dig, at Minecraft's rate.
   swingClock -= dt;
   if (swingClock <= 0) {
@@ -541,15 +554,14 @@ function mine(dt) {
     swingHand();
   }
 
-  const fraction = mining.need > 0 ? mining.progress / mining.need : 1;
-  if (fraction >= 1) {
+  if (mining.fraction >= 1) {
     breakBlock();
     stopMining();
     return;
   }
   crackMesh.visible = true;
   crackMesh.position.set(mining.x + 0.5, mining.y + 0.5, mining.z + 0.5);
-  crackMesh.material.map = crackTextures[crackStage(fraction)];
+  crackMesh.material.map = crackTextures[crackStage(mining.fraction)];
 }
 
 function breakBlock() {
@@ -579,7 +591,7 @@ function breakBlock() {
   // one thing that makes carrying the pickaxe matter.
   const drop = dropsFrom(id, held);
   if (!drop) {
-    if (wrongTool(id, held)) hud.showStatus('You need a pickaxe for that');
+    if (wrongTool(id, held)) hud.showStatus(`You need a ${toolNeeded(id)} for that`);
   } else {
     const left = inventory.add(drop, 1);
     if (left > 0) hud.showStatus('Inventory full');
