@@ -203,6 +203,15 @@ export const GOLD_INGOT_PALETTE = { o: '#8a6410', d: '#c39420', m: '#f0cc48', h:
 // than the mid tone by more than the others, which is as close to emissive
 // as a vertex colour gets.
 export const REDSTONE_PALETTE = { o: '#5a0808', d: '#9c1010', m: '#e02020', h: '#ff6a6a' };
+// Gunpowder is a dust too, and takes coal's blob shape with a graphite
+// palette — the third colour of the same trick redstone plays. A grey pile
+// of it reads as what it is at hotbar size, which is the only size a lump
+// is ever drawn at besides a hand.
+export const GUNPOWDER_PALETTE = { o: '#2e2a24', d: '#4e463c', m: '#7a7062', h: '#b8ac9a' };
+// Rotten flesh is the one material with a shape of its own, because it is
+// the one material that is not a mineral: a slab of meat, ragged on every
+// edge, red through the middle and brown at the rind.
+export const ROTTEN_FLESH_PALETTE = { o: '#4a1208', d: '#7a2a10', m: '#a84a20', h: '#d08050' };
 
 export const COAL_PX = [
   '................',
@@ -280,6 +289,25 @@ export const DIAMOND_PX = [
   '................',
 ];
 
+export const ROTTEN_FLESH_PX = [
+  '................',
+  '................',
+  '................',
+  '...ooo..oo......',
+  '..ohhmdodddo....',
+  '.ohmmmmmdddo....',
+  '.odmmmmmmmmdo...',
+  '..odmmmmmmmmdo..',
+  '..odmmmmmmmmdo..',
+  '..odmmmmmmmmdo..',
+  '...odmmmmmmddo..',
+  '...odmmmmdddo...',
+  '....odddooo.....',
+  '.....oddo.......',
+  '................',
+  '................',
+];
+
 /**
  * Every 16x16 map in this file, by name, so a test can walk the lot and check
  * that each one really is sixteen rows of sixteen characters. A map one
@@ -291,4 +319,5 @@ export const ALL_SPRITES = {
   STICK_PX, PICKAXE_PX, SHOVEL_PX, AXE_PX, SWORD_PX,
   BUCKET_PX, WATER_BUCKET_PX,
   COAL_PX, RAW_IRON_PX, IRON_INGOT_PX, DIAMOND_PX,
+  ROTTEN_FLESH_PX,
 };

@@ -17,6 +17,8 @@ import { WorldRenderer, buildSingleBlockGeometry } from './blocks.js';
 import { FirstPersonHand, warmItemModels } from './held-item.js';
 import { Drops, throwAlong } from './drops.js';
 import { DropsRenderer } from './drops-render.js';
+import { Mobs, CREEPER, MOB_FACTS, DESPAWN_RANGE, pickMob, playerAttack } from './mobs.js';
+import { MobsRenderer } from './mobs-render.js';
 import { Player } from './player.js';
 import { Input, LOOK_FREE, LOOK_TOUCH, playSource } from './input.js';
 import { WaterFlow, Freeze, FLOW_INTERVAL_MS, FREEZE_INTERVAL_MS } from './water.js';
@@ -33,14 +35,15 @@ import { InventoryUI } from './inventory-ui.js';
 import { ViewController } from './view.js';
 import { createPlayerModel } from './player-model.js';
 import { raycastVoxel, blockIntersectsPlayer } from './raycast.js';
-import { createSky, FOG_COLOR } from './sky.js';
+import { createSky, sunLight, FOG_COLOR } from './sky.js';
 import { STARTER_BLOCKS, getAtlasTexture, getCrackStages, crackStage, blockTint } from './textures.js';
 import { GameMode } from './gamemode.js';
 import { XpBar, xpForBlock } from './xp.js';
 import { FurnaceStore } from './furnace.js';
 import { FurnaceUI } from './furnace-ui.js';
-import { FuseTracker, blastBlocks } from './tnt.js';
+import { FuseTracker, blastBlocks, BLAST_RADIUS } from './tnt.js';
 import { spendDurability, isTool } from './durability.js';
+import { isSword } from './items.js';
 import * as sound from './sound.js';
 import { settings, setSetting, LIMITS } from './settings.js';
 import * as savegame from './savegame.js';
@@ -386,6 +389,14 @@ const particles = new Particles(scene);
  */
 const drops = new Drops();
 
+/**
+ * The mobs, on the same deal as the drops: `mobs` is the simulation (pure,
+ * testable, in src/mobs.js) and `mobsRenderer` believes it. Mobs are not
+ * saved — they are a consequence of the world being dark, not a fact about
+ * it, and each session's night is its own.
+ */
+const mobs = new Mobs();
+
 const player = new Player(world);
 player.autoJump = settings.autoJump;
 if (restored?.player) {
@@ -464,6 +475,13 @@ crackMesh.visible = false;
 scene.add(crackMesh);
 
 let target = null; // { x, y, z, nx, ny, nz } from the last frame
+/**
+ * The mob the crosshair found, if any — nearer than the block, because a
+ * zombie behind glass is a block interaction and not a fight. Kept from the
+ * last frame like `target` is; one frame of staleness at sixty a second has
+ * never been the thing anyone noticed about a crosshair.
+ */
+let mobTarget = null;
 /** Where the camera was looking from last frame — items aim from here too. */
 let lastEye = { x: 0, y: 0, z: 0 };
 
@@ -541,6 +559,13 @@ function swingHand() {
  * the simulation.
  */
 const dropsRenderer = new DropsRenderer(scene, blockGeometryFor, heldMaterial);
+
+/**
+ * ...and the mobs', which needs nothing but the scene: each mob is a small
+ * group of textured boxes built on demand (mob-models.js) and torn down
+ * when the simulation forgets it.
+ */
+const mobsRenderer = new MobsRenderer(scene);
 
 /**
  * Pick a drop up. Returns how many items actually went in, which is what
@@ -705,6 +730,102 @@ function mine(dt) {
   crackMesh.visible = true;
   crackMesh.position.set(mining.x + 0.5, mining.y + 0.5, mining.z + 0.5);
   crackMesh.material.map = crackTextures[crackStage(mining.fraction)];
+}
+
+/**
+ * One thing a mob did this tick. The sim reports; this makes it loud, made
+ * of particles, or a crater.
+ */
+function handleMobEvent(e) {
+  switch (e.type) {
+    case 'attack': {
+      // A zombie landed one. The hit itself is `player.hurt` (which the
+      // vitals loop already makes the right noise about); the shove is
+      // ours, and it is what makes a cornered morning *feel* cornered.
+      player.hurt(e.damage, e.cause);
+      if (player.flying || player.dead) break;
+      player.vel.x += e.kx * 6.5;
+      player.vel.z += e.kz * 6.5;
+      if (player.onGround) {
+        player.vel.y = Math.max(player.vel.y, 3.5);
+        player.onGround = false;
+      }
+      break;
+    }
+    case 'explode':
+      // A creeper finished its fuse. Same crater, same maths, same radius
+      // as TNT — only the epitaph differs, and it is the mob's own.
+      explode(Math.floor(e.x), Math.floor(e.y), Math.floor(e.z), 'blown up by a creeper');
+      break;
+    case 'die': {
+      const facts = MOB_FACTS[e.kind];
+      // A creeper's own detonation is the one death that leaves nothing —
+      // it spent itself. Everything else drops what it was carrying, on
+      // the floor with everything else, and only a sword that connected
+      // pays experience: fire and gravity do the work for free.
+      if (e.by === 'self') break;
+      const spot = facts.drop;
+      const count = spot.min + Math.floor(Math.random() * (spot.max - spot.min + 1));
+      if (count > 0) {
+        drops.spawnFromBlock(Math.floor(e.x), Math.floor(e.y), Math.floor(e.z), spot.id, count);
+      }
+      if (e.by === 'player' && xp.add(facts.xp) > 0) hud.showStatus(`Level ${xp.level}`);
+      break;
+    }
+    case 'burn':
+      // A zombie, alight. Smoke more than flame — the model glows already.
+      particles.dustPuff(e.x, e.y, e.z, 2);
+      if (Math.random() < 0.4) particles.blockBreak(e.x, e.y, e.z, [0.95, 0.55, 0.15], 1);
+      break;
+    case 'sound':
+      if (e.name === 'zombie') sound.playZombie(e.volume);
+      else if (e.name === 'zombieAttack') sound.playZombieHurt(e.volume, 0.75);
+      else if (e.name === 'hiss') sound.playCreeperHiss(e.volume);
+      break;
+    default:
+      break;
+  }
+}
+
+/**
+ * Swing at the mob under the crosshair.
+ *
+ * This is where the swords finally get to be swords: four tiers of blade
+ * that have existed since the crafting table, with nothing to swing at but
+ * leaves. The numbers live in mobs.js (`playerAttack`); this spends the
+ * durability, swings the arm, and makes the noise.
+ *
+ * A hit inside the target's hurt window is a whiff — no sound, no wear, no
+ * arm — so holding the button attacks at the half-second cadence the window
+ * allows, which is Minecraft's combat rhythm arrived at from first
+ * principles rather than by a timer.
+ */
+function attackMob() {
+  if (!mobTarget || mobTarget.mob.dead) return;
+  const held = inventory.selectedStack()?.id ?? 0;
+  const { result, mob } = playerAttack(
+    mobTarget.mob, held, player.lookDirection(), player.sprinting);
+  if (result === 'immune') return;
+  swingHand();
+  const vol = Math.max(0.15, 1 - mobTarget.dist / REACH);
+  sound.playZombieHurt(vol, mob.kind === CREEPER ? 1.35 : 1);
+  // Minecraft's wear: a sword loses one use per entity hit, other tools
+  // two. A tool that runs out mid-fight disappears out of your hand, same
+  // as mid-dig.
+  if (isTool(held)) {
+    const wears = isSword(held) ? 1 : 2;
+    for (let i = 0; i < wears; i++) {
+      const stack = inventory.selectedStack();
+      if (!stack || !isTool(stack.id)) break;
+      const { stack: next, broke } = spendDurability(stack);
+      inventory.set(inventory.selected, next);
+      if (broke) {
+        hud.showStatus('Your tool broke');
+        break;
+      }
+    }
+    invUI.render();
+  }
 }
 
 function breakBlock() {
@@ -927,10 +1048,13 @@ function pickBlock() {
  * that can be moved is gone, and any other charge caught in it lights rather
  * than vanishing — which is what makes a stack of them a chain.
  *
+ * Creepers use the same path with the same radius; only the words on the
+ * death screen differ.
+ *
  * Nothing drops. A three-block sphere is a hundred-odd blocks, and posting
  * all of it into a 36-slot inventory is not a reward, it is a mess.
  */
-function explode(x, y, z) {
+function explode(x, y, z, cause = 'blown up') {
   world.setBlock(x, y, z, AIR);
   waterFlow.touch(x, y, z);
   const hit = blastBlocks(world, x, y, z);
@@ -957,13 +1081,19 @@ function explode(x, y, z) {
   }
   particles.blockBreak(x + 0.5, y + 0.5, z + 0.5, [0.95, 0.75, 0.35], 20);
   particles.dustPuff(x + 0.5, y + 0.5, z + 0.5, 10);
-  sound.playThunder();
+  // The two loudest things in the game, and they are not each other: a
+  // charge is thunder, a creeper is a degree shorter and brighter.
+  if (cause.includes('creeper')) sound.playExplosion(1);
+  else sound.playThunder();
   // Standing next to your own charge is a mistake with a cost.
   const dx = player.pos.x - (x + 0.5);
   const dy = player.pos.y - (y + 0.5);
   const dz = player.pos.z - (z + 0.5);
   const dist = Math.hypot(dx, dy, dz);
-  if (dist < 5) player.hurt(Math.round((1 - dist / 5) * 14), 'blown up');
+  if (dist < 5) player.hurt(Math.round((1 - dist / 5) * 14), cause);
+  // And so is standing next to a mob with a grievance. The blast's damage
+  // to mobs is the same arithmetic as its damage to you.
+  mobs.explosionDamage(x + 0.5, y + 0.5, z + 0.5, BLAST_RADIUS);
   saveNeeded = true;
 }
 
@@ -1087,9 +1217,13 @@ input.onAction = (name, arg) => {
       if (!view.isFirstPerson) hud.showStatus(`Camera distance ${view.zoom(arg).toFixed(1)}`);
       break;
     case 'break':
-      // A tap starts digging; the frame loop finishes it. Nothing comes out
-      // of the world in one frame any more except what takes no time at all.
-      if (!screenOpen()) mine(0);
+      // A tap starts digging, or swings at a mob; the frame loop finishes
+      // either. Nothing comes out of the world in one frame any more except
+      // what takes no time at all.
+      if (!screenOpen()) {
+        if (mobTarget && !mobTarget.mob.dead) attackMob();
+        else mine(0);
+      }
       break;
     case 'place':
       if (!screenOpen()) placeBlock();
@@ -1283,11 +1417,32 @@ function frame(now) {
   // you close it a minute later.
   hud.updatePickups();
 
-  // ---- digging, and the place button's auto-repeat ----
+  // ---- mobs ----
+  // On the game clock like everything else in the world: a paused night is
+  // a night that holds still, zombie mid-shamble and creeper mid-hiss.
+  // The sun decides whether the surface spawns and who burns; the rain
+  // decides whether the burning keeps going; creative decides whether any
+  // of it is interested in you at all.
+  if (playing) {
+    const events = mobs.update(animDt, world, player.pos, {
+      creative: gameMode.isCreative,
+      sun: sunLight(sky.timeOfDay),
+      rain: weather.level,
+    });
+    for (const e of events) handleMobEvent(e);
+    mobsRenderer.update(mobs);
+  }
+
+  // ---- digging, swinging, and the place button's auto-repeat ----
   // Breaking is no longer an event that repeats; it is a stopwatch that runs
   // while the button is down and resets the moment you look somewhere else.
-  if (playing && input.pressed.break && !screenOpen()) mine(frameDt);
-  else if (mining) stopMining();
+  // A mob under the crosshair preempts the block behind it, and attacking
+  // *does* repeat on hold — at the cadence the hurt window allows, which is
+  // the Minecraft cadence without a timer anywhere in sight.
+  if (playing && input.pressed.break && !screenOpen()) {
+    if (mobTarget && !mobTarget.mob.dead) attackMob();
+    else mine(frameDt);
+  } else if (mining) stopMining();
   if (playing) {
     placeRepeat = input.pressed.place && !screenOpen() ? placeRepeat + frameDt : 0;
     if (placeRepeat >= USE_REPEAT) {
@@ -1340,6 +1495,9 @@ function frame(now) {
   // forty chunks back is falling through a world that no longer has any
   // blocks in it to land on.
   drops.evictOutside(player.pos.x, player.pos.z, DATA_RADIUS * CHUNK_SIZE);
+  // Mobs likewise — beyond 128 they are despawned outright (that one *is*
+  // Minecraft's rule), and anything between is the sim's business.
+  mobs.evictOutside(player.pos.x, player.pos.z, DESPAWN_RANGE);
   lastChunk = { cx: pcx, cz: pcz };
   world.tick();
 
@@ -1430,7 +1588,12 @@ function frame(now) {
   if (playing) {
     const dir = player.lookDirection();
     target = raycastVoxel(world, eye, dir, REACH);
-    highlight.visible = Boolean(target);
+    // A mob in front of the block takes the crosshair: the swords were made
+    // for this and have been waiting. Nearer than the block, alive, and on
+    // the same ray — a zombie behind glass stays a block interaction.
+    mobTarget = pickMob(mobs.list, eye, dir, REACH);
+    if (mobTarget && target && target.dist < mobTarget.dist) mobTarget = null;
+    highlight.visible = Boolean(target) && !mobTarget;
     if (target) highlight.position.set(target.x + 0.5, target.y + 0.5, target.z + 0.5);
   } else if (!target) {
     highlight.visible = false;
@@ -1495,6 +1658,7 @@ function frame(now) {
     gameMode: gameMode.name,
     flowing: waterFlow.pending.size,
     ice: iceSheet.frozen.size,
+    mobs: mobs.list.length,
     weather: weather.level > 0
       ? `${weather.fallAt(world, px, world.heightAt(px, pz) + 1, pz) === SNOWING ? 'snow' : 'rain'} ${(weather.level * 100).toFixed(0)}%`
       : 'clear',
@@ -1545,6 +1709,8 @@ hud.bindMenu({
   onReset: () => {
     savingDisabled = true;
     particles.clear();
+    mobs.list.length = 0;
+    mobsRenderer.clear();
     savegame.clear();
     location.reload();
   },
