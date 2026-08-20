@@ -32,13 +32,23 @@ export const isItem = (id) => id >= ITEM_BASE;
 
 export const BUCKET = 200;
 export const WATER_BUCKET = 201;
+/**
+ * Tools. There is no crafting yet, so these are given rather than made — but
+ * what they *do* is the real rule (see mining.js): the right tool is not
+ * merely faster, it is the difference between a vein you can take and a vein
+ * you can only look at.
+ */
+export const PICKAXE = 202;
+export const SHOVEL = 203;
 
 /** Item ids, in the order their textures are packed into the atlas. */
-export const ITEM_IDS = [BUCKET, WATER_BUCKET];
+export const ITEM_IDS = [BUCKET, WATER_BUCKET, PICKAXE, SHOVEL];
 
 export const ITEM_NAMES = {
   [BUCKET]: 'Bucket',
   [WATER_BUCKET]: 'Water Bucket',
+  [PICKAXE]: 'Iron Pickaxe',
+  [SHOVEL]: 'Iron Shovel',
 };
 
 /**

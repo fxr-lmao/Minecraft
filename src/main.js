@@ -22,6 +22,7 @@ import { WaterView, HELD_LAYER, WATER_QUALITY_NAMES } from './water-render.js';
 import { Particles } from './particles.js';
 import { Weather, SNOWING } from './weather.js';
 import { isItem, useBucket, fluidAim } from './items.js';
+import { breakTime, dropsFrom, wrongTool } from './mining.js';
 import { installNativeBridge } from './native.js';
 import { Hud } from './hud.js';
 import { Inventory } from './inventory.js';
@@ -30,7 +31,7 @@ import { ViewController } from './view.js';
 import { createPlayerModel } from './player-model.js';
 import { raycastVoxel, blockIntersectsPlayer } from './raycast.js';
 import { createSky, FOG_COLOR } from './sky.js';
-import { STARTER_BLOCKS, getAtlasTexture } from './textures.js';
+import { STARTER_BLOCKS, getAtlasTexture, getCrackStages, crackStage } from './textures.js';
 import { settings, setSetting, LIMITS } from './settings.js';
 import * as savegame from './savegame.js';
 import {
@@ -43,7 +44,7 @@ import { clamp, lerp } from './utils.js';
 
 const MOUSE_SENSITIVITY = 0.0024; // multiplied by the player's setting
 const TOUCH_SENSITIVITY = 0.006;
-const USE_REPEAT = 0.22; // seconds between repeats while a use button is held
+const USE_REPEAT = 0.22; // seconds between repeats while the place button is held
 const SAVE_DEBOUNCE = 2000; // ms after an edit before writing to localStorage
 const SAVE_INTERVAL = 20000; // ms between position-only saves
 const PAUSED_FRAME_MS = 100; // redraw rate while paused (the image is frozen)
@@ -346,6 +347,34 @@ const highlight = new THREE.LineSegments(
 highlight.visible = false;
 scene.add(highlight);
 
+/**
+ * The crack laid over the block being dug.
+ *
+ * A cube a whisker larger than the block, with the crack stages as its map
+ * and nothing else: it is drawn after the world, writes no depth, and is
+ * pushed a hair towards the camera so it cannot z-fight the face it is
+ * describing. One mesh, moved to wherever the digging is.
+ */
+const crackTextures = getCrackStages().map((url) => {
+  const tex = new THREE.TextureLoader().load(url);
+  tex.magFilter = THREE.NearestFilter;
+  tex.minFilter = THREE.NearestFilter;
+  tex.colorSpace = THREE.SRGBColorSpace;
+  return tex;
+});
+const crackMesh = new THREE.Mesh(
+  new THREE.BoxGeometry(1.004, 1.004, 1.004),
+  new THREE.MeshBasicMaterial({
+    map: crackTextures[0],
+    transparent: true,
+    depthWrite: false,
+    polygonOffset: true,
+    polygonOffsetFactor: -2,
+  })
+);
+crackMesh.visible = false;
+scene.add(crackMesh);
+
 let target = null; // { x, y, z, nx, ny, nz } from the last frame
 /** Where the camera was looking from last frame — items aim from here too. */
 let lastEye = { x: 0, y: 0, z: 0 };
@@ -464,6 +493,65 @@ document.addEventListener('visibilitychange', () => {
 });
 
 // ---------------- interaction ----------------
+/**
+ * What is being dug, and how far in.
+ *
+ * Breaking used to be instant, which made a mountain something you deleted
+ * rather than something you mined. Now it is a stopwatch against
+ * `breakTime`, and the only state it needs is *which* block — point somewhere
+ * else and the progress is gone, because you have stopped digging that one.
+ */
+let mining = null; // { x, y, z, id, progress, need }
+let swingClock = 0;
+
+/** Stop digging, and take the crack off whatever was being dug. */
+function stopMining() {
+  mining = null;
+  crackMesh.visible = false;
+}
+
+/**
+ * Hold the button down and this runs every frame. It is the whole of digging:
+ * the same block for long enough and it comes out.
+ */
+function mine(dt) {
+  if (!target) return stopMining();
+  const id = world.get(target.x, target.y, target.z);
+  if (id === AIR || isWater(id)) return stopMining();
+
+  if (!mining || mining.x !== target.x || mining.y !== target.y || mining.z !== target.z
+      || mining.id !== id) {
+    const held = inventory.selectedStack()?.id ?? 0;
+    mining = { x: target.x, y: target.y, z: target.z, id, progress: 0, need: breakTime(id, held) };
+    swingClock = 0;
+  }
+
+  if (!Number.isFinite(mining.need)) {
+    // Bedrock. Say so once rather than every frame the button is held.
+    if (mining.progress === 0) hud.showStatus('Bedrock cannot be broken');
+    mining.progress = 1;
+    return;
+  }
+
+  mining.progress += dt;
+  // The arm keeps swinging while you dig, at Minecraft's rate.
+  swingClock -= dt;
+  if (swingClock <= 0) {
+    swingClock = 0.32;
+    swingHand();
+  }
+
+  const fraction = mining.need > 0 ? mining.progress / mining.need : 1;
+  if (fraction >= 1) {
+    breakBlock();
+    stopMining();
+    return;
+  }
+  crackMesh.visible = true;
+  crackMesh.position.set(mining.x + 0.5, mining.y + 0.5, mining.z + 0.5);
+  crackMesh.material.map = crackTextures[crackStage(fraction)];
+}
+
 function breakBlock() {
   if (!target) return;
   const id = world.get(target.x, target.y, target.z);
@@ -483,10 +571,19 @@ function breakBlock() {
     swingHand();
     return;
   }
+  const held = inventory.selectedStack()?.id ?? 0;
   world.setBlock(target.x, target.y, target.z, AIR);
   waterFlow.touch(target.x, target.y, target.z);
-  const left = inventory.add(id, 1);
-  if (left > 0) hud.showStatus('Inventory full');
+  // What it leaves behind is the mining rules' business, not this function's:
+  // ore broken without a pickaxe is gone rather than collected, which is the
+  // one thing that makes carrying the pickaxe matter.
+  const drop = dropsFrom(id, held);
+  if (!drop) {
+    if (wrongTool(id, held)) hud.showStatus('You need a pickaxe for that');
+  } else {
+    const left = inventory.add(drop, 1);
+    if (left > 0) hud.showStatus('Inventory full');
+  }
   invUI.render();
   swingHand();
   saveNeeded = true;
@@ -663,7 +760,9 @@ input.onAction = (name, arg) => {
       if (!view.isFirstPerson) hud.showStatus(`Camera distance ${view.zoom(arg).toFixed(1)}`);
       break;
     case 'break':
-      if (!invUI.isOpen) breakBlock();
+      // A tap starts digging; the frame loop finishes it. Nothing comes out
+      // of the world in one frame any more except what takes no time at all.
+      if (!invUI.isOpen) mine(0);
       break;
     case 'place':
       if (!invUI.isOpen) placeBlock();
@@ -704,7 +803,6 @@ let eyeOffset = 0; // smooth sneak crouch
  * easing it reads as ducking under the surface.
  */
 let eyeHeight = PLAYER_EYE;
-let breakRepeat = 0;
 let placeRepeat = 0;
 let lastChunk = { cx: NaN, cz: NaN };
 
@@ -797,13 +895,12 @@ function frame(now) {
   }
   particles.update(animDt, world);
 
-  // ---- held use button auto-repeat ----
+  // ---- digging, and the place button's auto-repeat ----
+  // Breaking is no longer an event that repeats; it is a stopwatch that runs
+  // while the button is down and resets the moment you look somewhere else.
+  if (playing && input.pressed.break && !invUI.isOpen) mine(frameDt);
+  else if (mining) stopMining();
   if (playing) {
-    breakRepeat = input.pressed.break ? breakRepeat + frameDt : 0;
-    if (breakRepeat >= USE_REPEAT) {
-      breakRepeat = 0;
-      breakBlock();
-    }
     placeRepeat = input.pressed.place ? placeRepeat + frameDt : 0;
     if (placeRepeat >= USE_REPEAT) {
       placeRepeat = 0;

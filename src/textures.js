@@ -5,7 +5,7 @@
 import * as THREE from '../vendor/three.module.min.js';
 import { mulberry32, clamp } from './utils.js';
 import { WATER, isWater } from './terrain.js';
-import { BUCKET, WATER_BUCKET, isItem } from './items.js';
+import { BUCKET, WATER_BUCKET, PICKAXE, SHOVEL, isItem } from './items.js';
 
 export const TEX_SIZE = 16;
 
@@ -39,6 +39,9 @@ function shadeHex(hex, f) {
   const b = clamp(Math.round((hex & 255) * f), 0, 255);
   return (r << 16) | (g << 8) | b;
 }
+
+/** A colour number as the CSS the 2D context wants. */
+const hex = (c) => `#${c.toString(16).padStart(6, '0')}`;
 
 function noiseCanvas(rand, base, opts = {}) {
   const { speckles = 0, blotches = 0, blotchColor = 0x000000 } = opts;
@@ -129,6 +132,43 @@ function stoneFace(rand) {
   return noiseCanvas(rand, 0x7f7f7f, { speckles: 40, blotches: 3 });
 }
 
+/**
+ * An ore: rock with something in it.
+ *
+ * Minecraft's ores are the same rock with a handful of coloured lumps, and
+ * the lumps are what you learn to spot from across a cavern — so they are
+ * drawn as a few blobs with a darker rim and a bright facet on the
+ * upper-left, which is the whole of "this is a crystal and not a stain".
+ *
+ * The rock is a parameter because there are two of them: below the deepslate
+ * line the same vein is drawn on deepslate, or it would be a bright grey
+ * patch hanging in a near-black wall.
+ */
+function oreFace(base, colour, shine, lumps = 5) {
+  return (rand) => {
+    const cv = base(rand);
+    const ctx = cv.getContext('2d');
+    for (let i = 0; i < lumps; i++) {
+      const x = 1 + Math.floor(rand() * (TEX_SIZE - 4));
+      const y = 1 + Math.floor(rand() * (TEX_SIZE - 4));
+      const w = 2 + Math.floor(rand() * 2);
+      const h = 2 + Math.floor(rand() * 2);
+      // The rim is the lump's own colour turned down, not its bits masked
+      // off: masking drops each channel to whatever is left under 0x80,
+      // which is a different hue rather than a darker one — it turned
+      // iron's warm tan into magenta.
+      ctx.fillStyle = hex(shadeHex(colour, 0.45));
+      ctx.fillRect(x, y, w + 1, h + 1);
+      ctx.fillStyle = hex(colour);
+      ctx.fillRect(x, y, w, h);
+      ctx.fillStyle = hex(shine);
+      ctx.fillRect(x, y, 1, 1);
+    }
+    return cv;
+  };
+}
+
+
 // Deepslate: darker and cooler than stone, with fine vertical banding so the
 // switch is obvious the moment you dig past it.
 function deepslateFace(rand) {
@@ -141,6 +181,24 @@ function deepslateFace(rand) {
   }
   return cv;
 }
+
+// The ten ore tiles: five lumps, on each of the two rocks. Most of the
+// colours carry over unchanged; the ones that move are the two that would
+// otherwise disappear into the darker rock. Coal goes *down* rather than up —
+// its lumps read on deepslate as holes in it, which is what they look like in
+// Minecraft too — while diamond and redstone are brightened, because a
+// gemstone that is dimmer than the wall around it is not a gemstone.
+const ORE_LUMPS = [
+  { name: 'coal', colour: 0x24242a, deep: 0x101014, shine: 0x53535c, deepShine: 0x6c6c78, lumps: 6 },
+  { name: 'iron', colour: 0xc4906a, deep: 0xc4906a, shine: 0xe8c2a2, deepShine: 0xf0d0b4, lumps: 5 },
+  { name: 'gold', colour: 0xf0c23a, deep: 0xf0c23a, shine: 0xfff0a8, deepShine: 0xfff0a8, lumps: 5 },
+  { name: 'redstone', colour: 0xd0202a, deep: 0xe0303a, shine: 0xff6a6a, deepShine: 0xff8080, lumps: 6 },
+  { name: 'diamond', colour: 0x39d9d2, deep: 0x4ee8e0, shine: 0xbdfffb, deepShine: 0xd6fffd, lumps: 4 },
+];
+const [coalFace, ironFace, goldFace, redstoneFace, diamondFace] =
+  ORE_LUMPS.map((o) => oreFace(stoneFace, o.colour, o.shine, o.lumps));
+const [deepCoalFace, deepIronFace, deepGoldFace, deepRedstoneFace, deepDiamondFace] =
+  ORE_LUMPS.map((o) => oreFace(deepslateFace, o.deep, o.deepShine, o.lumps));
 
 // Water. Drawn opaque here and made translucent by the material — the atlas
 // is a single texture shared with every solid block, so the alpha has to
@@ -354,6 +412,77 @@ function waterBucketFace(rand) {
   return bucketCanvas(rand, 0x3a63d2);
 }
 
+/**
+ * A tool: a wooden haft corner to corner, and a head at the top of it.
+ *
+ * Both tools are the same picture with a different head, because that is what
+ * they are — Minecraft's pickaxe and shovel share a stick and differ in what
+ * is lashed to it, and at sixteen pixels the head is the only part with room
+ * to say anything.
+ */
+function toolCanvas(rand, head) {
+  const cv = document.createElement('canvas');
+  cv.width = cv.height = TEX_SIZE;
+  const ctx = cv.getContext('2d');
+  ctx.clearRect(0, 0, TEX_SIZE, TEX_SIZE);
+
+  // The haft, bottom-left to top-right, with a darker edge under it.
+  ctx.strokeStyle = '#4a3418';
+  ctx.lineWidth = 3;
+  ctx.beginPath();
+  ctx.moveTo(3.5, 13.5);
+  ctx.lineTo(10.5, 5.5);
+  ctx.stroke();
+  ctx.strokeStyle = '#8a6532';
+  ctx.lineWidth = 1.6;
+  ctx.beginPath();
+  ctx.moveTo(3.5, 13.5);
+  ctx.lineTo(10.5, 5.5);
+  ctx.stroke();
+
+  head(ctx);
+  return cv;
+}
+
+/** Iron, as three tones: the shadow, the metal, and the light along its edge. */
+const IRON_DARK = '#6e7378';
+const IRON = '#b9c0c6';
+const IRON_LIGHT = '#e7edf2';
+
+function pickaxeFace(rand) {
+  return toolCanvas(rand, (ctx) => {
+    // A shallow arc across the top with two points turned down at its ends.
+    ctx.strokeStyle = IRON_DARK;
+    ctx.lineWidth = 4;
+    ctx.beginPath();
+    ctx.moveTo(5.5, 5.5);
+    ctx.quadraticCurveTo(10.5, 1.0, 14.5, 5.0);
+    ctx.stroke();
+    ctx.strokeStyle = IRON;
+    ctx.lineWidth = 2.2;
+    ctx.beginPath();
+    ctx.moveTo(5.5, 5.5);
+    ctx.quadraticCurveTo(10.5, 1.6, 14.5, 5.0);
+    ctx.stroke();
+    ctx.fillStyle = IRON_LIGHT;
+    ctx.fillRect(9, 2, 3, 1);
+  });
+}
+
+function shovelFace(rand) {
+  return toolCanvas(rand, (ctx) => {
+    // A blade: a square with its bottom corners taken off.
+    ctx.fillStyle = IRON_DARK;
+    ctx.fillRect(8, 2, 7, 7);
+    ctx.fillStyle = IRON;
+    ctx.fillRect(9, 3, 5, 5);
+    ctx.fillStyle = IRON_LIGHT;
+    ctx.fillRect(9, 3, 2, 1);
+    ctx.clearRect(8, 8, 1, 1);
+    ctx.clearRect(14, 8, 1, 1);
+  });
+}
+
 function bucketCanvas(rand, fill) {
   const cv = document.createElement('canvas');
   cv.width = cv.height = TEX_SIZE;
@@ -414,6 +543,16 @@ export const BLOCK_DEFS = [
   { id: 13, name: 'Water', side: waterFace, top: waterFace, bottom: waterFace },
   // 14..21 are the flowing water levels, which share the source's tile.
   { id: 22, name: 'Ice', side: iceFace, top: iceFace, bottom: iceFace },
+  { id: 23, name: 'Coal Ore', side: coalFace, top: coalFace, bottom: coalFace },
+  { id: 24, name: 'Iron Ore', side: ironFace, top: ironFace, bottom: ironFace },
+  { id: 25, name: 'Gold Ore', side: goldFace, top: goldFace, bottom: goldFace },
+  { id: 26, name: 'Redstone Ore', side: redstoneFace, top: redstoneFace, bottom: redstoneFace },
+  { id: 27, name: 'Diamond Ore', side: diamondFace, top: diamondFace, bottom: diamondFace },
+  { id: 28, name: 'Deepslate Coal Ore', side: deepCoalFace, top: deepCoalFace, bottom: deepCoalFace },
+  { id: 29, name: 'Deepslate Iron Ore', side: deepIronFace, top: deepIronFace, bottom: deepIronFace },
+  { id: 30, name: 'Deepslate Gold Ore', side: deepGoldFace, top: deepGoldFace, bottom: deepGoldFace },
+  { id: 31, name: 'Deepslate Redstone Ore', side: deepRedstoneFace, top: deepRedstoneFace, bottom: deepRedstoneFace },
+  { id: 32, name: 'Deepslate Diamond Ore', side: deepDiamondFace, top: deepDiamondFace, bottom: deepDiamondFace },
 ];
 
 /**
@@ -424,18 +563,25 @@ export const BLOCK_DEFS = [
 export const ITEM_DEFS = [
   { id: BUCKET, name: 'Bucket', item: true, side: bucketFace, top: bucketFace, bottom: bucketFace },
   { id: WATER_BUCKET, name: 'Water Bucket', item: true, side: waterBucketFace, top: waterBucketFace, bottom: waterBucketFace },
+  { id: PICKAXE, name: 'Iron Pickaxe', item: true, side: pickaxeFace, top: pickaxeFace, bottom: pickaxeFace },
+  { id: SHOVEL, name: 'Iron Shovel', item: true, side: shovelFace, top: shovelFace, bottom: shovelFace },
 ];
 
 /** Everything with a texture in the atlas: blocks first, then items. */
 export const ATLAS_DEFS = [...BLOCK_DEFS, ...ITEM_DEFS];
 
 /**
- * What you start with. Nine slots and ten things worth having, so the oak log
- * loses its place — it is the one you can get back by walking up to a tree,
- * and the bucket is the one that turns every pond in the world into somewhere
- * you can build.
+ * What you start with.
+ *
+ * Nine slots and more than nine things worth having, so the list is a series
+ * of arguments about what earns one. The two tools take theirs by force:
+ * without a pickaxe stone is seven and a half seconds a block and ore gives
+ * you nothing at all, so a hotbar of pretty building blocks and no pickaxe is
+ * a hotbar you cannot dig your way out of. Cobblestone and sand go — both are
+ * a few seconds' digging away — and the oak log stays gone, because it is the
+ * one you get back by walking up to a tree.
  */
-export const STARTER_BLOCKS = [1, 2, 3, 4, 5, 6, 7, 9, BUCKET];
+export const STARTER_BLOCKS = [1, 2, 3, 5, 7, 9, PICKAXE, SHOVEL, BUCKET];
 
 /**
  * Build a 48x16 atlas canvas for a block: [side | top | bottom].
@@ -699,6 +845,80 @@ export function getWaterTextures() {
     flowing: make(flowingWaterCanvas()),
   };
   return waterTextures;
+}
+
+// ---------- breaking ----------
+
+/**
+ * The crack that grows over a block while you dig it.
+ *
+ * Ten stages in Minecraft, four here, because the difference between stage
+ * two and stage three is a pixel and the difference between "cracked" and
+ * "not cracked" is the whole message. Each stage keeps the last one's cracks
+ * and adds to them, so it reads as one thing getting worse rather than four
+ * pictures taking turns.
+ *
+ * Every crack is drawn twice: a pale line, and the dark one a pixel up and
+ * left of it. Black alone was the obvious way to do it and it was wrong —
+ * mining happens underground, where the rock is already nearly black and a
+ * black line on it is nothing at all. The pale half is what makes it read
+ * down there, and the dark half is what makes it read on sand at noon, so
+ * between them the crack shows up on anything.
+ */
+const CRACK_STAGES = 4;
+
+function crackCanvas(stage) {
+  const rand = mulberry32(9137);
+  const cv = document.createElement('canvas');
+  cv.width = cv.height = TEX_SIZE;
+  const ctx = cv.getContext('2d');
+  ctx.clearRect(0, 0, TEX_SIZE, TEX_SIZE);
+  // Every stage draws the same cracks in the same order — same seed — and
+  // simply stops later, which is what makes them accumulate.
+  const cracks = 2 + stage * 2;
+  const alpha = 0.35 + stage * 0.13;
+  for (let i = 0; i < cracks; i++) {
+    let x = 1 + rand() * (TEX_SIZE - 2);
+    let y = 1 + rand() * (TEX_SIZE - 2);
+    let angle = rand() * Math.PI * 2;
+    const segments = 3 + Math.floor(rand() * 3);
+    const points = [[x, y]];
+    for (let seg = 0; seg < segments; seg++) {
+      angle += (rand() - 0.5) * 1.9;
+      x += Math.cos(angle) * (1.5 + rand() * 3);
+      y += Math.sin(angle) * (1.5 + rand() * 3);
+      points.push([x, y]);
+    }
+    const stroke = (dx, dy, style) => {
+      ctx.strokeStyle = style;
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      points.forEach(([px, py], k) => {
+        if (k === 0) ctx.moveTo(px + dx, py + dy);
+        else ctx.lineTo(px + dx, py + dy);
+      });
+      ctx.stroke();
+    };
+    stroke(0.5, 0.5, `rgba(236,236,236,${alpha * 0.85})`);
+    stroke(-0.5, -0.5, `rgba(0,0,0,${alpha})`);
+  }
+  return cv;
+}
+
+let crackUrls = null;
+
+/** The crack stages as data URLs, cheapest to newest — built once. */
+export function getCrackStages() {
+  if (!crackUrls) {
+    crackUrls = [];
+    for (let i = 0; i < CRACK_STAGES; i++) crackUrls.push(crackCanvas(i).toDataURL());
+  }
+  return crackUrls;
+}
+
+/** Which stage a fraction of the way through breaking looks like. */
+export function crackStage(progress) {
+  return Math.min(CRACK_STAGES - 1, Math.max(0, Math.floor(progress * CRACK_STAGES)));
 }
 
 // ---------- HUD sprites ----------

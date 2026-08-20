@@ -85,6 +85,39 @@ export const WATER_LAST = WATER_FLOW + WATER_LEVELS;
 export const ICE = 22;
 export const isIce = (id) => id === ICE;
 
+// Ores. Everything below the grass has been one of two rocks until now, which
+// is a lot of stone to dig through for nothing.
+export const COAL_ORE = 23;
+export const IRON_ORE = 24;
+export const GOLD_ORE = 25;
+export const REDSTONE_ORE = 26;
+export const DIAMOND_ORE = 27;
+export const ORES = [COAL_ORE, IRON_ORE, GOLD_ORE, REDSTONE_ORE, DIAMOND_ORE];
+
+/**
+ * ...and the same five again in deepslate.
+ *
+ * Minecraft doubled its ore list when it added deepslate, and the reason is
+ * visible the moment you do not: an ore tile is its rock with lumps in it, so
+ * a stone-backed vein in a deepslate wall is a bright grey patch floating in
+ * near-black — you can see the block, which is the one thing a block should
+ * never do. Below the deepslate line the vein is drawn on deepslate instead.
+ * The pair is an offset apart, so one addition converts between them and the
+ * bands, the veins and the rarities know nothing about it.
+ */
+export const DEEPSLATE_OFFSET = 5;
+export const DEEPSLATE_COAL_ORE = COAL_ORE + DEEPSLATE_OFFSET;
+export const DEEPSLATE_IRON_ORE = IRON_ORE + DEEPSLATE_OFFSET;
+export const DEEPSLATE_GOLD_ORE = GOLD_ORE + DEEPSLATE_OFFSET;
+export const DEEPSLATE_REDSTONE_ORE = REDSTONE_ORE + DEEPSLATE_OFFSET;
+export const DEEPSLATE_DIAMOND_ORE = DIAMOND_ORE + DEEPSLATE_OFFSET;
+export const DEEPSLATE_ORES = ORES.map((id) => id + DEEPSLATE_OFFSET);
+/** Every ore id, stone-backed and deepslate-backed alike. */
+export const ORE_IDS = [...ORES, ...DEEPSLATE_ORES];
+export const isOre = (id) => id >= COAL_ORE && id <= DEEPSLATE_DIAMOND_ORE;
+/** The deepslate twin of a stone-backed ore. */
+export const deepslateOre = (id) => id + DEEPSLATE_OFFSET;
+
 export const isWater = (id) => id >= WATER && id <= WATER_LAST;
 /** 0 at full strength, up to 7 at the far edge of a spread. */
 export const waterLevel = (id) => (id === WATER ? 0 : id - WATER_FLOW);
@@ -454,9 +487,96 @@ function isBedrock(x, y, z, seed) {
   return hash3(x, y, z, seed + 8863) < 1 - above / BEDROCK_FADE;
 }
 
-/** Stone, or deepslate if this is deep enough. */
+// ---------------------------------------------------------------- ore veins
+//
+// Minecraft scatters ores by picking a start point per chunk per ore and
+// walking a blob out from it. That needs the chunk to be a unit of work, and
+// nothing else here is: `generatedBlock` answers for one block at a time —
+// it is what the mesher uses to check its own shortcuts — and the two paths
+// have to agree exactly or a seam appears where a chunk boundary is.
+//
+// So a vein is a *function of where it is*, like everything else in this
+// file. Space is cut into VEIN_CELL boxes; each box hashes to at most one
+// vein, with a centre somewhere inside it and a radius; a block is ore if it
+// is inside that vein. The vein cannot cross its box, which sounds like a
+// visible constraint and is not: a blob two blocks across, placed anywhere in
+// an eight-block box, has no edge for the eye to find.
+//
+// What is left is the interesting part — which ore, and how deep. These are
+// Minecraft's bands, near enough: coal high and common, iron below it, gold
+// and redstone deep, diamond only in the bottom sixteen blocks where you
+// have to go looking for it.
+
+/** The box a vein lives in. Bigger boxes mean rarer, further-apart veins. */
+export const VEIN_CELL = 8;
+
+/**
+ * Each ore's band and how much of it there is: `chance` is the fraction of
+ * boxes in range that hold one, and the radius decides how many blocks that
+ * is — a little over four at 1.2, thirty at 2.4.
+ */
+export const ORE_BANDS = [
+  { id: COAL_ORE, min: 0, max: 128, chance: 0.30, radius: 2.1 },
+  { id: IRON_ORE, min: -32, max: 64, chance: 0.24, radius: 1.7 },
+  { id: GOLD_ORE, min: -56, max: 24, chance: 0.10, radius: 1.4 },
+  { id: REDSTONE_ORE, min: -60, max: 8, chance: 0.13, radius: 1.6 },
+  { id: DIAMOND_ORE, min: -64, max: -48, chance: 0.09, radius: 1.3 },
+];
+
+/**
+ * The vein in the box containing (x, y, z), or null. Written into `out` so
+ * that the column filler can hold on to one box's answer for the eight layers
+ * it covers instead of asking again per block.
+ */
+export function veinAt(bx, by, bz, seed, out) {
+  const roll = hash3(bx, by, bz, seed + 1543);
+  let acc = 0;
+  for (let i = 0; i < ORE_BANDS.length; i++) {
+    const band = ORE_BANDS[i];
+    const y0 = by * VEIN_CELL;
+    // The band has to contain the whole box, not merely touch it, so a vein
+    // never straddles the line where an ore is supposed to stop.
+    if (y0 < band.min || y0 + VEIN_CELL - 1 > band.max) continue;
+    acc += band.chance;
+    if (roll >= acc) continue;
+    // A second hash places it. Offsets are kept a radius clear of the box
+    // walls so the blob is whole wherever it lands.
+    const jitter = hash3(bx, by, bz, seed + 7717);
+    const span = VEIN_CELL - 2 * band.radius;
+    out[0] = bx * VEIN_CELL + band.radius + (jitter % 1) * span;
+    out[1] = y0 + band.radius + ((jitter * 7.3) % 1) * span;
+    out[2] = bz * VEIN_CELL + band.radius + ((jitter * 13.7) % 1) * span;
+    out[3] = band.radius;
+    out[4] = band.id;
+    return out;
+  }
+  return null;
+}
+
+/** Scratch for the vein lookup, so asking about a block allocates nothing. */
+const VEIN = new Float64Array(5);
+/** A second one, because the column filler holds its answer across layers. */
+const VEIN_SCRATCH = new Float64Array(5);
+
+/** The ore at (x, y, z), or 0 for none. */
+export function oreAt(x, y, z, seed) {
+  const vein = veinAt(
+    Math.floor(x / VEIN_CELL), Math.floor(y / VEIN_CELL), Math.floor(z / VEIN_CELL),
+    seed, VEIN
+  );
+  if (!vein) return 0;
+  const dx = x + 0.5 - vein[0];
+  const dy = y + 0.5 - vein[1];
+  const dz = z + 0.5 - vein[2];
+  return dx * dx + dy * dy + dz * dz <= vein[3] * vein[3] ? vein[4] : 0;
+}
+
+/** Stone, or deepslate if this is deep enough, or the ore in it. */
 function rockAt(x, y, z, seed) {
-  return y <= deepslateTop(x, z, seed) ? DEEPSLATE : STONE;
+  const deep = y <= deepslateTop(x, z, seed);
+  const ore = oreAt(x, y, z, seed);
+  if (ore) return deep ? deepslateOre(ore) : ore;
+  return deep ? DEEPSLATE : STONE;
 }
 
 /** Which block sits at (x, y, z) in freshly generated terrain (no trees). */
@@ -486,13 +606,36 @@ function fillColumn(blocks, col, area, wx, wz, h, top, filler, seed) {
   for (let y = h + 1; y <= SEA_LEVEL; y++) {
     blocks[toLayer(y) * area + col] = WATER;
   }
+  // The vein for the box this run of layers is in, fetched once per box
+  // rather than once per block: a column crosses one box every eight layers
+  // and the answer cannot change in between.
+  const bx = Math.floor(wx / VEIN_CELL);
+  const bz = Math.floor(wz / VEIN_CELL);
+  let box = Infinity;
+  let vein = null;
   for (let layer = 0; layer <= hi; layer++) {
     const y = layer + WORLD_MIN_Y;
     let id;
     if (isBedrock(wx, y, wz, seed)) id = BEDROCK;
     else if (y === h) id = top;
     else if (y >= h - 3) id = filler;
-    else id = y <= dsTop ? DEEPSLATE : STONE;
+    else {
+      const by = Math.floor(y / VEIN_CELL);
+      if (by !== box) {
+        box = by;
+        vein = veinAt(bx, by, bz, seed, VEIN_SCRATCH);
+      }
+      const deep = y <= dsTop;
+      id = deep ? DEEPSLATE : STONE;
+      if (vein) {
+        const dx = wx + 0.5 - vein[0];
+        const dy = y + 0.5 - vein[1];
+        const dz = wz + 0.5 - vein[2];
+        if (dx * dx + dy * dy + dz * dz <= vein[3] * vein[3]) {
+          id = deep ? deepslateOre(vein[4]) : vein[4];
+        }
+      }
+    }
     blocks[layer * area + col] = id;
   }
 }

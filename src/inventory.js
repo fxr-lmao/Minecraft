@@ -8,6 +8,8 @@
 // A slot is either null (empty) or a stack: { id, count }.
 // This file is pure data — no DOM, no THREE — so it is unit-tested in Node.
 
+import { isItem } from './items.js';
+
 export const HOTBAR_SIZE = 9;
 export const MAIN_COLS = 9;
 export const MAIN_ROWS = 3;
@@ -182,10 +184,18 @@ export class Inventory {
     this.cursor = left > 0 ? { id: this.cursor.id, count: left } : null;
   }
 
-  /** Starting kit: one stack of every block type, on the hotbar. */
+  /**
+   * Starting kit: a stack of every block, on the hotbar.
+   *
+   * One of each *item*, though. A pickaxe is not a thing you have sixty-four
+   * of, and the bucket was already wrong in the same way and got away with it
+   * because nobody counts their buckets — until you fill one, and all
+   * sixty-four of them become water buckets at once, because a stack is one
+   * thing with a number on it.
+   */
   fillStarterKit(blockIds) {
     blockIds.slice(0, HOTBAR_SIZE).forEach((id, i) => {
-      this.slots[i] = { id, count: STACK_MAX };
+      this.slots[i] = { id, count: isItem(id) ? 1 : STACK_MAX };
     });
   }
 }
