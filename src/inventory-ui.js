@@ -13,6 +13,7 @@ import { HOTBAR_SIZE, MAIN_COLS, MAIN_ROWS, TOTAL_SLOTS, Inventory } from './inv
 import { getBlockAssets, getBlockDefById, blockName } from './textures.js';
 import { isTool, durabilityFraction } from './durability.js';
 import { GRID_2X2, GRID_3X3, matchRecipe, craft } from './crafting.js';
+import { bindSlotPress } from './slot-press.js';
 import * as sound from './sound.js';
 
 const iconCache = new Map();
@@ -149,24 +150,23 @@ export class InventoryUI {
     // inventory, using a virtual slot index past the real ones.
     const craftGridEl = document.getElementById('craft-grid');
     if (craftGridEl) {
-      craftGridEl.addEventListener('pointerdown', (e) => {
-        const el = e.target.closest('.slot');
-        if (!el || el.dataset.craft === undefined) return;
-        e.preventDefault();
-        e.stopPropagation();
-        const [r, c] = el.dataset.craft.split(',').map(Number);
-        this._craftClick(r, c, e.button === 2);
-      });
+      bindSlotPress(
+        craftGridEl,
+        (e) => {
+          const el = e.target.closest('.slot');
+          return el && el.dataset.craft !== undefined ? el : null;
+        },
+        (el, secondary) => {
+          const [r, c] = el.dataset.craft.split(',').map(Number);
+          this._craftClick(r, c, secondary);
+        }
+      );
     }
 
     // Craft result: click to craft once and put the item in your hand.
     const resultEl = document.getElementById('craft-result');
     if (resultEl) {
-      resultEl.addEventListener('pointerdown', (e) => {
-        e.preventDefault();
-        e.stopPropagation();
-        this._craftResult(e.button === 2);
-      });
+      bindSlotPress(resultEl, () => resultEl, () => this._craftResult());
     }
 
     // Selecting a hotbar slot by tapping it (touch / unlocked pointer).
@@ -179,19 +179,16 @@ export class InventoryUI {
     });
 
     // Slot interaction inside the inventory screen.
-    const onSlotDown = (e) => {
-      const el = e.target.closest('.slot');
-      if (!el) return;
-      e.preventDefault();
-      e.stopPropagation();
+    const onSlot = (el, secondary, e) => {
       const index = Number(el.dataset.slot);
       if (e.shiftKey) this.inv.quickMove(index);
-      else this.inv.clickSlot(index, e.button === 2);
+      else this.inv.clickSlot(index, secondary);
       this._moveCursor(e.clientX, e.clientY);
       this.render();
     };
-    this.mainGridEl.addEventListener('pointerdown', onSlotDown);
-    this.rowEl.addEventListener('pointerdown', onSlotDown);
+    const pickSlot = (e) => e.target.closest('.slot');
+    bindSlotPress(this.mainGridEl, pickSlot, onSlot);
+    bindSlotPress(this.rowEl, pickSlot, onSlot);
 
     // Backdrop: put the held stack back, or close if the hand is empty.
     this.screenEl.addEventListener('pointerdown', (e) => {
