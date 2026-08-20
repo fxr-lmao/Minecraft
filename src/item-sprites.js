@@ -119,3 +119,176 @@ export const WATER_BUCKET_PX = [
   '................',
   '................',
 ];
+
+// ---------------------------------------------------------------- new tools
+//
+// The pickaxe and the shovel above were the whole tool set for as long as
+// there was nothing to build one out of. There is now — planks, cobblestone,
+// iron out of the furnace and diamond out of the deep — so the other two
+// Minecraft shapes are here as well, drawn in the same idiom: haft letters
+// O/D/M/H for the oak, head letters o/d/m/h for whatever the head is made of,
+// so one 16x16 map serves all four tiers and only the palette changes.
+
+export const HEAD_DIAMOND = { o: '#146a5e', d: '#2aa898', m: '#5ce6d4', h: '#b8fff4' };
+
+/**
+ * An axe: the bit is a wedge hanging off the left of the haft's top, which is
+ * what tells it apart from the pickaxe at hotbar size. Minecraft's own axe
+ * icon is asymmetric for the same reason.
+ */
+export const AXE_PX = [
+  '......oooo......',
+  '.....ohhhmo.....',
+  '....ohhhmmdo....',
+  '....ohhmmmmdo...',
+  '....ohmmmmmOHo..',
+  '....odmmmmOMH...',
+  '.....oddoOMH....',
+  '.........OMH....',
+  '........OMH.....',
+  '.......OMH......',
+  '......OMH.......',
+  '.....OMH........',
+  '....OMH.........',
+  '...OMH..........',
+  '..OD............',
+  '................',
+];
+
+/**
+ * A sword: a long diagonal blade, a short cross guard, and a stub of a grip.
+ * The guard is drawn in haft colours because it is the part your hand knows
+ * about — and because a guard in blade colours reads as a kink in the blade.
+ */
+export const SWORD_PX = [
+  '............omh.',
+  '...........omhh.',
+  '..........omhhd.',
+  '.........omhhd..',
+  '........omhhd...',
+  '.......omhhd....',
+  '......omhhd.....',
+  '.....omhhd......',
+  '....omhhd.......',
+  '...oMHMdo.......',
+  '..oDMHDo........',
+  '...OMHo.........',
+  '..OMHo..........',
+  '.OMHo...........',
+  '.ODo............',
+  '................',
+];
+
+// ------------------------------------------------------------- materials
+//
+// The things a tool is made *of*, which until now were blocks in the ground
+// and nothing else. Coal comes out of coal ore, raw iron out of iron ore and
+// turns into an ingot in the furnace, and a diamond comes out whole. All four
+// are lumps rather than shapes, so they are drawn as blobs with a highlight
+// on the upper left and the shadow opposite it — the same lighting every
+// Minecraft item icon uses, and the reason they read as solid.
+
+export const COAL_PALETTE = { o: '#0b0b0b', d: '#1b1b1b', m: '#2f2f2f', h: '#4d4d4d' };
+export const RAW_IRON_PALETTE = { o: '#6b5540', d: '#a3805c', m: '#d4ad84', h: '#f2dcc0' };
+export const IRON_INGOT_PALETTE = { o: '#6f6f6f', d: '#9a9a9a', m: '#cfcfcf', h: '#f2f2f2' };
+export const DIAMOND_PALETTE = { o: '#12706a', d: '#2fb3a6', m: '#68efe0', h: '#c9fff9' };
+// Gold reuses the iron shapes with its own colours, which is exactly what
+// Minecraft does: a raw lump and an ingot are the same silhouette whatever
+// they are made of, and drawing a second pair of maps to say the same thing
+// in yellow would be two more places for the shape to drift.
+export const RAW_GOLD_PALETTE = { o: '#7a5a12', d: '#b8891c', m: '#e8c040', h: '#fff0a0' };
+export const GOLD_INGOT_PALETTE = { o: '#8a6410', d: '#c39420', m: '#f0cc48', h: '#fff4b0' };
+// Redstone is a *dust*, so it takes the coal blob rather than the ingot bar,
+// and it is the one material with a glow to it — the highlight is brighter
+// than the mid tone by more than the others, which is as close to emissive
+// as a vertex colour gets.
+export const REDSTONE_PALETTE = { o: '#5a0808', d: '#9c1010', m: '#e02020', h: '#ff6a6a' };
+
+export const COAL_PX = [
+  '................',
+  '................',
+  '.....oooo.......',
+  '....ohhmmdo.....',
+  '...ohmmmmmdo....',
+  '..ohmmmmmmmdo...',
+  '..ohmmmmmmmmdo..',
+  '.ohmmmmmmmmmmdo.',
+  '.odmmmmmmmmmmdo.',
+  '.odmmmmmmmmmdo..',
+  '..oddmmmmmmdo...',
+  '...oddmmmmdo....',
+  '....oddddo......',
+  '.....oooo.......',
+  '................',
+  '................',
+];
+
+export const RAW_IRON_PX = [
+  '................',
+  '................',
+  '......ooo.......',
+  '.....ohhmo......',
+  '....ohmmmdo.....',
+  '...ohmmmmmdo....',
+  '..ohmmmmmmmdo...',
+  '..ohmmmmmmmmdo..',
+  '.ohmmmdmmmmmdo..',
+  '.odmmmmmmmmmdo..',
+  '.odmmmmmmmmdo...',
+  '..oddmmmmmdo....',
+  '...oddmmmdo.....',
+  '....oddddo......',
+  '.....ooo........',
+  '................',
+];
+
+export const IRON_INGOT_PX = [
+  '................',
+  '................',
+  '................',
+  '....oooooooo....',
+  '...ohhhhhhhho...',
+  '..ohmmmmmmmmho..',
+  '..ohmmmmmmmmdo..',
+  '.ohmmmmmmmmmmdo.',
+  '.odmmmmmmmmmmdo.',
+  '.odmmmmmmmmmmdo.',
+  '.oddddddddddddo.',
+  '..oooooooooooo..',
+  '................',
+  '................',
+  '................',
+  '................',
+];
+
+export const DIAMOND_PX = [
+  '................',
+  '................',
+  '.....oooooo.....',
+  '....ohhhhhho....',
+  '...ohmmmmmmho...',
+  '..ohmmmmmmmmho..',
+  '.ohmmmmmmmmmmho.',
+  '.odmmmmmmmmmmdo.',
+  '..odmmmmmmmmdo..',
+  '...odmmmmmmdo...',
+  '....odmmmmdo....',
+  '.....odmmdo.....',
+  '......oddo......',
+  '.......oo.......',
+  '................',
+  '................',
+];
+
+/**
+ * Every 16x16 map in this file, by name, so a test can walk the lot and check
+ * that each one really is sixteen rows of sixteen characters. A map one
+ * character short does not throw — it silently reads `undefined` for the last
+ * column and the sprite comes out with a transparent stripe down its right
+ * edge, which is exactly the kind of thing nobody notices until it ships.
+ */
+export const ALL_SPRITES = {
+  STICK_PX, PICKAXE_PX, SHOVEL_PX, AXE_PX, SWORD_PX,
+  BUCKET_PX, WATER_BUCKET_PX,
+  COAL_PX, RAW_IRON_PX, IRON_INGOT_PX, DIAMOND_PX,
+};

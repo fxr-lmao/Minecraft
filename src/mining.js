@@ -33,12 +33,39 @@ import {
   COBBLESTONE, PLANKS, BRICKS, CRAFTING_TABLE, FURNACE, GLASS, TNT,
   ORE_IDS, isWater, AIR,
 } from './terrain.js';
-import { PICKAXE, SHOVEL, WOOD_PICKAXE, WOOD_SHOVEL, STONE_PICKAXE, STONE_SHOVEL } from './items.js';
+import {
+  PICKAXE, SHOVEL, WOOD_PICKAXE, WOOD_SHOVEL, STONE_PICKAXE, STONE_SHOVEL,
+  WOOD_AXE, STONE_AXE, IRON_AXE, DIAMOND_AXE,
+  WOOD_SWORD, STONE_SWORD, IRON_SWORD, DIAMOND_SWORD,
+  DIAMOND_PICKAXE, DIAMOND_SHOVEL, oreDrop,
+} from './items.js';
 
 /** What a tool is *for*. A block wants one of these, or nothing in particular. */
 export const HAND = 0;
 export const PICK = 1;
 export const SPADE = 2;
+/**
+ * The axe, which is the answer to everything the forest is made of.
+ *
+ * This is not a fourth entry in a list, it is the fix for the biggest hole in
+ * the mining rules: `tool: HAND` meant "nothing in particular helps", and
+ * every wooden block in the game had it. So a hotbar with four tools in it
+ * chopped a log in exactly the same three seconds as a bare fist, and the
+ * forest was the one part of the world where being equipped meant nothing.
+ * Minecraft has never worked that way — wood answers to an axe the way stone
+ * answers to a pickaxe — and now neither does this.
+ */
+export const AXE = 3;
+/**
+ * The sword, which is not a mining tool at all.
+ *
+ * It gets a slot in this enum for one reason: leaves. A sword cuts leaves at
+ * fifteen times the speed of a hand in Minecraft, which is the single
+ * exception to "a sword is for fighting", and it is a real one — clearing a
+ * canopy with a sword is something people actually do. Nothing else in the
+ * world answers to it.
+ */
+export const BLADE = 4;
 
 /** Minecraft's tick, in seconds. Every break time is a whole number of these. */
 export const TICK = 0.05;
@@ -56,15 +83,20 @@ const BLOCKS = {
   [DIRT]: { hardness: 0.5, tool: SPADE },
   [SAND]: { hardness: 0.5, tool: SPADE },
   [SNOW]: { hardness: 0.2, tool: SPADE, needsTool: true },
-  [LEAVES]: { hardness: 0.2, tool: HAND },
-  [LOG]: { hardness: 2.0, tool: HAND },
-  [PLANKS]: { hardness: 2.0, tool: HAND },
+  // Leaves want the sword, which is Minecraft's odd little rule and a true
+  // one: shears first, a sword second, and everything else at hand speed.
+  // There are no shears here, so the sword is the whole of it.
+  [LEAVES]: { hardness: 0.2, tool: BLADE },
+  [LOG]: { hardness: 2.0, tool: AXE },
+  [PLANKS]: { hardness: 2.0, tool: AXE },
   [STONE]: { hardness: 1.5, tool: PICK, needsTool: true },
   [COBBLESTONE]: { hardness: 2.0, tool: PICK, needsTool: true },
   [BRICKS]: { hardness: 2.0, tool: PICK, needsTool: true },
   [DEEPSLATE]: { hardness: 3.0, tool: PICK, needsTool: true },
   [ICE]: { hardness: 0.5, tool: PICK },
-  [CRAFTING_TABLE]: { hardness: 2.5, tool: HAND },
+  // A crafting table is a wooden block, so it answers to the axe like every
+  // other one. Two and a half seconds by hand, and half a second with iron.
+  [CRAFTING_TABLE]: { hardness: 2.5, tool: AXE },
   [FURNACE]: { hardness: 3.5, tool: PICK, needsTool: true },
   [GLASS]: { hardness: 0.3, tool: HAND },
   [TNT]: { hardness: 0, tool: HAND },
@@ -88,14 +120,42 @@ const DEFAULT = { hardness: 1.5, tool: PICK, needsTool: false };
  * be worth having if you are out of iron, and enough to send you back to
  * the iron when you remember it.
  */
-const TOOLS = {
+export const TOOLS = {
   [WOOD_PICKAXE]: { kind: PICK, speed: 2 },
   [WOOD_SHOVEL]: { kind: SPADE, speed: 2 },
+  [WOOD_AXE]: { kind: AXE, speed: 2 },
   [STONE_PICKAXE]: { kind: PICK, speed: 4 },
   [STONE_SHOVEL]: { kind: SPADE, speed: 4 },
+  [STONE_AXE]: { kind: AXE, speed: 4 },
   [PICKAXE]: { kind: PICK, speed: 6 },
   [SHOVEL]: { kind: SPADE, speed: 6 },
+  [IRON_AXE]: { kind: AXE, speed: 6 },
+  [DIAMOND_PICKAXE]: { kind: PICK, speed: 8 },
+  [DIAMOND_SHOVEL]: { kind: SPADE, speed: 8 },
+  [DIAMOND_AXE]: { kind: AXE, speed: 8 },
+  /**
+   * Swords, and their speed is 15 rather than a tier number.
+   *
+   * That looks like a mistake and is not. Minecraft's sword has a flat
+   * destroy speed of 1.5 against everything (so it is half again as fast as a
+   * fist at whatever it hits) and a special case of 15 against leaves and
+   * cobwebs. Since BLADE is only ever the tool for leaves, the flat 15 *is*
+   * the leaves case, and it is why a sword clears a canopy in two frames
+   * while taking the normal age over a log.
+   */
+  [WOOD_SWORD]: { kind: BLADE, speed: 15 },
+  [STONE_SWORD]: { kind: BLADE, speed: 15 },
+  [IRON_SWORD]: { kind: BLADE, speed: 15 },
+  [DIAMOND_SWORD]: { kind: BLADE, speed: 15 },
 };
+
+/**
+ * A sword swung at anything that is not leaves is still a sword: Minecraft
+ * gives it a flat 1.5 against every other block, which is not enough to make
+ * it a digging tool and is enough that punching a dirt block with a sword in
+ * your hand is not *slower* than punching it empty-handed.
+ */
+const SWORD_GENERAL_SPEED = 1.5;
 
 /** The block's entry, or the default for anything built rather than dug. */
 export function blockRule(id) {
@@ -127,7 +187,18 @@ export function canHarvest(id, held) {
  */
 export function destroySpeed(id, held, where = {}) {
   const { onGround = true, underwater = false } = where;
-  let speed = toolMatches(id, held) ? TOOLS[held].speed : 1;
+  const tool = TOOLS[held];
+  let speed;
+  if (tool && tool.kind === blockRule(id).tool) {
+    speed = tool.speed;
+  } else if (tool && tool.kind === BLADE) {
+    // A sword against anything that is not leaves. Minecraft's flat 1.5 —
+    // see SWORD_GENERAL_SPEED. Without this branch the general `1` below
+    // would apply and a sword would be exactly a fist, which it is not.
+    speed = SWORD_GENERAL_SPEED;
+  } else {
+    speed = 1;
+  }
   if (underwater) speed /= 5;
   if (!onGround) speed /= 5;
   return speed;
@@ -158,7 +229,23 @@ export function dropsFrom(id, held) {
   // Glass has no Silk Touch here: it breaks into nothing, like Minecraft
   // without the enchantment.
   if (id === GLASS) return 0;
-  return canHarvest(id, held) ? id : 0;
+  if (!canHarvest(id, held)) return 0;
+  // Ore does not drop ore.
+  //
+  // It used to, and that was the biggest thing standing between this game and
+  // Minecraft's actual loop: a diamond vein gave you diamond *ore blocks*,
+  // and the only thing you could do with a diamond ore block was place it
+  // somewhere else. Nothing the mine produced could ever become a tool, so
+  // the starter kit's iron pickaxe was the best pickaxe that would ever
+  // exist. Now coal, redstone and diamond come out finished, iron and gold
+  // come out raw for the furnace, and the mine is a supply chain.
+  const ore = oreDrop(id);
+  if (ore !== null) return ore;
+  // Stone breaks into cobblestone, which is Minecraft's oldest rule and the
+  // reason a furnace has anything to smelt: you cannot get stone back out of
+  // the ground, you have to cook it.
+  if (id === STONE) return COBBLESTONE;
+  return id;
 }
 
 /**
@@ -171,4 +258,44 @@ export function dropsFrom(id, held) {
 export const wrongTool = (id, held) => !canHarvest(id, held);
 
 /** What the block wanted, for that sentence. */
-export const toolNeeded = (id) => (blockRule(id).tool === SPADE ? 'shovel' : 'pickaxe');
+export function toolNeeded(id) {
+  switch (blockRule(id).tool) {
+    case SPADE: return 'shovel';
+    case AXE: return 'axe';
+    case BLADE: return 'sword';
+    default: return 'pickaxe';
+  }
+}
+
+/**
+ * The name of the tool family a held item belongs to, or '' for anything that
+ * is not a tool. For the HUD, and for the debug screen.
+ */
+export function toolFamily(held) {
+  switch (TOOLS[held]?.kind) {
+    case PICK: return 'pickaxe';
+    case SPADE: return 'shovel';
+    case AXE: return 'axe';
+    case BLADE: return 'sword';
+    default: return '';
+  }
+}
+
+/**
+ * How much better the right tool makes this block, as a ratio of times.
+ *
+ * Only for the HUD's benefit — it is what lets the game say "an axe would be
+ * four times faster" rather than leaving the player to work out why the log
+ * is taking so long. Returns 1 when the tool in hand is already the right
+ * one, or when nothing helps.
+ */
+export function toolAdvantage(id, held) {
+  const bare = breakTime(id, held);
+  if (!Number.isFinite(bare) || bare <= 0) return 1;
+  let best = bare;
+  for (const toolId of Object.keys(TOOLS)) {
+    const t = breakTime(id, Number(toolId));
+    if (Number.isFinite(t) && t > 0 && t < best) best = t;
+  }
+  return bare / best;
+}

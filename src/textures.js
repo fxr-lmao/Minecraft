@@ -8,15 +8,24 @@ import { WATER, isWater, CRAFTING_TABLE, FURNACE, GLASS, TNT } from './terrain.j
 import {
   BUCKET, WATER_BUCKET, PICKAXE, SHOVEL,
   STICKS, WOOD_PICKAXE, WOOD_SHOVEL, STONE_PICKAXE, STONE_SHOVEL, isItem,
+  WOOD_AXE, STONE_AXE, IRON_AXE, DIAMOND_AXE,
+  WOOD_SWORD, STONE_SWORD, IRON_SWORD, DIAMOND_SWORD,
+  DIAMOND_PICKAXE, DIAMOND_SHOVEL,
+  COAL, RAW_IRON, IRON_INGOT, DIAMOND, RAW_GOLD, GOLD_INGOT, REDSTONE,
 } from './items.js';
 import {
-  HAFT, HEAD_WOOD, HEAD_STONE, HEAD_IRON, BUCKET_PALETTE,
-  STICK_PX, PICKAXE_PX, SHOVEL_PX, BUCKET_PX, WATER_BUCKET_PX,
+  HAFT, HEAD_WOOD, HEAD_STONE, HEAD_IRON, HEAD_DIAMOND, BUCKET_PALETTE,
+  STICK_PX, PICKAXE_PX, SHOVEL_PX, AXE_PX, SWORD_PX,
+  BUCKET_PX, WATER_BUCKET_PX,
+  COAL_PX, RAW_IRON_PX, IRON_INGOT_PX, DIAMOND_PX,
+  COAL_PALETTE, RAW_IRON_PALETTE, IRON_INGOT_PALETTE, DIAMOND_PALETTE,
+  RAW_GOLD_PALETTE, GOLD_INGOT_PALETTE, REDSTONE_PALETTE,
 } from './item-sprites.js';
 
 export {
-  HAFT, HEAD_WOOD, HEAD_STONE, HEAD_IRON, BUCKET_PALETTE,
-  STICK_PX, PICKAXE_PX, SHOVEL_PX, BUCKET_PX, WATER_BUCKET_PX,
+  HAFT, HEAD_WOOD, HEAD_STONE, HEAD_IRON, HEAD_DIAMOND, BUCKET_PALETTE,
+  STICK_PX, PICKAXE_PX, SHOVEL_PX, AXE_PX, SWORD_PX,
+  BUCKET_PX, WATER_BUCKET_PX,
 };
 
 export const TEX_SIZE = 16;
@@ -725,6 +734,28 @@ function stoneShovelFace() {
   return paintSprite(SHOVEL_PX, { ...HAFT, ...HEAD_STONE });
 }
 
+/**
+ * The tool sprites, one function per (shape, tier) pair.
+ *
+ * Sixteen near-identical one-liners would be sixteen chances to hand a stone
+ * axe the iron palette, so they are generated from the two tables instead.
+ * The result is still a plain function per item, which is what the atlas
+ * builder wants.
+ */
+const HEADS = {
+  wood: HEAD_WOOD, stone: HEAD_STONE, iron: HEAD_IRON, diamond: HEAD_DIAMOND,
+};
+
+const toolFace = (rows, tier) => () => paintSprite(rows, { ...HAFT, ...HEADS[tier] });
+
+const axeFace = (tier) => toolFace(AXE_PX, tier);
+const swordFace = (tier) => toolFace(SWORD_PX, tier);
+const pickFace = (tier) => toolFace(PICKAXE_PX, tier);
+const spadeFace = (tier) => toolFace(SHOVEL_PX, tier);
+
+/** A raw material: one sprite, one palette, no tiering. */
+const lumpFace = (rows, palette) => () => paintSprite(rows, palette);
+
 function bucketFace() {
   return paintSprite(BUCKET_PX, BUCKET_PALETTE);
 }
@@ -776,6 +807,16 @@ export const BLOCK_DEFS = [
  * name lookup serve both; the three faces are simply the same sprite, because
  * a flat thing has no sides.
  */
+/**
+ * One item def, as a single-element array so it can be spread into the list.
+ *
+ * The three faces are the same sprite, because a flat thing has no sides —
+ * the same reason the original nine entries repeat their face function three
+ * times. Doing it here rather than at every call site is one fewer place for
+ * a top face to end up holding a different picture from its side.
+ */
+const itemDef = (id, name, face) => [{ id, name, item: true, side: face, top: face, bottom: face }];
+
 export const ITEM_DEFS = [
   { id: BUCKET, name: 'Bucket', item: true, side: bucketFace, top: bucketFace, bottom: bucketFace },
   { id: WATER_BUCKET, name: 'Water Bucket', item: true, side: waterBucketFace, top: waterBucketFace, bottom: waterBucketFace },
@@ -786,6 +827,27 @@ export const ITEM_DEFS = [
   { id: WOOD_SHOVEL, name: 'Wooden Shovel', item: true, side: woodShovelFace, top: woodShovelFace, bottom: woodShovelFace },
   { id: STONE_PICKAXE, name: 'Stone Pickaxe', item: true, side: stonePickaxeFace, top: stonePickaxeFace, bottom: stonePickaxeFace },
   { id: STONE_SHOVEL, name: 'Stone Shovel', item: true, side: stoneShovelFace, top: stoneShovelFace, bottom: stoneShovelFace },
+  // Axes: the answer to everything the forest is made of.
+  ...itemDef(WOOD_AXE, 'Wooden Axe', axeFace('wood')),
+  ...itemDef(STONE_AXE, 'Stone Axe', axeFace('stone')),
+  ...itemDef(IRON_AXE, 'Iron Axe', axeFace('iron')),
+  ...itemDef(DIAMOND_AXE, 'Diamond Axe', axeFace('diamond')),
+  // Swords: not a digging tool, except against leaves.
+  ...itemDef(WOOD_SWORD, 'Wooden Sword', swordFace('wood')),
+  ...itemDef(STONE_SWORD, 'Stone Sword', swordFace('stone')),
+  ...itemDef(IRON_SWORD, 'Iron Sword', swordFace('iron')),
+  ...itemDef(DIAMOND_SWORD, 'Diamond Sword', swordFace('diamond')),
+  // The diamond tier of the two original shapes.
+  ...itemDef(DIAMOND_PICKAXE, 'Diamond Pickaxe', pickFace('diamond')),
+  ...itemDef(DIAMOND_SHOVEL, 'Diamond Shovel', spadeFace('diamond')),
+  // What the mine pays you in.
+  ...itemDef(COAL, 'Coal', lumpFace(COAL_PX, COAL_PALETTE)),
+  ...itemDef(RAW_IRON, 'Raw Iron', lumpFace(RAW_IRON_PX, RAW_IRON_PALETTE)),
+  ...itemDef(IRON_INGOT, 'Iron Ingot', lumpFace(IRON_INGOT_PX, IRON_INGOT_PALETTE)),
+  ...itemDef(DIAMOND, 'Diamond', lumpFace(DIAMOND_PX, DIAMOND_PALETTE)),
+  ...itemDef(RAW_GOLD, 'Raw Gold', lumpFace(RAW_IRON_PX, RAW_GOLD_PALETTE)),
+  ...itemDef(GOLD_INGOT, 'Gold Ingot', lumpFace(IRON_INGOT_PX, GOLD_INGOT_PALETTE)),
+  ...itemDef(REDSTONE, 'Redstone Dust', lumpFace(COAL_PX, REDSTONE_PALETTE)),
 ];
 
 /** Everything with a texture in the atlas: blocks first, then items. */
@@ -802,7 +864,21 @@ export const ATLAS_DEFS = [...BLOCK_DEFS, ...ITEM_DEFS];
  * a few seconds' digging away — and the oak log stays gone, because it is the
  * one you get back by walking up to a tree.
  */
-export const STARTER_BLOCKS = [1, 2, 3, 5, 7, 9, PICKAXE, SHOVEL, BUCKET];
+/**
+ * ...and the axe now takes one too.
+ *
+ * That is one argument, not two: the axe does not merely make the forest
+ * quicker, it makes the *crafting table* reachable. Every recipe in the game
+ * starts at a log; a log by hand is three seconds; and three seconds a log,
+ * six logs to a table plus sticks plus the tool itself, is a minute of
+ * standing in front of a tree before anything can be made at all. Half a
+ * second a log with iron is a tree in six.
+ *
+ * The bricks go to make room, because bricks are the one block on the list
+ * that nothing in the world produces and nothing else needs — they are
+ * decoration, and decoration can wait until you have somewhere to put it.
+ */
+export const STARTER_BLOCKS = [1, 2, 3, 5, 9, PICKAXE, SHOVEL, IRON_AXE, BUCKET];
 
 /**
  * Build a 48x16 atlas canvas for a block: [side | top | bottom].
@@ -1348,6 +1424,25 @@ const TINT_BY_ID = {
   36: [0.75, 0.18, 0.14],  // tnt
 };
 
+/**
+ * The same thing for items, which the block table above never covered
+ * because items were never broken — nothing spawns chips off a pickaxe.
+ * They do get *dropped*, though, and a dropped item that has to draw a puff
+ * needs a colour, so the mid tone of each sprite's palette is it.
+ */
+const ITEM_TINT = {
+  [COAL]: [0.18, 0.18, 0.18],
+  [RAW_IRON]: [0.83, 0.68, 0.52],
+  [IRON_INGOT]: [0.81, 0.81, 0.81],
+  [DIAMOND]: [0.41, 0.94, 0.88],
+  [RAW_GOLD]: [0.91, 0.75, 0.25],
+  [GOLD_INGOT]: [0.94, 0.80, 0.28],
+  [REDSTONE]: [0.88, 0.13, 0.13],
+  [BUCKET]: [0.60, 0.64, 0.67],
+  [WATER_BUCKET]: [0.23, 0.41, 0.81],
+  [STICKS]: [0.54, 0.34, 0.16],
+};
+
 export function blockTint(id) {
-  return TINT_BY_ID[id] ?? [0.5, 0.5, 0.5];
+  return TINT_BY_ID[id] ?? ITEM_TINT[id] ?? [0.5, 0.5, 0.5];
 }

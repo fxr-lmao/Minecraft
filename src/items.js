@@ -52,11 +52,166 @@ export const WOOD_SHOVEL = 206;
 export const STONE_PICKAXE = 207;
 export const STONE_SHOVEL = 208;
 
+/**
+ * Axes and swords, and the materials the higher tiers are made of.
+ *
+ * The two new shapes are here because the two old ones had between them
+ * covered only half of what a tool is for. A pickaxe is the answer to stone
+ * and an axe is the answer to wood, and until there was one, chopping a tree
+ * was three seconds a log by hand whatever you were carrying — which made the
+ * forest the one part of the world that a hotbar full of tools could not help
+ * you with. The sword is the other half again: it is not a digging tool at
+ * all, so it wants its own rules rather than an entry in the speed table.
+ *
+ * The materials are the reason the tiers now have a ladder instead of a
+ * ceiling. Coal and raw iron come out of the ore they were always in, the
+ * furnace turns raw iron into an ingot, and diamonds come out whole — so an
+ * iron pickaxe is finally something you *make* rather than something the
+ * starter kit gave you, and the diamond tier exists at all.
+ */
+export const WOOD_AXE = 209;
+export const STONE_AXE = 210;
+export const IRON_AXE = 211;
+export const WOOD_SWORD = 212;
+export const STONE_SWORD = 213;
+export const IRON_SWORD = 214;
+export const COAL = 215;
+export const RAW_IRON = 216;
+export const IRON_INGOT = 217;
+export const DIAMOND = 218;
+export const DIAMOND_PICKAXE = 219;
+export const DIAMOND_SHOVEL = 220;
+export const DIAMOND_AXE = 221;
+export const DIAMOND_SWORD = 222;
+/**
+ * The other three things the ground gives you.
+ *
+ * Gold and redstone were in the world from the day the ore generator went in
+ * and had nowhere to go: you dug them, you got the ore block back, and the
+ * only thing to do with an ore block was put it down again somewhere else.
+ * Now gold smelts into an ingot like iron does and redstone comes out as dust
+ * — neither has anything to build yet, which is honest: they are what the
+ * mine pays you in, and a diamond is what it pays you in when it is being
+ * generous.
+ */
+export const RAW_GOLD = 223;
+export const GOLD_INGOT = 224;
+export const REDSTONE = 225;
+
 /** Item ids, in the order their textures are packed into the atlas. */
 export const ITEM_IDS = [
   BUCKET, WATER_BUCKET, PICKAXE, SHOVEL, STICKS,
   WOOD_PICKAXE, WOOD_SHOVEL, STONE_PICKAXE, STONE_SHOVEL,
+  WOOD_AXE, STONE_AXE, IRON_AXE,
+  WOOD_SWORD, STONE_SWORD, IRON_SWORD,
+  COAL, RAW_IRON, IRON_INGOT, DIAMOND,
+  DIAMOND_PICKAXE, DIAMOND_SHOVEL, DIAMOND_AXE, DIAMOND_SWORD,
+  RAW_GOLD, GOLD_INGOT, REDSTONE,
 ];
+
+/**
+ * Which shape a tool is, for anything that has to know without caring about
+ * the tier — the mining rules, the durability table, and above all the
+ * three-dimensional model, which is one mesh per *shape* and a palette per
+ * tier rather than fourteen separate models.
+ */
+export const SHAPE_PICKAXE = 'pickaxe';
+export const SHAPE_SHOVEL = 'shovel';
+export const SHAPE_AXE = 'axe';
+export const SHAPE_SWORD = 'sword';
+export const SHAPE_BUCKET = 'bucket';
+export const SHAPE_STICK = 'stick';
+export const SHAPE_LUMP = 'lump';
+
+/** Tier names, in the order they get better. */
+export const TIER_WOOD = 'wood';
+export const TIER_STONE = 'stone';
+export const TIER_IRON = 'iron';
+export const TIER_DIAMOND = 'diamond';
+
+/** Every tool: what shape it is and what it is made of. */
+export const TOOL_KINDS = {
+  [WOOD_PICKAXE]: { shape: SHAPE_PICKAXE, tier: TIER_WOOD },
+  [STONE_PICKAXE]: { shape: SHAPE_PICKAXE, tier: TIER_STONE },
+  [PICKAXE]: { shape: SHAPE_PICKAXE, tier: TIER_IRON },
+  [DIAMOND_PICKAXE]: { shape: SHAPE_PICKAXE, tier: TIER_DIAMOND },
+  [WOOD_SHOVEL]: { shape: SHAPE_SHOVEL, tier: TIER_WOOD },
+  [STONE_SHOVEL]: { shape: SHAPE_SHOVEL, tier: TIER_STONE },
+  [SHOVEL]: { shape: SHAPE_SHOVEL, tier: TIER_IRON },
+  [DIAMOND_SHOVEL]: { shape: SHAPE_SHOVEL, tier: TIER_DIAMOND },
+  [WOOD_AXE]: { shape: SHAPE_AXE, tier: TIER_WOOD },
+  [STONE_AXE]: { shape: SHAPE_AXE, tier: TIER_STONE },
+  [IRON_AXE]: { shape: SHAPE_AXE, tier: TIER_IRON },
+  [DIAMOND_AXE]: { shape: SHAPE_AXE, tier: TIER_DIAMOND },
+  [WOOD_SWORD]: { shape: SHAPE_SWORD, tier: TIER_WOOD },
+  [STONE_SWORD]: { shape: SHAPE_SWORD, tier: TIER_STONE },
+  [IRON_SWORD]: { shape: SHAPE_SWORD, tier: TIER_IRON },
+  [DIAMOND_SWORD]: { shape: SHAPE_SWORD, tier: TIER_DIAMOND },
+};
+
+/**
+ * What an item looks like in three dimensions, for the held model. Anything
+ * not in here is a flat sprite, which is the right answer for a lump of coal
+ * and the wrong one for a bucket.
+ */
+export const ITEM_SHAPES = {
+  ...Object.fromEntries(Object.entries(TOOL_KINDS).map(([id, k]) => [id, k.shape])),
+  [BUCKET]: SHAPE_BUCKET,
+  [WATER_BUCKET]: SHAPE_BUCKET,
+  [STICKS]: SHAPE_STICK,
+  [COAL]: SHAPE_LUMP,
+  [RAW_IRON]: SHAPE_LUMP,
+  [IRON_INGOT]: SHAPE_LUMP,
+  [DIAMOND]: SHAPE_LUMP,
+  [RAW_GOLD]: SHAPE_LUMP,
+  [GOLD_INGOT]: SHAPE_LUMP,
+  [REDSTONE]: SHAPE_LUMP,
+};
+
+/** The shape of an item, or null for a block (which is a cube already). */
+export const itemShape = (id) => ITEM_SHAPES[id] ?? null;
+
+/** The tool's shape/tier pair, or null if it is not a tool. */
+export const toolKind = (id) => TOOL_KINDS[id] ?? null;
+
+/** Is this a sword? Swords are the one tool that is not for digging. */
+export const isSword = (id) => TOOL_KINDS[id]?.shape === SHAPE_SWORD;
+
+/** Is this an axe? */
+export const isAxe = (id) => TOOL_KINDS[id]?.shape === SHAPE_AXE;
+
+/**
+ * Is this a raw material — something you carry, smelt or build with, but
+ * never swing? Used by the model to keep lumps flat.
+ */
+export const MATERIALS = [
+  COAL, RAW_IRON, IRON_INGOT, DIAMOND, RAW_GOLD, GOLD_INGOT, REDSTONE,
+];
+export const isMaterial = (id) => MATERIALS.includes(id);
+
+/**
+ * What each ore gives up when it is broken.
+ *
+ * Minecraft's split, and it is a real design decision rather than a table:
+ * coal, redstone and diamond come out *finished* — there is nothing a furnace
+ * can do to a diamond — while iron and gold come out raw and have to be
+ * smelted. That is the whole reason a furnace is worth building past the
+ * first stack of glass, and the reason an iron pickaxe is a journey rather
+ * than a recipe.
+ *
+ * Keyed by ore id, with the deepslate twins mapping to the same drop, because
+ * a deepslate diamond is a diamond that happened to be deeper down.
+ */
+export const ORE_DROPS = {
+  23: COAL, 28: COAL,             // coal ore, deepslate coal ore
+  24: RAW_IRON, 29: RAW_IRON,     // iron
+  25: RAW_GOLD, 30: RAW_GOLD,     // gold
+  26: REDSTONE, 31: REDSTONE,     // redstone
+  27: DIAMOND, 32: DIAMOND,       // diamond
+};
+
+/** What an ore drops, or null if it is not an ore. */
+export const oreDrop = (id) => ORE_DROPS[id] ?? null;
 
 export const ITEM_NAMES = {
   [BUCKET]: 'Bucket',
@@ -68,6 +223,23 @@ export const ITEM_NAMES = {
   [WOOD_SHOVEL]: 'Wooden Shovel',
   [STONE_PICKAXE]: 'Stone Pickaxe',
   [STONE_SHOVEL]: 'Stone Shovel',
+  [WOOD_AXE]: 'Wooden Axe',
+  [STONE_AXE]: 'Stone Axe',
+  [IRON_AXE]: 'Iron Axe',
+  [WOOD_SWORD]: 'Wooden Sword',
+  [STONE_SWORD]: 'Stone Sword',
+  [IRON_SWORD]: 'Iron Sword',
+  [COAL]: 'Coal',
+  [RAW_IRON]: 'Raw Iron',
+  [IRON_INGOT]: 'Iron Ingot',
+  [DIAMOND]: 'Diamond',
+  [DIAMOND_PICKAXE]: 'Diamond Pickaxe',
+  [DIAMOND_SHOVEL]: 'Diamond Shovel',
+  [DIAMOND_AXE]: 'Diamond Axe',
+  [DIAMOND_SWORD]: 'Diamond Sword',
+  [RAW_GOLD]: 'Raw Gold',
+  [GOLD_INGOT]: 'Gold Ingot',
+  [REDSTONE]: 'Redstone Dust',
 };
 
 /**

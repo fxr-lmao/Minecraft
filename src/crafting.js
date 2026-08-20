@@ -8,7 +8,13 @@
 // exactly with nothing left over.
 
 import { PLANKS, LOG, COBBLESTONE, SAND, STONE } from './terrain.js';
-import { STICKS, WOOD_PICKAXE, WOOD_SHOVEL, STONE_PICKAXE, STONE_SHOVEL } from './items.js';
+import {
+  STICKS, WOOD_PICKAXE, WOOD_SHOVEL, STONE_PICKAXE, STONE_SHOVEL,
+  WOOD_AXE, STONE_AXE, IRON_AXE, DIAMOND_AXE,
+  WOOD_SWORD, STONE_SWORD, IRON_SWORD, DIAMOND_SWORD,
+  PICKAXE, SHOVEL, DIAMOND_PICKAXE, DIAMOND_SHOVEL,
+  IRON_INGOT, DIAMOND, COAL, TIER_WOOD, TIER_STONE, TIER_IRON, TIER_DIAMOND,
+} from './items.js';
 import { CRAFTING_TABLE, FURNACE, GLASS, TNT } from './blocks-extra.js';
 
 export const GRID_2X2 = { rows: 2, cols: 2 };
@@ -147,6 +153,21 @@ export const RECIPES = [
     key: { S: STONE, T: STICKS },
     out: { id: STONE_SHOVEL, count: 1 },
   },
+  // ------------------------------------------------------------- tool tiers
+  //
+  // Four shapes times four tiers is sixteen recipes, and writing sixteen of
+  // them out by hand is sixteen chances to put the sticks in the wrong cell.
+  // They are generated from one table instead, below the literal recipes, and
+  // spliced in at the end of this array — the shapes are Minecraft's exactly:
+  //
+  //   pickaxe  MMM / .S. / .S.
+  //   axe      MM. / MS. / .S.
+  //   shovel   M / S / S
+  //   sword    M / M / S
+  //
+  // The axe pattern is the one worth checking against the real game: it is
+  // asymmetric, and a symmetric version of it is a different recipe that
+  // makes nothing.
   {
     name: 'Glass',
     shaped: true,
@@ -165,6 +186,120 @@ export const RECIPES = [
     out: { id: TNT, count: 1 },
   },
 ];
+
+// ------------------------------------------------------- generated tool set
+
+/**
+ * What each tier is made of. Wood and stone come from the world directly;
+ * iron and diamond come from the mine, which is the whole point of the
+ * material items — a tier is a *supply chain*, not a menu entry.
+ */
+export const TIER_MATERIALS = {
+  [TIER_WOOD]: [PLANKS],
+  /**
+   * Two of them, and this is not a shortcut.
+   *
+   * Minecraft makes stone tools out of *cobblestone*, and the two recipes
+   * already written by hand above make them out of smooth stone — because
+   * when they were written the only way to get stone was to smelt cobble, so
+   * the recipe was the reason the furnace existed. Both are now true: cobble
+   * comes straight out of the ground and stone comes out of the furnace, and
+   * a stone axe should not be pickier about its material than a stone
+   * pickaxe is. So the tier takes either, and the generator emits a recipe
+   * for each.
+   */
+  [TIER_STONE]: [COBBLESTONE, STONE],
+  [TIER_IRON]: [IRON_INGOT],
+  [TIER_DIAMOND]: [DIAMOND],
+};
+
+/**
+ * Minecraft's four tool patterns. `M` is the tier's material and `S` is a
+ * stick, in every one of them.
+ */
+export const TOOL_PATTERNS = {
+  pickaxe: ['MMM', '.S.', '.S.'],
+  axe: ['MM.', 'MS.', '.S.'],
+  shovel: ['M', 'S', 'S'],
+  sword: ['M', 'M', 'S'],
+};
+
+/** Which item each (shape, tier) pair produces. */
+export const TOOL_OUTPUTS = {
+  pickaxe: {
+    [TIER_WOOD]: WOOD_PICKAXE,
+    [TIER_STONE]: STONE_PICKAXE,
+    [TIER_IRON]: PICKAXE,
+    [TIER_DIAMOND]: DIAMOND_PICKAXE,
+  },
+  shovel: {
+    [TIER_WOOD]: WOOD_SHOVEL,
+    [TIER_STONE]: STONE_SHOVEL,
+    [TIER_IRON]: SHOVEL,
+    [TIER_DIAMOND]: DIAMOND_SHOVEL,
+  },
+  axe: {
+    [TIER_WOOD]: WOOD_AXE,
+    [TIER_STONE]: STONE_AXE,
+    [TIER_IRON]: IRON_AXE,
+    [TIER_DIAMOND]: DIAMOND_AXE,
+  },
+  sword: {
+    [TIER_WOOD]: WOOD_SWORD,
+    [TIER_STONE]: STONE_SWORD,
+    [TIER_IRON]: IRON_SWORD,
+    [TIER_DIAMOND]: DIAMOND_SWORD,
+  },
+};
+
+const TIER_LABELS = {
+  [TIER_WOOD]: 'Wooden',
+  [TIER_STONE]: 'Stone',
+  [TIER_IRON]: 'Iron',
+  [TIER_DIAMOND]: 'Diamond',
+};
+
+const SHAPE_LABELS = {
+  pickaxe: 'Pickaxe', shovel: 'Shovel', axe: 'Axe', sword: 'Sword',
+};
+
+/**
+ * Every tool recipe, generated.
+ *
+ * A `.` in a pattern is an empty cell; the matcher already reads ' ' that
+ * way, so the dots are translated on the way out. Dots rather than spaces in
+ * the source because a trailing space in a string literal is invisible and
+ * this file has already lost an afternoon to one.
+ */
+export function buildToolRecipes() {
+  const out = [];
+  for (const [shape, pattern] of Object.entries(TOOL_PATTERNS)) {
+    for (const [tier, materials] of Object.entries(TIER_MATERIALS)) {
+      const id = TOOL_OUTPUTS[shape][tier];
+      if (id === undefined) continue;
+      for (const material of materials) {
+        // Skip any (output, material) pair already written out by hand above,
+        // so the wooden and stone pickaxes/shovels keep their original
+        // entries and there is never a pair of identical recipes competing
+        // for the same grid.
+        const already = RECIPES.some(
+          (r) => r.out.id === id && r.shaped && Object.values(r.key).includes(material)
+        );
+        if (already) continue;
+        out.push({
+          name: `${TIER_LABELS[tier]} ${SHAPE_LABELS[shape]}`,
+          shaped: true,
+          pattern: pattern.map((row) => row.replace(/\./g, ' ')),
+          key: { M: material, S: STICKS },
+          out: { id, count: 1 },
+        });
+      }
+    }
+  }
+  return out;
+}
+
+RECIPES.push(...buildToolRecipes());
 
 /** Count how many of each id a shapeless recipe's inputs need. */
 function inputCounts(inputs) {

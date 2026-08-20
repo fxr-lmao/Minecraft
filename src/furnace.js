@@ -11,13 +11,25 @@
 // log burns for 15 seconds of fuel, planks for 7.5, sticks for 2.5.
 
 import { SAND, GLASS, COBBLESTONE, STONE, LOG, PLANKS } from './terrain.js';
-import { STICKS } from './items.js';
+import {
+  STICKS, RAW_IRON, IRON_INGOT, RAW_GOLD, GOLD_INGOT, COAL,
+} from './items.js';
 
 /** Real seconds to smelt one item (Minecraft's 200 ticks). */
 export const SMELT_TIME = 10;
 
-/** What each fuel burns for, in seconds. */
+/**
+ * What each fuel burns for, in seconds.
+ *
+ * Coal is the one that matters and it is Minecraft's number: eighty seconds,
+ * which is eight items, against a log's fifteen. Before there was any coal
+ * *item* the furnace ran on wood and only wood, which meant that smelting a
+ * stack of raw iron cost most of a tree — and coal ore, which the mine
+ * produces more of than anything else, was worth nothing at all. One entry in
+ * this table is the difference.
+ */
 export const FUEL_SECONDS = {
+  [COAL]: 80,
   [LOG]: 15,
   [PLANKS]: 7.5,
   [STICKS]: 2.5,
@@ -27,6 +39,10 @@ export const FUEL_SECONDS = {
 export const SMELT_RECIPES = {
   [SAND]: GLASS,
   [COBBLESTONE]: STONE,
+  // The two ores that come out raw. This is the other half of the ore-drop
+  // change: a diamond needs no furnace, and raw iron is useless without one.
+  [RAW_IRON]: IRON_INGOT,
+  [RAW_GOLD]: GOLD_INGOT,
 };
 
 export const isFuel = (id) => id in FUEL_SECONDS;

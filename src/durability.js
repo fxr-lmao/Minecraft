@@ -6,17 +6,37 @@
 // without the field (old saves, crafted tools) are treated as full when
 // first inspected. This file is pure data — no DOM, no THREE.
 
-import { PICKAXE, SHOVEL, WOOD_PICKAXE, WOOD_SHOVEL, STONE_PICKAXE, STONE_SHOVEL } from './items.js';
+import {
+  PICKAXE, SHOVEL, WOOD_PICKAXE, WOOD_SHOVEL, STONE_PICKAXE, STONE_SHOVEL,
+  WOOD_AXE, STONE_AXE, IRON_AXE, DIAMOND_AXE,
+  WOOD_SWORD, STONE_SWORD, IRON_SWORD, DIAMOND_SWORD,
+  DIAMOND_PICKAXE, DIAMOND_SHOVEL,
+  TOOL_KINDS, TIER_WOOD, TIER_STONE, TIER_IRON, TIER_DIAMOND,
+} from './items.js';
 
-/** Minecraft's durability per tool. */
-export const MAX_DURABILITY = {
-  [WOOD_PICKAXE]: 59,
-  [WOOD_SHOVEL]: 59,
-  [STONE_PICKAXE]: 131,
-  [STONE_SHOVEL]: 131,
-  [PICKAXE]: 250,
-  [SHOVEL]: 250,
+/**
+ * Minecraft's durability per *tier*, which is the honest way to say it: every
+ * tool of a given material has the same number of uses in it, whatever shape
+ * it happens to be. Wood 59, stone 131, iron 250, diamond 1561 — and that
+ * last number is not a typo, it is six times the iron one, and it is the
+ * whole reason a diamond pickaxe is worth the fortnight it takes to find the
+ * diamonds.
+ */
+export const TIER_DURABILITY = {
+  [TIER_WOOD]: 59,
+  [TIER_STONE]: 131,
+  [TIER_IRON]: 250,
+  [TIER_DIAMOND]: 1561,
 };
+
+/**
+ * Minecraft's durability per tool, derived from the tier table above rather
+ * than written out sixteen times — which is not laziness, it is the only way
+ * to be sure a diamond axe and a diamond sword agree with each other.
+ */
+export const MAX_DURABILITY = Object.fromEntries(
+  Object.entries(TOOL_KINDS).map(([id, kind]) => [id, TIER_DURABILITY[kind.tier]])
+);
 
 /** The full durability of a stack's item, or undefined for non-tools. */
 export function maxDurability(id) {

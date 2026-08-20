@@ -220,6 +220,39 @@ body.nocursor #game { cursor: none; }
 }
 #held-name.show { opacity: 1; }
 
+/* ---------- pickup feed ---------- */
+/*
+ * The "+3 Cobblestone" lines that rise above the hotbar. Column-reverse so a
+ * new line appears at the bottom, nearest the hotbar, and pushes the older
+ * ones up — which is the direction Minecraft's goes and the direction your
+ * eye is already looking after picking something up.
+ */
+#pickups {
+  position: fixed;
+  left: 50%;
+  bottom: calc(128px + env(safe-area-inset-bottom));
+  transform: translateX(-50%);
+  display: flex;
+  flex-direction: column-reverse;
+  align-items: center;
+  gap: 2px;
+  z-index: 10;
+  pointer-events: none;
+}
+.pickup-line {
+  color: var(--text);
+  font-size: 13px;
+  text-shadow: 2px 2px 0 rgba(0, 0, 0, 0.7);
+  white-space: nowrap;
+  opacity: 0;
+  transform: translateY(6px);
+  transition: opacity 0.25s ease-out, transform 0.25s ease-out;
+}
+.pickup-line.show {
+  opacity: 1;
+  transform: translateY(0);
+}
+
 /* ---------- inventory screen ---------- */
 #inventory {
   position: fixed;
