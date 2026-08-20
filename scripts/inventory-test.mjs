@@ -1,6 +1,7 @@
 // Inventory model: 9 hotbar slots + a 9 x 3 main grid.
 // Covers stacking, the pick-up/drop cursor, right-click halves and shift-move.
 import { Inventory, HOTBAR_SIZE, MAIN_SIZE, TOTAL_SLOTS, STACK_MAX } from '../src/inventory.js';
+import { BUCKET, PICKAXE, SHOVEL } from '../src/items.js';
 
 const results = [];
 const assert = (name, cond, detail) =>
@@ -121,6 +122,15 @@ const assert = (name, cond, detail) =>
   inv.fillStarterKit([1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
   assert('kit fills the hotbar only', inv.slots.slice(0, 9).every((s) => s?.count === STACK_MAX) &&
     inv.slots.slice(9).every((s) => s === null));
+
+  // Items are not blocks and do not come in stacks of sixty-four: a bucket
+  // you have 64 of turns into 64 water buckets the first time you dip it.
+  const kit = new Inventory();
+  kit.fillStarterKit([1, 2, BUCKET, PICKAXE, SHOVEL]);
+  assert('blocks come as a stack, tools and buckets come as one',
+    kit.get(0).count === STACK_MAX && kit.get(2).count === 1
+    && kit.get(3).count === 1 && kit.get(4).count === 1,
+    kit.slots.slice(0, 5).map((s) => s && s.count).join(','));
 }
 
 for (const [name, ok, detail] of results) {
