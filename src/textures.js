@@ -852,56 +852,129 @@ export function getWaterTextures() {
 /**
  * The crack that grows over a block while you dig it.
  *
- * Ten stages in Minecraft, four here, because the difference between stage
- * two and stage three is a pixel and the difference between "cracked" and
- * "not cracked" is the whole message. Each stage keeps the last one's cracks
- * and adds to them, so it reads as one thing getting worse rather than four
+ * Ten stages, which is Minecraft's count, and every pixel of them written by
+ * hand into image data rather than stroked.
+ *
+ * That is the whole of the rework. The first version drew each crack as a
+ * canvas path, and a canvas path at fractional coordinates is anti-aliased —
+ * so what landed on a 16x16 texture that is then magnified forty times by a
+ * nearest-neighbour sampler was not a crack, it was a soft grey smudge with
+ * blurred ends. Minecraft's destroy stages are pixel art: every cell is on or
+ * off, the lines are one pixel wide and jagged because they step rather than
+ * slope, and that hard edge is what reads as *broken* rather than as dirty.
+ *
+ * The crack is grown once, as an ordered list of cells spreading outward from
+ * the middle, and stage n is the first tenth-of-the-way-through-n of it. That
+ * gives Minecraft's other property for free: each stage strictly contains the
+ * one before, so it reads as one thing getting worse rather than as ten
  * pictures taking turns.
  *
- * Every crack is drawn twice: a pale line, and the dark one a pixel up and
- * left of it. Black alone was the obvious way to do it and it was wrong —
- * mining happens underground, where the rock is already nearly black and a
- * black line on it is nothing at all. The pale half is what makes it read
- * down there, and the dark half is what makes it read on sand at noon, so
- * between them the crack shows up on anything.
+ * Each dark cell also lights the cell below-right of it, where nothing dark
+ * is going to land. Minecraft's stages are greyscale and lean on block light
+ * to be visible; this game has no torches, and a crack that is only dark is
+ * invisible on the deepslate you would be mining it in.
  */
-const CRACK_STAGES = 4;
+const CRACK_STAGES = 10;
+
+/**
+ * The whole crack, cell by cell, in the order it spreads.
+ *
+ * Branches are grown breadth-first from a queue so they advance together and
+ * the crack opens outward, instead of one arm reaching the edge before the
+ * next one starts.
+ */
+function crackCells() {
+  const rand = mulberry32(4523);
+  const cells = [];
+  const seen = new Set();
+  const mid = TEX_SIZE / 2;
+  const key = (x, y) => y * TEX_SIZE + x;
+
+  const put = (x, y) => {
+    if (x < 0 || y < 0 || x >= TEX_SIZE || y >= TEX_SIZE) return false;
+    const k = key(x, y);
+    if (!seen.has(k)) {
+      seen.add(k);
+      cells.push([x, y]);
+    }
+    return true;
+  };
+
+  // Four arms out of the middle, plus a couple of shorter ones, all stepping
+  // one cell at a time and wandering a cell either side as they go.
+  const queue = [];
+  const arms = 8;
+  for (let i = 0; i < arms; i++) {
+    const a = (i / arms) * Math.PI * 2 + rand() * 0.6;
+    // Not all from the same cell: eight arms out of one point is a starburst,
+    // and a broken block is not a starburst. They start a little way out,
+    // scattered, so what spreads is a web.
+    const r = 0.5 + rand() * 2.5;
+    queue.push({ x: mid + Math.cos(a) * r, y: mid + Math.sin(a) * r, a, life: 14 });
+  }
+
+  while (queue.length) {
+    const b = queue.shift();
+    if (b.life <= 0) continue;
+    // A step is a whole cell in the dominant direction and, now and then, one
+    // in the other — which is what makes the line jagged rather than smooth.
+    b.a += (rand() - 0.5) * 1.1;
+    // ...and then pulled a third of the way back to straight-out-from-the-
+    // middle, or a wandering arm curls round on itself and the corners of the
+    // tile never crack at all.
+    const ox = b.x - mid;
+    const oy = b.y - mid;
+    if (ox || oy) {
+      const outward = Math.atan2(oy, ox);
+      b.a += (((outward - b.a + Math.PI * 3) % (Math.PI * 2)) - Math.PI) * 0.34;
+    }
+    const dx = Math.cos(b.a);
+    const dy = Math.sin(b.a);
+    const step = Math.abs(dx) > Math.abs(dy)
+      ? [Math.sign(dx), rand() < 0.42 ? Math.sign(dy) : 0]
+      : [rand() < 0.42 ? Math.sign(dx) : 0, Math.sign(dy)];
+    b.x += step[0];
+    b.y += step[1];
+    if (!put(Math.round(b.x), Math.round(b.y))) continue;
+    b.life--;
+    // A fork every so often, which is what turns four lines into a web.
+    if (b.life > 3 && rand() < 0.3) {
+      queue.push({ x: b.x, y: b.y, a: b.a + (rand() < 0.5 ? 1.3 : -1.3), life: b.life - 3 });
+    }
+    queue.push(b);
+  }
+  return { cells, seen, key };
+}
+
+let crackAll = null;
 
 function crackCanvas(stage) {
-  const rand = mulberry32(9137);
+  if (!crackAll) crackAll = crackCells();
+  const { cells, seen, key } = crackAll;
   const cv = document.createElement('canvas');
   cv.width = cv.height = TEX_SIZE;
   const ctx = cv.getContext('2d');
-  ctx.clearRect(0, 0, TEX_SIZE, TEX_SIZE);
-  // Every stage draws the same cracks in the same order — same seed — and
-  // simply stops later, which is what makes them accumulate.
-  const cracks = 2 + stage * 2;
-  const alpha = 0.35 + stage * 0.13;
-  for (let i = 0; i < cracks; i++) {
-    let x = 1 + rand() * (TEX_SIZE - 2);
-    let y = 1 + rand() * (TEX_SIZE - 2);
-    let angle = rand() * Math.PI * 2;
-    const segments = 3 + Math.floor(rand() * 3);
-    const points = [[x, y]];
-    for (let seg = 0; seg < segments; seg++) {
-      angle += (rand() - 0.5) * 1.9;
-      x += Math.cos(angle) * (1.5 + rand() * 3);
-      y += Math.sin(angle) * (1.5 + rand() * 3);
-      points.push([x, y]);
-    }
-    const stroke = (dx, dy, style) => {
-      ctx.strokeStyle = style;
-      ctx.lineWidth = 1;
-      ctx.beginPath();
-      points.forEach(([px, py], k) => {
-        if (k === 0) ctx.moveTo(px + dx, py + dy);
-        else ctx.lineTo(px + dx, py + dy);
-      });
-      ctx.stroke();
-    };
-    stroke(0.5, 0.5, `rgba(236,236,236,${alpha * 0.85})`);
-    stroke(-0.5, -0.5, `rgba(0,0,0,${alpha})`);
+  const img = ctx.createImageData(TEX_SIZE, TEX_SIZE);
+  const shown = Math.round(cells.length * (stage + 1) / CRACK_STAGES);
+
+  const set = (x, y, v, a) => {
+    if (x < 0 || y < 0 || x >= TEX_SIZE || y >= TEX_SIZE) return;
+    const o = (y * TEX_SIZE + x) * 4;
+    if (img.data[o + 3] >= a) return; // never lighten a cell already darkened
+    img.data[o] = img.data[o + 1] = img.data[o + 2] = v;
+    img.data[o + 3] = a;
+  };
+
+  // The lit side first, so a dark cell always wins the cell it shares. Not
+  // every cell gets one: a highlight beside every single dark pixel draws a
+  // second line parallel to the first, and what you want is a chip of light
+  // here and there along the crack.
+  for (let i = 0; i < shown; i++) {
+    const [x, y] = cells[i];
+    if ((i * 2654435761) % 5 < 2 && !seen.has(key(x + 1, y + 1))) set(x + 1, y + 1, 232, 128);
   }
+  for (let i = 0; i < shown; i++) set(cells[i][0], cells[i][1], 0, 205);
+  ctx.putImageData(img, 0, 0);
   return cv;
 }
 

@@ -44,7 +44,12 @@ const BEDROCK_FADE = 4;
 export const GRASS = 1;
 export const DIRT = 2;
 export const STONE = 3;
+// Blocks the generator never places, but the player does — and the mining
+// rules need to know what they are made of.
+export const COBBLESTONE = 4;
+export const PLANKS = 5;
 export const SAND = 6;
+export const BRICKS = 7;
 export const BEDROCK = 8;
 export const SNOW = 9;
 export const LOG = 10;
