@@ -136,6 +136,29 @@ function simulate(drops, world, seconds, player = null, collect = null, step = 1
   const c = coarse.add(2.5, 40, 2.5, DIRT);
   simulate(coarse, world, 8, null, null, 1 / 10);
   assert('...and does not tunnel at a coarse timestep', c.y >= -1e-6, c.y);
+
+  // The same claim against a floor that can actually be missed.
+  //
+  // `makeWorld` is solid everywhere below y=0, which is a half-space: a drop
+  // that steps clean past the surface lands *inside* the rock and is caught
+  // anyway, so the coarse-step assertion above passes whatever the integrator
+  // does. A real floor is one block thick with air under it, and the
+  // collision test is a point sample of the destination cell — so a step
+  // longer than a block steps over the floor entirely and the drop falls
+  // forever. Every dt here is one a real frame can hand over: main.js clamps
+  // at 0.25 s, and a chunk build or a tab waking up reaches it.
+  const plate = {
+    get: (x, y, z) => (y === 0 ? STONE : AIR),
+    isSolid(x, y, z) { return this.get(x, y, z) !== AIR; },
+  };
+  for (const step of [1 / 120, 1 / 60, 1 / 30, 1 / 10, 0.25]) {
+    const thin = new Drops();
+    // High enough to be at terminal velocity long before it arrives.
+    const t = thin.add(2.5, 250, 2.5, DIRT);
+    simulate(thin, plate, 40, null, null, step);
+    assert(`a drop lands on a one-block floor at dt=${step.toFixed(4)}`,
+      Math.abs(t.y - 1) < 0.01, t.y.toFixed(3));
+  }
 }
 
 // ------------------------------------------------------------- walls, floors
@@ -229,6 +252,38 @@ function simulate(drops, world, seconds, player = null, collect = null, step = 1
   assert('nothing can fall faster than terminal velocity', terminal === 40, terminal);
   assert('no bounce can be loud enough to re-arm the sound',
     terminal * BOUNCE < LAND_SOUND_SPEED, `${(terminal * BOUNCE).toFixed(1)} vs ${LAND_SOUND_SPEED}`);
+
+  // ...and the *simulation* has to agree with that arithmetic, which is a
+  // separate claim and the one that was false: the drag was applied to vx and
+  // vz and not to vy, so a falling drop accelerated without any limit at all.
+  // Two constants dividing to 40 proves nothing on its own — this drops one
+  // from far enough that it would be doing hundreds of blocks a second if
+  // nothing were holding it back, and watches how fast it actually gets.
+  {
+    const far = new Drops();
+    const v = far.add(0.5, 100000, 0.5, COBBLESTONE);
+    let fastest = 0;
+    for (let t = 0; t < 60; t += 1 / 120) {
+      far.update(1 / 120, world);
+      fastest = Math.max(fastest, -v.vy);
+    }
+    assert('a drop really does stop accelerating at terminal velocity',
+      fastest > terminal * 0.99 && fastest <= terminal, fastest.toFixed(2));
+  }
+
+  // The consequence, from the other end: however far a drop falls, it may
+  // only ever thud once. A fall long enough to beat terminal velocity would
+  // bounce back above the threshold and re-arm its own latch.
+  for (const height of [128, 400, 2000]) {
+    const tall = new Drops();
+    tall.add(0.5, height, 0.5, COBBLESTONE);
+    let thuds = 0;
+    for (let t = 0; t < 80; t += 1 / 120) {
+      tall.update(1 / 120, world);
+      if (tall.loudestLanding()) thuds++;
+    }
+    assert(`a fall from ${height} blocks still thuds exactly once`, thuds === 1, thuds);
+  }
 
   // And the other end: the threshold must be low enough that an ordinary
   // two-block fall is still audible, or the sound never plays at all.
