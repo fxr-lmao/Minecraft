@@ -11,7 +11,7 @@
 // game is paused or a menu is open — a paused game is completely still.
 
 import * as THREE from '../vendor/three.module.min.js';
-import { World, AIR, BEDROCK, ICE, toChunk } from './world.js';
+import { World, AIR, BEDROCK, ICE, CRAFTING_TABLE, FURNACE, TNT, toChunk } from './world.js';
 import { isWater, waterHeight, SEA_LEVEL } from './terrain.js';
 import { WorldRenderer, buildSingleBlockGeometry, buildSingleItemGeometry } from './blocks.js';
 import { Player } from './player.js';
@@ -31,7 +31,14 @@ import { ViewController } from './view.js';
 import { createPlayerModel } from './player-model.js';
 import { raycastVoxel, blockIntersectsPlayer } from './raycast.js';
 import { createSky, FOG_COLOR } from './sky.js';
-import { STARTER_BLOCKS, getAtlasTexture, getCrackStages, crackStage } from './textures.js';
+import { STARTER_BLOCKS, getAtlasTexture, getCrackStages, crackStage, blockTint } from './textures.js';
+import { GameMode } from './gamemode.js';
+import { XpBar, xpForBlock } from './xp.js';
+import { FurnaceStore } from './furnace.js';
+import { FurnaceUI } from './furnace-ui.js';
+import { FuseTracker, blastBlocks } from './tnt.js';
+import { spendDurability, isTool } from './durability.js';
+import * as sound from './sound.js';
 import { settings, setSetting, LIMITS } from './settings.js';
 import * as savegame from './savegame.js';
 import {
@@ -40,7 +47,7 @@ import {
   CHUNK_SIZE, DATA_RADIUS,
   MAX_HEALTH, MAX_AIR,
 } from './constants.js';
-import { clamp, lerp } from './utils.js';
+import { clamp, lerp, smoothstep } from './utils.js';
 
 const MOUSE_SENSITIVITY = 0.0024; // multiplied by the player's setting
 const TOUCH_SENSITIVITY = 0.006;
@@ -161,12 +168,55 @@ let wasSubmerged = null;
  */
 const RAIN_FOG = new THREE.Color(0x8e9aa6);
 const CLEAR_FOG = new THREE.Color(FOG_COLOR);
+const DAY_FOG = new THREE.Color(FOG_COLOR);
+const NIGHT_FOG = new THREE.Color(0x0b0f22);
+
+/**
+ * What time of day does to the light.
+ *
+ * The sky has a clock now, and a dome that goes dark at midnight over a
+ * world lit like noon is worse than no cycle at all. So the *clear-sky*
+ * values are no longer constants — they are whatever the clock says — and
+ * `applyWeather` still multiplies rain on top of them, which keeps one place
+ * deciding how bright a clear day is.
+ */
+let clearSun = 1.25;
+let clearHemi = 0.75;
+let clearAmbient = 0.45;
+
+function applyDaylight() {
+  // Daylight comes off the sun's elevation alone, not off `lightLevel`.
+  // That sum includes the moon, and the moon rises faster than the sun sets
+  // — so mixing on it made midnight *brighter* than dusk, which is the one
+  // thing a day/night cycle must never do. The moon is the floor under this
+  // curve instead, which is what moonlight actually is.
+  const day = clamp(smoothstep(-0.12, 0.45, sky.sunDir.y), 0, 1);
+  clearSun = lerp(0.03, 1.25, day);
+  clearHemi = lerp(0.08, 0.75, day);
+  clearAmbient = lerp(0.07, 0.45, day);
+  CLEAR_FOG.lerpColors(NIGHT_FOG, DAY_FOG, day);
+  // The key light follows whichever body is up, so the world still has a
+  // direction to be lit from after dark — a dim one, from the moon. Letting
+  // the sun sink below the floor instead would light everything from beneath.
+  const dir = sky.sunDir;
+  const up = dir.y > -0.05;
+  const key = up ? dir : { x: -dir.x, y: -dir.y, z: -dir.z };
+  sun.position.set(
+    player.pos.x + key.x * 120,
+    player.pos.y + key.y * 120,
+    player.pos.z + key.z * 120
+  );
+  sun.target.position.copy(player.pos);
+  // The water reflects the same sun the world is lit by, so it moves too.
+  setSunDirection(key.x, key.y, key.z);
+}
+
 function applyWeather(level, submerged) {
   sky.setOvercast(level);
   setWaterOvercast(level);
-  sun.intensity = 1.25 * (1 - 0.58 * level);
-  hemi.intensity = 0.75 * (1 - 0.22 * level);
-  ambient.intensity = 0.45 * (1 - 0.12 * level);
+  sun.intensity = clearSun * (1 - 0.58 * level);
+  hemi.intensity = clearHemi * (1 - 0.22 * level);
+  ambient.intensity = clearAmbient * (1 - 0.12 * level);
   if (submerged) return; // down there the water grade owns the fog
   scene.fog.color.lerpColors(CLEAR_FOG, RAIN_FOG, level);
   const blocks = settings.renderDistance * CHUNK_SIZE;
@@ -200,7 +250,7 @@ function applyUnderwaterFog(submerged) {
     scene.fog.far = graded ? 110 : 22;
     renderer.setClearColor(UNDERWATER_FOG);
   } else {
-    scene.fog.color.setHex(FOG_COLOR);
+    scene.fog.color.copy(CLEAR_FOG);
     applyRenderDistance();
   }
   sky.setVisible(!submerged);
@@ -243,8 +293,8 @@ scene.add(ambient);
 
 const sun = new THREE.DirectionalLight(0xfff2d9, 1.25);
 sun.position.set(60, 100, 40);
-// The water reflects the same sun the world is lit by, so it has to be told
-// where it is. It never moves (no day cycle yet), hence once, here.
+// A starting position only. There is a day cycle now, so `applyDaylight`
+// moves this light — and tells the water where it went — every frame.
 setSunDirection(60, 100, 40);
 sun.castShadow = true;
 let shadowMapSize = 2048;
@@ -265,6 +315,16 @@ scene.add(sun.target);
 const world = new World();
 const inventory = new Inventory();
 const view = new ViewController();
+
+/** Survival or creative. Everything that changes with it reads these flags. */
+const gameMode = new GameMode();
+/** Points and levels, earned by mining ore. */
+const xp = new XpBar();
+/** What every furnace in the world is doing; saved with it. */
+const furnaces = new FurnaceStore();
+/** Which TNT blocks are burning. Transient — a lit fuse dies with the page. */
+const fuses = new FuseTracker();
+
 const restored = savegame.load();
 
 if (restored) {
@@ -273,6 +333,14 @@ if (restored) {
     restored.inventory.slots.forEach((stack, i) => inventory.set(i, stack));
     inventory.select(restored.inventory.selected);
   }
+  if (restored.inventory.craft) {
+    restored.inventory.craft.forEach((cell, i) => {
+      if (i < inventory.craftGrid.cells.length) inventory.craftGrid.cells[i] = cell;
+    });
+  }
+  furnaces.fromJSON(restored.furnaces);
+  xp.fromJSON(restored.xp);
+  gameMode.setCreative(restored.mode === 1);
   view.set(restored.view);
 } else {
   inventory.fillStarterKit(STARTER_BLOCKS);
@@ -326,6 +394,10 @@ if (restored?.player) {
     player.pos.y = world.spawnHeight(Math.floor(player.pos.x), Math.floor(player.pos.z)) + 0.01;
   }
 }
+// A world saved in creative comes back in creative, so the flags the player
+// reads have to agree with the mode before the first frame runs.
+player.invulnerable = gameMode.invulnerable();
+player.flying = gameMode.flying;
 
 const input = new Input(canvas);
 // No-op in a browser; in the native iPad wrapper it hands pointer lock and
@@ -334,6 +406,10 @@ installNativeBridge(input);
 const hud = new Hud();
 const sky = createSky(scene);
 const invUI = new InventoryUI(inventory, (open) => onInventoryToggle(open));
+const furnaceUI = new FurnaceUI(furnaces, inventory, (open) => onInventoryToggle(open));
+
+/** Either panel being up means the world is not taking input. */
+const screenOpen = () => invUI.isOpen || furnaceUI.isOpen;
 
 const playerModel = createPlayerModel();
 scene.add(playerModel.group);
@@ -470,6 +546,7 @@ function positionHeldItem(swingT) {
 function swingHand() {
   heldSwing = 1;
   playerModel.swingArm();
+  sound.playSwing();
 }
 
 // ---------------- saving ----------------
@@ -481,7 +558,11 @@ let savingDisabled = false;
 
 function doSave() {
   if (savingDisabled) return;
-  savegame.save({ world, inventory, player, viewMode: view.mode });
+  savegame.save({
+    world, inventory, player, viewMode: view.mode,
+    furnaces: furnaces.toJSON(), xp: xp.toJSON(),
+    mode: gameMode.isCreative ? 1 : 0,
+  });
   saveNeeded = false;
   lastSaveAt = performance.now();
 }
@@ -534,6 +615,12 @@ function mine(dt) {
   }
 
   const held = inventory.selectedStack()?.id ?? 0;
+  // Creative does not dig, it deletes: one frame, whatever the block.
+  if (gameMode.instantBreak()) {
+    breakBlock();
+    stopMining();
+    return;
+  }
   const need = breakTime(id, held, {
     onGround: player.onGround,
     underwater: player.submerged,
@@ -586,6 +673,38 @@ function breakBlock() {
   const held = inventory.selectedStack()?.id ?? 0;
   world.setBlock(target.x, target.y, target.z, AIR);
   waterFlow.touch(target.x, target.y, target.z);
+
+  // The block comes apart: a burst of chips in its own colours, and the
+  // sound of whatever it was made of.
+  particles.blockBreak(target.x + 0.5, target.y + 0.5, target.z + 0.5, blockTint(id), 14);
+  sound.playBlockBreak(id);
+
+  // A furnace is a container: breaking it has to give back what was inside,
+  // or the sand you left smelting is gone with the block.
+  if (id === FURNACE && furnaces.has(target.x, target.y, target.z)) {
+    const f = furnaces.get(target.x, target.y, target.z);
+    for (const stack of [f.input, f.fuel, f.output]) {
+      if (stack && stack.count > 0) inventory.add(stack.id, stack.count);
+    }
+    furnaces.delete(target.x, target.y, target.z);
+    if (furnaceUI.isOpen && furnaceUI.current
+      && furnaceUI.current.x === target.x && furnaceUI.current.y === target.y
+      && furnaceUI.current.z === target.z) {
+      furnaceUI.close();
+    }
+  }
+  // Digging out a lit charge puts it out, which is the only defusing there is.
+  if (id === TNT) fuses.map.delete(fuses.key(target.x, target.y, target.z));
+
+  // Creative takes nothing and costs nothing: no drops, no wear, no XP. It is
+  // the same split Minecraft draws, and the reason blocks are infinite there.
+  if (gameMode.isCreative) {
+    invUI.render();
+    swingHand();
+    saveNeeded = true;
+    return;
+  }
+
   // What it leaves behind is the mining rules' business, not this function's:
   // ore broken without a pickaxe is gone rather than collected, which is the
   // one thing that makes carrying the pickaxe matter.
@@ -596,12 +715,65 @@ function breakBlock() {
     const left = inventory.add(drop, 1);
     if (left > 0) hud.showStatus('Inventory full');
   }
+
+  // Ore pays experience, and the deepslate twin pays the same as its stone
+  // original — it is the same ore, just further down.
+  const gained = xpForBlock(id);
+  if (gained > 0 && xp.add(gained) > 0) hud.showStatus(`Level ${xp.level}`);
+
+  // The tool spends a use on the block, and the last use breaks it.
+  spendTool();
+
   invUI.render();
   swingHand();
   saveNeeded = true;
 }
 
+/**
+ * Wear the held tool by one use. A tool that runs out disappears out of your
+ * hand mid-dig, which is Minecraft's rule and the reason a spare matters.
+ */
+function spendTool() {
+  const stack = inventory.selectedStack();
+  if (!stack || !isTool(stack.id)) return;
+  const { stack: next, broke } = spendDurability(stack);
+  inventory.set(inventory.selected, next);
+  if (broke) hud.showStatus('Your tool broke');
+}
+
+/**
+ * Right-clicking a block that does something, rather than placing against it.
+ * Returns true when the block handled the click and nothing should be placed.
+ */
+function useBlock(id, x, y, z) {
+  if (id === CRAFTING_TABLE) {
+    invUI.setCraftingSize(3, 3);
+    invUI.open();
+    return true;
+  }
+  if (id === FURNACE) {
+    furnaceUI.open(x, y, z);
+    return true;
+  }
+  if (id === TNT) {
+    if (!fuses.isLit(x, y, z)) {
+      fuses.light(x, y, z);
+      hud.showStatus('Fuse lit');
+      sound.playBlockPlace(TNT);
+    }
+    return true;
+  }
+  return false;
+}
+
 function placeBlock() {
+  // A block that does something answers the click itself. This comes before
+  // the empty-hand check on purpose: opening a crafting table with nothing
+  // in your hands is the normal way to open one.
+  if (target) {
+    const hit = world.get(target.x, target.y, target.z);
+    if (useBlock(hit, target.x, target.y, target.z)) return;
+  }
   const stack = inventory.selectedStack();
   if (!stack) {
     hud.showStatus('Nothing in hand');
@@ -624,7 +796,9 @@ function placeBlock() {
   if (blockIntersectsPlayer(bx, by, bz, player.pos, PLAYER_WIDTH, player.height)) return;
   world.setBlock(bx, by, bz, stack.id);
   waterFlow.touch(bx, by, bz);
-  inventory.consumeSelected(1);
+  sound.playBlockPlace(stack.id);
+  // Blocks never run out in creative — that is most of what creative is.
+  if (!gameMode.infiniteBlocks()) inventory.consumeSelected(1);
   invUI.render();
   swingHand();
   saveNeeded = true;
@@ -682,15 +856,70 @@ function pickBlock() {
   saveNeeded = true;
 }
 
+/**
+ * A charge goes off: the block itself is spent, everything inside the blast
+ * that can be moved is gone, and any other charge caught in it lights rather
+ * than vanishing — which is what makes a stack of them a chain.
+ *
+ * Nothing drops. A three-block sphere is a hundred-odd blocks, and posting
+ * all of it into a 36-slot inventory is not a reward, it is a mess.
+ */
+function explode(x, y, z) {
+  world.setBlock(x, y, z, AIR);
+  waterFlow.touch(x, y, z);
+  const hit = blastBlocks(world, x, y, z);
+  for (const b of hit) {
+    if (b.id === TNT) {
+      fuses.light(b.x, b.y, b.z);
+      continue;
+    }
+    if (b.id === FURNACE) furnaces.delete(b.x, b.y, b.z);
+    world.setBlock(b.x, b.y, b.z, AIR);
+    waterFlow.touch(b.x, b.y, b.z);
+    if (Math.random() < 0.25) {
+      particles.blockBreak(b.x + 0.5, b.y + 0.5, b.z + 0.5, blockTint(b.id), 3);
+    }
+  }
+  particles.blockBreak(x + 0.5, y + 0.5, z + 0.5, [0.95, 0.75, 0.35], 20);
+  particles.dustPuff(x + 0.5, y + 0.5, z + 0.5, 10);
+  sound.playThunder();
+  // Standing next to your own charge is a mistake with a cost.
+  const dx = player.pos.x - (x + 0.5);
+  const dy = player.pos.y - (y + 0.5);
+  const dz = player.pos.z - (z + 0.5);
+  const dist = Math.hypot(dx, dy, dz);
+  if (dist < 5) player.hurt(Math.round((1 - dist / 5) * 14), 'blown up');
+  saveNeeded = true;
+}
+
 // ---------------- menus / pausing ----------------
+/**
+ * Survival <-> creative. Everything downstream reads the flags rather than
+ * being told, so this only has to flip them and say so.
+ */
+function toggleGameMode() {
+  gameMode.toggle();
+  player.flying = gameMode.flying;
+  player.invulnerable = gameMode.invulnerable();
+  hud.refreshMode(gameMode);
+  hud.showStatus(gameMode.name);
+  saveNeeded = true;
+}
+
 function onInventoryToggle(open) {
   input.setEnabled(!open);
   hud.setCrosshairVisible(!open);
   if (open) {
     input.releasePointerOnly();
-  } else if (!hud.overlayVisible) {
-    input.resumePointer();
-    saveNeeded = true;
+  } else {
+    // The 3x3 belongs to the crafting table you were standing at; walking
+    // away puts the grid back to the 2x2 you carry, and anything in the
+    // cells that no longer exist comes back to the inventory.
+    invUI.setCraftingSize(2, 2);
+    if (!hud.overlayVisible) {
+      input.resumePointer();
+      saveNeeded = true;
+    }
   }
 }
 
@@ -753,7 +982,8 @@ input.onAction = (name, arg) => {
       invUI.toggle();
       break;
     case 'escape':
-      if (invUI.isOpen) invUI.close();
+      if (furnaceUI.isOpen) furnaceUI.close();
+      else if (invUI.isOpen) invUI.close();
       else pause();
       break;
     case 'view':
@@ -762,11 +992,21 @@ input.onAction = (name, arg) => {
     case 'debug':
       hud.toggleDebug();
       break;
+    case 'gamemode':
+      toggleGameMode();
+      break;
+    case 'fly':
+      if (gameMode.toggleFlying()) hud.showStatus('Flying');
+      else if (gameMode.isCreative) hud.showStatus('Falling');
+      player.flying = gameMode.flying;
+      sound.setFlightWind(gameMode.flying);
+      hud.refreshMode(gameMode);
+      break;
     case 'slot':
-      if (!invUI.isOpen) invUI.selectSlot(arg);
+      if (!screenOpen()) invUI.selectSlot(arg);
       break;
     case 'scroll':
-      if (!invUI.isOpen) invUI.scrollSelection(arg);
+      if (!screenOpen()) invUI.scrollSelection(arg);
       break;
     case 'zoom':
       if (!view.isFirstPerson) hud.showStatus(`Camera distance ${view.zoom(arg).toFixed(1)}`);
@@ -774,13 +1014,13 @@ input.onAction = (name, arg) => {
     case 'break':
       // A tap starts digging; the frame loop finishes it. Nothing comes out
       // of the world in one frame any more except what takes no time at all.
-      if (!invUI.isOpen) mine(0);
+      if (!screenOpen()) mine(0);
       break;
     case 'place':
-      if (!invUI.isOpen) placeBlock();
+      if (!screenOpen()) placeBlock();
       break;
     case 'pick':
-      if (!invUI.isOpen) pickBlock();
+      if (!screenOpen()) pickBlock();
       break;
   }
 };
@@ -816,6 +1056,9 @@ let eyeOffset = 0; // smooth sneak crouch
  */
 let eyeHeight = PLAYER_EYE;
 let placeRepeat = 0;
+let lastClock = null;
+let stepClock = 0;      // distance walked since the last footstep
+let lastHealth = MAX_HEALTH;
 let lastChunk = { cx: NaN, cz: NaN };
 
 // ---------------- fixed-timestep loop ----------------
@@ -889,11 +1132,42 @@ function frame(now) {
   // Hearts and bubbles. Drawn whenever there is a world to be hurt in, which
   // is any time the title screen is not up.
   hud.setVitals(player.health, player.air, hasPlayed);
+  hud.setXp(xp.fraction, xp.level);
+  hud.refreshMode(gameMode);
+  // The clock changes once a minute of game time; no reason to write the DOM
+  // sixty times a second for it.
+  const clockNow = hasPlayed ? sky.clock : '';
+  if (clockNow !== lastClock) {
+    lastClock = clockNow;
+    hud.setClock(clockNow);
+  }
 
   // ---- water in the air ----
   if (playing && !wasInWater && player.inWater && fallSpeed > 1.5) {
     const top = player.waterTop === -Infinity ? player.pos.y : player.waterTop;
     particles.splash(player.pos.x, top, player.pos.z, fallSpeed);
+    sound.playSplash(fallSpeed);
+  }
+
+  // Anything that took health off you makes a noise about it. Drowning has
+  // its own, because it is the one that starts while you cannot see why.
+  if (playing && player.health < lastHealth) {
+    if (player.submerged && player.air <= 0) sound.playDrown();
+    else sound.playHurt();
+  }
+  lastHealth = player.health;
+
+  // Footsteps are spaced by distance, not by time, so they slow down when you
+  // do instead of turning into a drum roll when you sprint.
+  if (playing && player.onGround && !player.flying) {
+    stepClock += player.horizontalSpeed * frameDt;
+    if (stepClock >= 2.2) {
+      stepClock = 0;
+      const gy = Math.floor(player.pos.y) - 1;
+      sound.playStep(world.get(Math.floor(player.pos.x), gy, Math.floor(player.pos.z)));
+    }
+  } else {
+    stepClock = 0;
   }
   particles.followPlayer(animDt, player);
   particles.scanFalls(animDt, world, player.pos.x, player.pos.y, player.pos.z);
@@ -910,10 +1184,10 @@ function frame(now) {
   // ---- digging, and the place button's auto-repeat ----
   // Breaking is no longer an event that repeats; it is a stopwatch that runs
   // while the button is down and resets the moment you look somewhere else.
-  if (playing && input.pressed.break && !invUI.isOpen) mine(frameDt);
+  if (playing && input.pressed.break && !screenOpen()) mine(frameDt);
   else if (mining) stopMining();
   if (playing) {
-    placeRepeat = input.pressed.place ? placeRepeat + frameDt : 0;
+    placeRepeat = input.pressed.place && !screenOpen() ? placeRepeat + frameDt : 0;
     if (placeRepeat >= USE_REPEAT) {
       placeRepeat = 0;
       placeBlock();
@@ -1060,13 +1334,25 @@ function frame(now) {
   if (saveNeeded && now - lastSaveAt > SAVE_DEBOUNCE) doSave();
   else if (playing && now - lastSaveAt > SAVE_INTERVAL) doSave();
 
+  // ---- furnaces and fuses ----
+  // Both run on game time, so a paused game smelts nothing and no fuse
+  // burns down behind the menu.
+  if (playing) {
+    furnaces.tickAll(animDt);
+    if (furnaceUI.isOpen) furnaceUI.render();
+    for (const t of fuses.tick(animDt)) explode(t.x, t.y, t.z);
+  }
+
   // ---- sun / sky follow player ----
-  sun.position.set(player.pos.x + 60, player.pos.y + 100, player.pos.z + 40);
-  sun.target.position.copy(player.pos);
+  // The clock advances first, then the light is read off it.
   sky.update(animDt, player.pos);
+  applyDaylight();
 
   // ---- input mode: touch UI and cursor visibility ----
   document.body.classList.toggle('touch', input.usingTouch);
+  // A locked pointer has no cursor, so the on-screen buttons cannot be
+  // clicked; they hide rather than sit there pretending.
+  document.body.classList.toggle('pointer-locked', Boolean(document.pointerLockElement));
   document.body.classList.toggle('nocursor', playing && input.lookMode === LOOK_FREE);
 
   // ---- debug overlay ----
@@ -1098,6 +1384,8 @@ function frame(now) {
     temperature: world.temperatureAt(px, Math.floor(player.pos.y), pz),
     inWater: player.inWater,
     submerged: player.submerged,
+    clock: sky.clock,
+    gameMode: gameMode.name,
     flowing: waterFlow.pending.size,
     ice: iceSheet.frozen.size,
     weather: weather.level > 0
@@ -1201,4 +1489,5 @@ hud.initSettings(settings, LIMITS);
 refreshHeldItem();
 playerModel.group.visible = !view.isFirstPerson;
 requestAnimationFrame(frame);
+
 

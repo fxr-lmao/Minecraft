@@ -44,17 +44,25 @@ export function blastStrength(cx, cy, cz, bx, by, bz, radius = BLAST_RADIUS) {
 /**
  * The blocks an explosion would destroy. Returns an array of
  * { x, y, z, id, strength } sorted from the charge outward.
+ *
+ * `cx, cy, cz` are the charge's *block* coordinates — the cell the TNT was
+ * sitting in — and the half that turns them into the middle of that block is
+ * added here. It has to be: the same three numbers set the loop bounds, and
+ * a loop that starts at 62.5 walks half-blocks and finds nothing at all.
  */
 export function blastBlocks(world, cx, cy, cz, radius = BLAST_RADIUS) {
   const out = [];
   const r = Math.ceil(radius);
+  const ox = cx + 0.5;
+  const oy = cy + 0.5;
+  const oz = cz + 0.5;
   for (let y = cy - r; y <= cy + r; y++) {
     for (let z = cz - r; z <= cz + r; z++) {
       for (let x = cx - r; x <= cx + r; x++) {
         if (!world.inBounds(x, y, z)) continue;
         const id = world.get(x, y, z);
         if (id === AIR || isWater(id) || INDESTRUCTIBLE.has(id)) continue;
-        const strength = blastStrength(cx, cy, cz, x, y, z, radius);
+        const strength = blastStrength(ox, oy, oz, x, y, z, radius);
         if (strength > 0) out.push({ x, y, z, id, strength });
       }
     }

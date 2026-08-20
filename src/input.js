@@ -132,6 +132,8 @@ export class Input {
     };
 
     this._doubleTap = { forward: { last: 0, active: false } };
+    /** Last Space press, for the double-tap that toggles creative flight. */
+    this._lastJumpAt = 0;
     this._joyBase = document.getElementById('joy-base');
     this._joyKnob = document.getElementById('joy-knob');
     this._lockTimer = null;
@@ -406,6 +408,17 @@ export class Input {
       }
       if (move) {
         if (move === 'forward') this._onForwardPress();
+        // Double-tapping jump is how Minecraft toggles creative flight. The
+        // game decides whether that means anything; input only reports it.
+        if (move === 'jump') {
+          const now = performance.now();
+          if (now - this._lastJumpAt < 280) {
+            this._lastJumpAt = 0;
+            this.onAction('fly');
+          } else {
+            this._lastJumpAt = now;
+          }
+        }
         this.keys.add(move);
       }
     });
