@@ -65,9 +65,24 @@ body.nocursor #game { cursor: none; }
 #crosshair::after  { top: 7px; left: 0; height: 2px; width: 16px; }
 
 /* ---------- slots (shared by the hotbar and the inventory) ---------- */
+/*
+ * One number drives every slot in the game — hotbar, inventory, crafting,
+ * furnace. Nine columns have to fit the width and the whole screen has to
+ * fit the height, and a phone is tight on one or the other depending on
+ * which way you hold it, so both get a rule below.
+ */
 .slot {
   position: relative;
-  width: 52px; height: 52px;
+  /*
+   * A finger held still on a slot still moves a little. Without this the
+   * browser can decide the hold was the start of a scroll, fire
+   * `pointercancel`, and swallow the long press that stands in for a
+   * right-click — so the one gesture mobile crafting depends on would work
+   * only when your hand was perfectly steady.
+   */
+  touch-action: none;
+  -webkit-touch-callout: none;
+  width: var(--slot, 52px); height: var(--slot, 52px);
   background: #5b5b5b;
   border: 2px solid;
   border-color: #1e1e1e #7c7c7c #7c7c7c #1e1e1e;
@@ -86,7 +101,7 @@ body.nocursor #game { cursor: none; }
 .slot .count {
   position: absolute;
   right: 2px; bottom: 0;
-  font-size: 14px;
+  font-size: var(--slot-count, 14px);
   font-weight: bold;
   color: var(--text);
   text-shadow: 2px 2px 0 var(--shadow);
@@ -209,13 +224,23 @@ body.nocursor #game { cursor: none; }
   inset: 0;
   z-index: 25;
   display: flex;
-  align-items: center;
+  /*
+   * `align-items: center` on an item taller than the container overflows it
+   * equally at both ends, and the top half cannot be scrolled to — the
+   * crafting row simply sits above the screen with no way to reach it.
+   * Auto margins centre the panel just the same when it fits and collapse
+   * when it does not, which leaves it scrollable from the top.
+   */
+  align-items: flex-start;
+  overflow-y: auto;
+  touch-action: pan-y; /* body sets `none`; the panel still has to scroll */
   justify-content: center;
   background: rgba(0, 0, 0, 0.6);
   padding: 12px;
   overflow: auto;
 }
 .inv-panel {
+  margin: auto; /* see #inventory: this is what keeps it scrollable */
   background: #b8b8b8;
   border: 3px solid;
   border-color: #e8e8e8 #454545 #454545 #e8e8e8;
@@ -294,7 +319,7 @@ body.nocursor #game { cursor: none; }
   inset: 0;
   z-index: 25;
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   justify-content: center;
   background: rgba(0, 0, 0, 0.6);
   padding: 12px;
@@ -469,15 +494,20 @@ body.nocursor #game { cursor: none; }
   position: fixed;
   inset: 0;
   display: flex;
-  align-items: center;
+  /* Same centring trap as the inventory: this panel is 591px of title,
+     buttons and settings sliders, and a phone held sideways is 390px tall.
+     Centred, the top third scrolls out of reach and takes Play with it. */
+  align-items: flex-start;
   justify-content: center;
   background: rgba(0, 0, 0, 0.55);
   z-index: 20;
   cursor: pointer;
   padding: 12px;
   overflow: auto;
+  touch-action: pan-y; /* body sets `none`, and this has to scroll */
 }
 .overlay .panel {
+  margin: auto; /* centres when it fits, scrolls from the top when it does not */
   background: rgba(16, 16, 16, 0.94);
   border: 3px solid #000;
   outline: 3px solid #5a5a5a;
@@ -712,16 +742,58 @@ body.touch .tui-right { display: flex; }
 
 /* ---------- small screens ---------- */
 @media (max-width: 620px) {
-  .slot { width: 40px; height: 40px; }
-  #vitals { bottom: calc(68px + env(safe-area-inset-bottom)); width: 386px; }
+  :root { --slot: 40px; --slot-count: 12px; }
+  #vitals { bottom: calc(68px + env(safe-area-inset-bottom)); width: 386px; max-width: 100%; }
   #vitals i, #vitals i b { width: 14px; height: 14px; }
   #vitals i b { background-size: 14px 14px; }
   #held-name { bottom: calc(90px + env(safe-area-inset-bottom)); }
-  .slot .count { font-size: 12px; }
   .overlay h1 { font-size: 30px; }
   .overlay .panel { padding: 18px 20px; }
   .overlay .controls { font-size: 13px; }
 }
 @media (max-height: 480px) {
   #status { bottom: 26%; }
+}
+
+/*
+ * A phone held sideways to play is wide and *short* — 844 x 390 — so the
+ * `max-width` rules above never fire for it and the inventory keeps its
+ * full-size 52px slots. At that size the screen is 519px tall: the crafting
+ * row sits above the top edge and the hotbar below the bottom one, which
+ * leaves the planks you are trying to craft with out of reach. Everything
+ * here is keyed to height for that reason.
+ */
+@media (max-height: 600px) {
+  :root { --slot: 36px; --slot-count: 11px; }
+  .inv-panel { padding: 8px 12px 8px; }
+  .inv-head { margin-bottom: 6px; gap: 12px; }
+  .inv-head h2 { font-size: 15px; }
+  .inv-label { margin: 6px 0 3px; font-size: 10px; }
+  .inv-craft-row { margin-bottom: 6px; gap: 12px; }
+  .furnace-row { margin-bottom: 8px; gap: 10px; }
+  /* The instructions are three lines of small print on a screen with no room
+     for them, and the gestures they describe are the ones you discover by
+     touching things. The slots win the space. */
+  .inv-hint { display: none; }
+  .overlay .panel { padding: 12px 18px; }
+  .overlay h1 { font-size: 24px; margin-bottom: 2px; }
+  .overlay .sub { margin-bottom: 8px; }
+  .overlay .setting { margin-bottom: 6px; }
+}
+
+/*
+ * Narrow portrait. Nine columns at 40px want 376px of content box and a
+ * 375px-wide phone offers about 313 once the screen padding, the panel
+ * padding and the border are paid for — so the right-hand third of the
+ * inventory used to sit off the side of the screen. These come last on
+ * purpose: a phone caught by both the short rule and a narrow one should
+ * take the smaller of the two.
+ */
+@media (max-width: 430px) {
+  :root { --slot: 32px; --slot-count: 10px; }
+  .inv-panel { padding: 8px 9px; }
+  .inv-hint { display: none; }
+}
+@media (max-width: 345px) {
+  :root { --slot: 28px; --slot-count: 9px; }
 }

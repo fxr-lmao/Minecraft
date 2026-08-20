@@ -5,6 +5,7 @@
 
 import { getBlockAssets, getBlockDefById } from './textures.js';
 import { iconForSlot } from './inventory-ui.js';
+import { bindSlotPress } from './slot-press.js';
 
 export class FurnaceUI {
   /**
@@ -32,12 +33,10 @@ export class FurnaceUI {
   }
 
   _bind() {
+    // Same press model as the inventory: a mouse acts on pointerdown with
+    // button 2 for half-stacks, and on touch a held press stands in for it.
     const slot = (el, slotIndex) => {
-      el.addEventListener('pointerdown', (e) => {
-        e.preventDefault();
-        e.stopPropagation();
-        this._clickSlot(slotIndex, e.button === 2);
-      });
+      bindSlotPress(el, () => el, (_el, secondary) => this._clickSlot(slotIndex, secondary));
     };
     slot(this.inputEl, 0);
     slot(this.fuelEl, 1);

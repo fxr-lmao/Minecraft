@@ -8,7 +8,7 @@
     "dev": "vite",
     "build": "vite build",
     "preview": "vite preview",
-    "test": "node scripts/physics-test.mjs && node scripts/world-test.mjs && node scripts/mesher-test.mjs && node scripts/inventory-test.mjs && node scripts/raycast-test.mjs && node scripts/systems-test.mjs && node scripts/input-test.mjs && node scripts/water-test.mjs && node scripts/weather-test.mjs && node scripts/mining-test.mjs && node scripts/crafting-test.mjs && node scripts/durability-test.mjs && node scripts/furnace-test.mjs && node scripts/features-test.mjs"
+    "test": "node scripts/physics-test.mjs && node scripts/world-test.mjs && node scripts/mesher-test.mjs && node scripts/inventory-test.mjs && node scripts/raycast-test.mjs && node scripts/systems-test.mjs && node scripts/input-test.mjs && node scripts/water-test.mjs && node scripts/weather-test.mjs && node scripts/mining-test.mjs && node scripts/crafting-test.mjs && node scripts/durability-test.mjs && node scripts/furnace-test.mjs && node scripts/features-test.mjs && node scripts/slot-press-test.mjs"
   },
   "dependencies": {
     "three": "^0.185.1",
