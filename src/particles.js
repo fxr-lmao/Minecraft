@@ -70,6 +70,7 @@ export const BUBBLE = 1;
 export const FOAM = 2;
 export const RAIN = 3;
 export const SNOW = 4;
+export const CHIP = 5;
 
 /**
  * Rain falls at a fixed speed rather than accelerating: a raindrop reaches
@@ -96,7 +97,9 @@ const SNOW_SHARE = 0.12;
  * vertical streak that is the whole reason rain reads as rain rather than as
  * a lot of dots.
  */
-const STRETCH = [1, 1, 1, 4.0, 1];
+// Chips are the one kind that is not an ellipse at all, so they carry 0:
+// the fragment shader keys the square path off that and never divides by it.
+const STRETCH = [1, 1, 1, 4.0, 1, 0];
 
 /**
  * And how solid each is. A bubble is a film of water and rain is glass: you
@@ -104,7 +107,7 @@ const STRETCH = [1, 1, 1, 4.0, 1];
  * way, so it is drawn faint and gets its weight from how many of them there
  * are. Snow is the exception — a flake really is opaque.
  */
-const OPACITY = [0.85, 0.55, 0.85, 0.55, 0.92];
+const OPACITY = [0.85, 0.55, 0.85, 0.55, 0.92, 1.0];
 
 const VERTEX = /* glsl */ `
 attribute float size;
@@ -115,6 +118,7 @@ attribute float stretch;
 varying float vAlpha;
 varying vec3 vTint;
 varying float vStretch;
+varying float vIsChip;
 
 #ifdef USE_FOG
   varying float vFogDepth;
@@ -124,6 +128,9 @@ void main() {
   vAlpha = alpha;
   vTint = tint;
   vStretch = stretch;
+  // stretch == 0 marks a block chip: draw it square in the fragment shader.
+  // Every other kind stretches by at least 1, so this cannot catch them.
+  vIsChip = 1.0 - step(0.5, stretch);
   vec4 mv = modelViewMatrix * vec4(position, 1.0);
   #ifdef USE_FOG
     vFogDepth = -mv.z;
@@ -139,14 +146,27 @@ const FRAGMENT = /* glsl */ `
 varying float vAlpha;
 varying vec3 vTint;
 varying float vStretch;
+varying float vIsChip;
 
 #include <fog_pars_fragment>
 
 void main() {
+  vec2 d = gl_PointCoord - 0.5;
+
+  // Block chips render as hard little squares — Minecraft's break particles.
+  if (vIsChip > 0.5) {
+    float rx = abs(d.x * 2.0);
+    float ry = abs(d.y * 2.0);
+    if (max(rx, ry) > 1.0) discard;
+    gl_FragColor = vec4(vTint, vAlpha);
+    #include <colorspace_fragment>
+    #include <fog_fragment>
+    return;
+  }
+
   // A round sprite with a soft edge, cut out rather than faded to nothing:
   // these write depth so the water knows to stay behind them, and a depth
   // value under a fully transparent pixel is a square hole in the sea.
-  vec2 d = gl_PointCoord - 0.5;
   // Squeezing x before the circle test leaves a tall thin ellipse: one
   // sprite shape, and rain is the same droplet stretched by how fast it is
   // going past you.
@@ -335,6 +355,48 @@ export class Particles {
       FOAM, 0.14 + Math.random() * 0.1, 0.035 + Math.random() * 0.025,
       FOAM_TINT
     );
+  }
+
+  /**
+   * Block break particles - small square chips in the colour of the block
+   * that fly outward from the mining point, like Minecraft's break particles.
+   */
+  blockBreak(x, y, z, tint, count = 10) {
+    const n = Math.min(count, 20);
+    for (let i = 0; i < n; i++) {
+      const a = Math.random() * Math.PI * 2;
+      const pitch = (Math.random() - 0.5) * Math.PI * 0.7;
+      const speed = 1.0 + Math.random() * 2.5;
+      const vx = Math.cos(a) * Math.cos(pitch) * speed;
+      const vy = Math.sin(pitch) * speed + 1.0;
+      const vz = Math.sin(a) * Math.cos(pitch) * speed;
+      this.spawn(
+        x + (Math.random() - 0.5) * 0.4,
+        y + (Math.random() - 0.5) * 0.4,
+        z + (Math.random() - 0.5) * 0.4,
+        vx, vy, vz,
+        CHIP, 0.4 + Math.random() * 0.5, 0.04 + Math.random() * 0.05,
+        tint
+      );
+    }
+  }
+
+  /**
+   * A small puff of dust — kicked up when landing from a jump or sprinting
+   * on a hard surface. Grey-brown, short-lived, low to the ground.
+   */
+  dustPuff(x, y, z, count = 4) {
+    const n = Math.min(count, 10);
+    for (let i = 0; i < n; i++) {
+      const a = Math.random() * Math.PI * 2;
+      const speed = 0.4 + Math.random() * 0.8;
+      this.spawn(
+        x + (Math.random() - 0.5) * 0.4, y + 0.02, z + (Math.random() - 0.5) * 0.4,
+        Math.cos(a) * speed, 0.3 + Math.random() * 0.5, Math.sin(a) * speed,
+        DROPLET, 0.25 + Math.random() * 0.2, 0.05 + Math.random() * 0.04,
+        DUST_TINT
+      );
+    }
   }
 
   /**
@@ -608,5 +670,7 @@ const BUBBLE_TINT = [0.78, 0.92, 1.0];
 const RAIN_TINT = [0.60, 0.69, 0.79];
 /** Snow is the only thing here that is actually white. */
 const SNOW_TINT = [0.97, 0.98, 1.0];
+/** Dust kicked off the ground: dry brown-grey. */
+const DUST_TINT = [0.62, 0.55, 0.45];
 
 export { SPRAY_TINT, FOAM_TINT, BUBBLE_TINT, RAIN_TINT, SNOW_TINT };

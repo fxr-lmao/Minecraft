@@ -4,8 +4,11 @@
 
 import * as THREE from '../vendor/three.module.min.js';
 import { mulberry32, clamp } from './utils.js';
-import { WATER, isWater } from './terrain.js';
-import { BUCKET, WATER_BUCKET, PICKAXE, SHOVEL, isItem } from './items.js';
+import { WATER, isWater, CRAFTING_TABLE, FURNACE, GLASS, TNT } from './terrain.js';
+import {
+  BUCKET, WATER_BUCKET, PICKAXE, SHOVEL,
+  STICKS, WOOD_PICKAXE, WOOD_SHOVEL, STONE_PICKAXE, STONE_SHOVEL, isItem,
+} from './items.js';
 
 export const TEX_SIZE = 16;
 
@@ -96,11 +99,25 @@ function noiseCanvas(rand, base, opts = {}) {
 // ---------- face recipes ----------
 
 function dirtFace(rand) {
-  return noiseCanvas(rand, 0x79553a, { speckles: 26, blotches: 2 });
+  return noiseCanvas(rand, 0x866043, { speckles: 30, blotches: 3 });
 }
 
 function grassTopFace(rand) {
-  return noiseCanvas(rand, 0x7cbd4b, { speckles: 30, blotches: 1 });
+  const cv = noiseCanvas(rand, 0x6aac3c, { speckles: 36, blotches: 2 });
+  // A scatter of individual blade-green pixels so the top reads as turf
+  // rather than as a flat green plane.
+  const img = cv.getContext('2d').getImageData(0, 0, TEX_SIZE, TEX_SIZE);
+  for (let i = 0; i < 22; i++) {
+    const x = Math.floor(rand() * TEX_SIZE);
+    const y = Math.floor(rand() * TEX_SIZE);
+    const c = shadeHex(0x8fd04e, 0.75 + rand() * 0.5);
+    const o = (y * TEX_SIZE + x) * 4;
+    img.data[o] = (c >> 16) & 255;
+    img.data[o + 1] = (c >> 8) & 255;
+    img.data[o + 2] = c & 255;
+  }
+  cv.getContext('2d').putImageData(img, 0, 0);
+  return cv;
 }
 
 function grassSideFace(rand) {
@@ -108,20 +125,24 @@ function grassSideFace(rand) {
   cv.width = cv.height = TEX_SIZE;
   const ctx = cv.getContext('2d');
   ctx.drawImage(dirtFace(rand), 0, 0);
-  // green cap with ragged edge, 3-4 px deep
+  // The classic grass-block side: a clean green cap sitting on the dirt,
+  // with a ragged bottom edge where the two meet. The cap is 3-4 px deep,
+  // like Minecraft's, and the join is a couple of pixel teeth rather than
+  // a smooth blend.
   const img = ctx.getImageData(0, 0, TEX_SIZE, TEX_SIZE);
   for (let x = 0; x < TEX_SIZE; x++) {
-    const depth = 2 + Math.floor(rand() * 3); // 2..4
-    const grass = shadeHex(0x7cbd4b, 0.82 + rand() * 0.3);
+    const cap = 3 + Math.floor(rand() * 1.5); // 3..4
+    const teeth = rand() < 0.5 ? 1 : 0; // ragged lip
+    const depth = cap + teeth;
+    const grass = shadeHex(0x6aac3c, 0.88 + rand() * 0.24);
     const gr = (grass >> 16) & 255;
     const gg = (grass >> 8) & 255;
     const gb = grass & 255;
     for (let y = 0; y < depth; y++) {
       const o = (y * TEX_SIZE + x) * 4;
-      const t = y / 4;
-      img.data[o] = clamp(Math.round(gr + (img.data[o] - gr) * t), 0, 255);
-      img.data[o + 1] = clamp(Math.round(gg + (img.data[o + 1] - gg) * t), 0, 255);
-      img.data[o + 2] = clamp(Math.round(gb + (img.data[o + 2] - gb) * t), 0, 255);
+      img.data[o] = gr;
+      img.data[o + 1] = gg;
+      img.data[o + 2] = gb;
     }
   }
   ctx.putImageData(img, 0, 0);
@@ -129,7 +150,10 @@ function grassSideFace(rand) {
 }
 
 function stoneFace(rand) {
-  return noiseCanvas(rand, 0x7f7f7f, { speckles: 40, blotches: 3 });
+  // Minecraft's stone: a mid grey with soft patches of lighter and darker
+  // rock, speckled across the tile. The blotches give it depth, the
+  // speckles give it grit.
+  return noiseCanvas(rand, 0x7f7f7f, { speckles: 52, blotches: 6 });
 }
 
 /**
@@ -169,16 +193,25 @@ function oreFace(base, colour, shine, lumps = 5) {
 }
 
 
-// Deepslate: darker and cooler than stone, with fine vertical banding so the
-// switch is obvious the moment you dig past it.
+// Deepslate: darker and cooler than stone, with the fine dark streaks that
+// make the switch obvious the moment you dig past it. Minecraft's deepslate
+// reads as near-black rock with subtle lighter inclusions, not as grey with
+// black lines — so the speckles are the light parts here.
 function deepslateFace(rand) {
-  const cv = noiseCanvas(rand, 0x3c3f44, { speckles: 55, blotches: 5, blotchColor: 0x2a2c30 });
+  const cv = noiseCanvas(rand, 0x35373c, { speckles: 60, blotches: 6, blotchColor: 0x24262b });
   const ctx = cv.getContext('2d');
-  ctx.fillStyle = 'rgba(28,30,34,0.5)';
-  for (let i = 0; i < 5; i++) {
+  const img = ctx.getImageData(0, 0, TEX_SIZE, TEX_SIZE);
+  // A few faint light inclusions, like the quartz flecks in real deepslate.
+  for (let i = 0; i < 14; i++) {
     const x = Math.floor(rand() * TEX_SIZE);
-    ctx.fillRect(x, Math.floor(rand() * TEX_SIZE), 1, 3 + Math.floor(rand() * 6));
+    const y = Math.floor(rand() * TEX_SIZE);
+    const o = (y * TEX_SIZE + x) * 4;
+    const v = 96 + Math.floor(rand() * 46);
+    img.data[o] = v;
+    img.data[o + 1] = v;
+    img.data[o + 2] = v + 6;
   }
+  ctx.putImageData(img, 0, 0);
   return cv;
 }
 
@@ -212,7 +245,51 @@ function waterFace(rand) {
 }
 
 function cobbleFace(rand) {
-  return noiseCanvas(rand, 0x8a8a8a, { speckles: 60, blotches: 10, blotchColor: 0x5a5a5a });
+  // Cobblestone in Minecraft is a mosaic of rounded stones with dark mortar
+  // between them. Build it from a handful of irregular blobs on a dark
+  // background, each one shaded like a little boulder.
+  const cv = document.createElement('canvas');
+  cv.width = cv.height = TEX_SIZE;
+  const ctx = cv.getContext('2d');
+  const img = ctx.createImageData(TEX_SIZE, TEX_SIZE);
+  // mortar base
+  for (let i = 0; i < TEX_SIZE * TEX_SIZE; i++) {
+    const f = 0.42 + rand() * 0.16;
+    const v = Math.round(96 * f);
+    img.data[i * 4] = v;
+    img.data[i * 4 + 1] = v;
+    img.data[i * 4 + 2] = v + 4;
+    img.data[i * 4 + 3] = 255;
+  }
+  // stones: ~7 irregular ellipses
+  const stones = 7;
+  for (let s = 0; s < stones; s++) {
+    const cx = 2 + rand() * (TEX_SIZE - 4);
+    const cy = 2 + rand() * (TEX_SIZE - 4);
+    const rx = 2.2 + rand() * 2.2;
+    const ry = 2.0 + rand() * 2.0;
+    const base = Math.round(110 + rand() * 80);
+    for (let y = 0; y < TEX_SIZE; y++) {
+      for (let x = 0; x < TEX_SIZE; x++) {
+        const dx = (x + 0.5 - cx) / rx;
+        const dy = (y + 0.5 - cy) / ry;
+        const d = dx * dx + dy * dy;
+        if (d > 1) continue;
+        // noise inside the stone
+        const f = 0.82 + rand() * 0.36;
+        let v = Math.round(base * f);
+        if (rand() < 0.25) v *= 0.85; // fleck
+        // simple top-light: brighter on the upper-left
+        v *= 0.9 + 0.22 * (1 - (dy + 1) / 2);
+        const o = (y * TEX_SIZE + x) * 4;
+        img.data[o] = v;
+        img.data[o + 1] = v;
+        img.data[o + 2] = v;
+      }
+    }
+  }
+  ctx.putImageData(img, 0, 0);
+  return cv;
 }
 
 function bedrockFace(rand) {
@@ -238,19 +315,21 @@ function bedrockFace(rand) {
 }
 
 function planksFace(rand) {
+  // Oak planks: four horizontal boards with staggered end joints, a warm
+  // honey tone, and the little darker dots Minecraft gives each plank.
   const cv = document.createElement('canvas');
   cv.width = cv.height = TEX_SIZE;
   const ctx = cv.getContext('2d');
   const img = ctx.createImageData(TEX_SIZE, TEX_SIZE);
   const range = makeNoise(rand, 1);
-  const seam = 0x5e431f;
+  const seam = 0x4a3418;
   for (let y = 0; y < TEX_SIZE; y++) {
+    const row = Math.floor(y / 4);
     for (let x = 0; x < TEX_SIZE; x++) {
       let c = shadeHex(0xb8945f, range(x, y));
       // horizontal plank seams every 4 rows
       if (y % 4 === 0) c = shadeHex(seam, 0.9 + range(x, y) * 0.2);
       // vertical seam: staggered per plank row
-      const row = Math.floor(y / 4);
       const seamX = row % 2 === 0 ? 3 : 11;
       if (x === seamX) c = shadeHex(seam, 0.9 + range(x, y) * 0.2);
       // subtle grain streaks
@@ -263,19 +342,34 @@ function planksFace(rand) {
     }
   }
   ctx.putImageData(img, 0, 0);
+  // the two little plank nail dots per board, like Minecraft's planks
+  for (let row = 0; row < 4; row++) {
+    const y = row * 4 + 2;
+    for (const x of [row % 2 === 0 ? 1 : 9, row % 2 === 0 ? 13 : 5]) {
+      const o = (y * TEX_SIZE + x) * 4;
+      img.data[o] = 62;
+      img.data[o + 1] = 46;
+      img.data[o + 2] = 28;
+    }
+  }
+  ctx.putImageData(img, 0, 0);
   return cv;
 }
 
 function sandFace(rand) {
-  return noiseCanvas(rand, 0xdbd3a0, { speckles: 50 });
+  // Minecraft's sand is a warm pale yellow with a fine grain of darker
+  // specks — enough to read as sand rather than as a flat cream tile.
+  return noiseCanvas(rand, 0xdbd4a2, { speckles: 64 });
 }
 
 function bricksFace(rand) {
+  // Brick: four courses of two bricks each, red-orange with a pale mortar
+  // grid — the same layout Minecraft uses, right down to the offset joints.
   const cv = document.createElement('canvas');
   cv.width = cv.height = TEX_SIZE;
   const ctx = cv.getContext('2d');
   const img = ctx.createImageData(TEX_SIZE, TEX_SIZE);
-  const mortar = 0xd8d8d8;
+  const mortar = 0xd9d4cc;
   for (let y = 0; y < TEX_SIZE; y++) {
     const row = Math.floor(y / 4);
     for (let x = 0; x < TEX_SIZE; x++) {
@@ -286,9 +380,9 @@ function bricksFace(rand) {
       if (isMortarY || isMortarX) {
         c = shadeHex(mortar, 0.85 + rand() * 0.3);
       } else {
-        // per-brick shade
-        const brickShade = 0.82 + rand() * 0.36;
-        c = shadeHex(0x9b4f2f, brickShade * (0.9 + rand() * 0.2));
+        // per-brick shade with a warmer, more saturated body
+        const brickShade = 0.86 + rand() * 0.34;
+        c = shadeHex(0xa0522d, brickShade * (0.92 + rand() * 0.16));
       }
       const o = (y * TEX_SIZE + x) * 4;
       img.data[o] = (c >> 16) & 255;
@@ -339,7 +433,7 @@ function iceFace(rand) {
   return cv;
 }
 
-/** Oak log: vertical bark grooves. */
+/** Oak log: vertical bark grooves, like Minecraft's oak log sides. */
 function logSideFace(rand) {
   const cv = document.createElement('canvas');
   cv.width = cv.height = TEX_SIZE;
@@ -348,9 +442,12 @@ function logSideFace(rand) {
   const range = makeNoise(rand, 1);
   for (let y = 0; y < TEX_SIZE; y++) {
     for (let x = 0; x < TEX_SIZE; x++) {
-      // vertical grain: darker in irregular columns
-      const groove = Math.sin(x * 1.7 + range(x, y) * 2) > 0.55 ? 0.78 : 1;
-      const c = shadeHex(0x6b4f2a, range(x, y * 0.4) * groove);
+      // vertical grain: darker in irregular columns, with the dark grooves
+      // a couple of pixels wide like real bark rather than single lines
+      const g1 = Math.sin(x * 1.3 + range(x, y) * 2.2);
+      const g2 = Math.sin(x * 2.6 + range(x, y) * 3.1);
+      const groove = (g1 > 0.72 || g2 > 0.8) ? 0.68 : 1;
+      const c = shadeHex(0x6b4f2a, range(x, y * 0.4) * groove * (0.92 + range(x, y) * 0.16));
       const o = (y * TEX_SIZE + x) * 4;
       img.data[o] = (c >> 16) & 255;
       img.data[o + 1] = (c >> 8) & 255;
@@ -362,13 +459,19 @@ function logSideFace(rand) {
   return cv;
 }
 
-/** Cut end of a log: rings around a centre. */
+/** Cut end of a log: rings around a centre, like Minecraft's oak top. */
 function logTopFace(rand) {
-  const cv = noiseCanvas(rand, 0xb4915c, { speckles: 18 });
+  const cv = noiseCanvas(rand, 0x9c7e4c, { speckles: 26 });
   const ctx = cv.getContext('2d');
-  ctx.strokeStyle = 'rgba(90,64,32,0.55)';
+  // A slightly darker centre, then the rings stepping out — each one a full
+  // circle rather than a path, so the ends meet cleanly.
+  ctx.fillStyle = 'rgba(70,50,25,0.25)';
+  ctx.beginPath();
+  ctx.arc(8, 8, 1.8, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.strokeStyle = 'rgba(70,50,25,0.5)';
   ctx.lineWidth = 1;
-  for (const r of [2.5, 4.5, 6.5]) {
+  for (const r of [3, 4.8, 6.4]) {
     ctx.beginPath();
     ctx.arc(8, 8, r, 0, Math.PI * 2);
     ctx.stroke();
@@ -378,14 +481,16 @@ function logTopFace(rand) {
 
 /** Leaves: dense mottled green. Opaque, like Minecraft's "fast" graphics. */
 function leavesFace(rand) {
-  const cv = noiseCanvas(rand, 0x3f7f2a, { speckles: 90, blotches: 6 });
+  const cv = noiseCanvas(rand, 0x3c7a24, { speckles: 100, blotches: 8 });
   const ctx = cv.getContext('2d');
   const img = ctx.getImageData(0, 0, TEX_SIZE, TEX_SIZE);
-  // scatter a few bright and dark leaves so it reads as foliage, not noise
-  for (let i = 0; i < 26; i++) {
+  // Scatter bright and dark leaf pixels so it reads as foliage. Minecraft's
+  // leaves are a deep green with a lot of small-scale variation — nearly
+  // every pixel differs slightly from its neighbour.
+  for (let i = 0; i < 46; i++) {
     const x = Math.floor(rand() * TEX_SIZE);
     const y = Math.floor(rand() * TEX_SIZE);
-    const c = shadeHex(0x4f9c34, 0.7 + rand() * 0.7);
+    const c = shadeHex(0x549c33, 0.6 + rand() * 0.8);
     const o = (y * TEX_SIZE + x) * 4;
     img.data[o] = (c >> 16) & 255;
     img.data[o + 1] = (c >> 8) & 255;
@@ -393,6 +498,163 @@ function leavesFace(rand) {
   }
   ctx.putImageData(img, 0, 0);
   return cv;
+}
+
+// ---------- crafting-era blocks ----------
+
+/** Crafting table top: a 2x2 grid of planks with dark borders. */
+function craftingTopFace(rand) {
+  const cv = planksFace(rand);
+  const ctx = cv.getContext('2d');
+  ctx.strokeStyle = 'rgba(60,40,18,0.85)';
+  ctx.lineWidth = 1;
+  ctx.strokeRect(0.5, 0.5, 7.5, 7.5);
+  ctx.strokeRect(8.5, 0.5, 7.5, 7.5);
+  ctx.strokeRect(0.5, 8.5, 7.5, 7.5);
+  ctx.strokeRect(8.5, 8.5, 7.5, 7.5);
+  return cv;
+}
+
+/** Crafting table side: a plank face with two handles and a tool under it. */
+function craftingSideFace(rand) {
+  const cv = planksFace(rand);
+  const ctx = cv.getContext('2d');
+  // Two small dark handles.
+  ctx.fillStyle = '#5a3d1c';
+  ctx.fillRect(4, 7, 2, 2);
+  ctx.fillRect(10, 7, 2, 2);
+  ctx.fillStyle = '#3a2712';
+  ctx.fillRect(4, 7, 1, 2);
+  ctx.fillRect(10, 7, 1, 2);
+  // A pencil/saw hint: a diagonal pale line.
+  ctx.strokeStyle = 'rgba(150,110,60,0.5)';
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  ctx.moveTo(2, 12);
+  ctx.lineTo(13, 3);
+  ctx.stroke();
+  return cv;
+}
+
+/** Furnace side: rough stone with a pale outline band. */
+function furnaceSideFace(rand) {
+  const cv = stoneFace(rand);
+  const ctx = cv.getContext('2d');
+  ctx.fillStyle = 'rgba(20,20,20,0.35)';
+  ctx.fillRect(0, 0, 16, 1);
+  ctx.fillRect(0, 15, 16, 1);
+  ctx.fillRect(0, 0, 1, 16);
+  ctx.fillRect(15, 0, 1, 16);
+  return cv;
+}
+
+/** Furnace front: the dark mouth with a fire glow, like Minecraft's. */
+function furnaceFrontFace(rand) {
+  const cv = furnaceSideFace(rand);
+  const ctx = cv.getContext('2d');
+  // Dark mouth
+  ctx.fillStyle = '#1a1715';
+  ctx.fillRect(5, 4, 6, 8);
+  ctx.fillStyle = '#0d0b0a';
+  ctx.fillRect(5, 4, 6, 1);
+  // Fire: orange core with yellow heart
+  ctx.fillStyle = '#8a4a1a';
+  ctx.fillRect(7, 8, 2, 4);
+  ctx.fillStyle = '#d4762a';
+  ctx.fillRect(7, 8, 2, 3);
+  ctx.fillStyle = '#f5c04a';
+  ctx.fillRect(8, 9, 1, 1);
+  // Grey trim around the mouth
+  ctx.fillStyle = '#4a4a4a';
+  ctx.fillRect(5, 4, 6, 1);
+  ctx.fillRect(5, 12, 6, 1);
+  ctx.fillRect(5, 4, 1, 8);
+  ctx.fillRect(10, 4, 1, 8);
+  return cv;
+}
+
+/** Furnace top: flat stone. */
+function furnaceTopFace(rand) {
+  return stoneFace(rand);
+}
+
+/**
+ * Glass: mostly transparent, with a pale frame and a diagonal shine — the
+ * fast-graphics look. Most pixels have alpha 0; the world material uses
+ * alphaTest to cut them out.
+ */
+function glassFace(rand) {
+  const cv = document.createElement('canvas');
+  cv.width = cv.height = TEX_SIZE;
+  const ctx = cv.getContext('2d');
+  ctx.clearRect(0, 0, TEX_SIZE, TEX_SIZE);
+  // Frame
+  ctx.fillStyle = 'rgba(210,235,255,0.9)';
+  ctx.fillRect(0, 0, TEX_SIZE, 1);
+  ctx.fillRect(0, 15, TEX_SIZE, 1);
+  ctx.fillRect(0, 0, 1, TEX_SIZE);
+  ctx.fillRect(15, 0, 1, TEX_SIZE);
+  // Inner frame highlight (bottom-right thickens like a real pane)
+  ctx.fillStyle = 'rgba(235,248,255,0.75)';
+  ctx.fillRect(14, 1, 1, 14);
+  ctx.fillRect(1, 14, 13, 1);
+  ctx.fillStyle = 'rgba(160,195,225,0.7)';
+  ctx.fillRect(0, 0, 1, 1);
+  ctx.fillRect(15, 15, 1, 1);
+  // Diagonal shine
+  ctx.fillStyle = 'rgba(255,255,255,0.35)';
+  ctx.fillRect(3, 5, 1, 1);
+  ctx.fillRect(4, 4, 1, 1);
+  ctx.fillRect(5, 3, 1, 1);
+  ctx.fillRect(6, 2, 1, 1);
+  ctx.fillRect(5, 5, 1, 1);
+  ctx.fillRect(6, 4, 1, 1);
+  return cv;
+}
+
+/** TNT: red with a pale band and "TNT" hinted by three dark marks. */
+function tntSideFace(rand) {
+  const cv = document.createElement('canvas');
+  cv.width = cv.height = TEX_SIZE;
+  const ctx = cv.getContext('2d');
+  const img = ctx.createImageData(TEX_SIZE, TEX_SIZE);
+  // Red body with subtle noise.
+  for (let y = 0; y < TEX_SIZE; y++) {
+    for (let x = 0; x < TEX_SIZE; x++) {
+      const f = 0.85 + rand() * 0.3;
+      const r = Math.round(0xd03020 * f);
+      const g = Math.round(0x1c1c1c * f);
+      const b = Math.round(0x1c1c1c * f);
+      const o = (y * TEX_SIZE + x) * 4;
+      img.data[o] = Math.min(255, r + 30);
+      img.data[o + 1] = Math.min(255, g + 22);
+      img.data[o + 2] = Math.min(255, b + 22);
+      img.data[o + 3] = 255;
+    }
+  }
+  // The pale band and the three dark "TNT" dashes, like Minecraft's.
+  for (let x = 0; x < TEX_SIZE; x++) {
+    for (let y = 6; y <= 9; y++) {
+      const o = (y * TEX_SIZE + x) * 4;
+      img.data[o] = 232; img.data[o + 1] = 226; img.data[o + 2] = 214;
+    }
+  }
+  for (let i = 0; i < 3; i++) {
+    const x0 = 2 + i * 4;
+    for (let x = x0; x < x0 + 3; x++) {
+      for (let y = 7; y <= 8; y++) {
+        const o = (y * TEX_SIZE + x) * 4;
+        img.data[o] = 40; img.data[o + 1] = 30; img.data[o + 2] = 30;
+      }
+    }
+  }
+  ctx.putImageData(img, 0, 0);
+  return cv;
+}
+
+/** TNT top/bottom: red with lighter speckles. */
+function tntTopFace(rand) {
+  return noiseCanvas(rand, 0xb02018, { speckles: 24, blotches: 2, blotchColor: 0x6a100c });
 }
 
 // ---------- items ----------
@@ -483,6 +745,111 @@ function shovelFace(rand) {
   });
 }
 
+/** Two sticks crossed: the crafting ingredient, drawn corner to corner. */
+function sticksFace(rand) {
+  const cv = document.createElement('canvas');
+  cv.width = cv.height = TEX_SIZE;
+  const ctx = cv.getContext('2d');
+  ctx.clearRect(0, 0, TEX_SIZE, TEX_SIZE);
+  const drawStick = (x0, y0, x1, y1, light, dark) => {
+    ctx.strokeStyle = dark;
+    ctx.lineWidth = 2.6;
+    ctx.beginPath();
+    ctx.moveTo(x0 + 0.5, y0 + 0.5);
+    ctx.lineTo(x1 + 0.5, y1 + 0.5);
+    ctx.stroke();
+    ctx.strokeStyle = light;
+    ctx.lineWidth = 1.4;
+    ctx.beginPath();
+    ctx.moveTo(x0, y0);
+    ctx.lineTo(x1, y1);
+    ctx.stroke();
+  };
+  // One stick bottom-left to top-right, one crossed over it.
+  drawStick(3, 13, 12, 4, '#a5824a', '#5c401f');
+  drawStick(3, 4, 12, 12, '#9a7a42', '#54401f');
+  return cv;
+}
+
+/**
+ * Wooden tool heads: the same haft as the iron tools with a pale wood head.
+ * Minecraft's wooden tools are visibly lighter than stone or iron, and the
+ * difference matters here because you craft them — the sprite is how you
+ * tell the tiers apart at a glance.
+ */
+const WOOD_DARK = '#5c401f';
+const WOOD = '#8a6532';
+const WOOD_LIGHT = '#b8945f';
+
+function woodPickaxeFace(rand) {
+  return toolCanvas(rand, (ctx) => {
+    ctx.strokeStyle = WOOD_DARK;
+    ctx.lineWidth = 4;
+    ctx.beginPath();
+    ctx.moveTo(5.5, 5.5);
+    ctx.quadraticCurveTo(10.5, 1.0, 14.5, 5.0);
+    ctx.stroke();
+    ctx.strokeStyle = WOOD;
+    ctx.lineWidth = 2.2;
+    ctx.beginPath();
+    ctx.moveTo(5.5, 5.5);
+    ctx.quadraticCurveTo(10.5, 1.6, 14.5, 5.0);
+    ctx.stroke();
+    ctx.fillStyle = WOOD_LIGHT;
+    ctx.fillRect(9, 2, 3, 1);
+  });
+}
+
+function woodShovelFace(rand) {
+  return toolCanvas(rand, (ctx) => {
+    ctx.fillStyle = WOOD_DARK;
+    ctx.fillRect(8, 2, 7, 7);
+    ctx.fillStyle = WOOD;
+    ctx.fillRect(9, 3, 5, 5);
+    ctx.fillStyle = WOOD_LIGHT;
+    ctx.fillRect(9, 3, 2, 1);
+    ctx.clearRect(8, 8, 1, 1);
+    ctx.clearRect(14, 8, 1, 1);
+  });
+}
+
+/** Stone tool heads: the same haft, a grey head — Minecraft's stone tier. */
+const STONE_DARK = '#5a5a5a';
+const STONE_HEAD = '#8a8a8a';
+const STONE_LIGHT = '#bdbdbd';
+
+function stonePickaxeFace(rand) {
+  return toolCanvas(rand, (ctx) => {
+    ctx.strokeStyle = STONE_DARK;
+    ctx.lineWidth = 4;
+    ctx.beginPath();
+    ctx.moveTo(5.5, 5.5);
+    ctx.quadraticCurveTo(10.5, 1.0, 14.5, 5.0);
+    ctx.stroke();
+    ctx.strokeStyle = STONE_HEAD;
+    ctx.lineWidth = 2.2;
+    ctx.beginPath();
+    ctx.moveTo(5.5, 5.5);
+    ctx.quadraticCurveTo(10.5, 1.6, 14.5, 5.0);
+    ctx.stroke();
+    ctx.fillStyle = STONE_LIGHT;
+    ctx.fillRect(9, 2, 3, 1);
+  });
+}
+
+function stoneShovelFace(rand) {
+  return toolCanvas(rand, (ctx) => {
+    ctx.fillStyle = STONE_DARK;
+    ctx.fillRect(8, 2, 7, 7);
+    ctx.fillStyle = STONE_HEAD;
+    ctx.fillRect(9, 3, 5, 5);
+    ctx.fillStyle = STONE_LIGHT;
+    ctx.fillRect(9, 3, 2, 1);
+    ctx.clearRect(8, 8, 1, 1);
+    ctx.clearRect(14, 8, 1, 1);
+  });
+}
+
 function bucketCanvas(rand, fill) {
   const cv = document.createElement('canvas');
   cv.width = cv.height = TEX_SIZE;
@@ -553,6 +920,12 @@ export const BLOCK_DEFS = [
   { id: 30, name: 'Deepslate Gold Ore', side: deepGoldFace, top: deepGoldFace, bottom: deepGoldFace },
   { id: 31, name: 'Deepslate Redstone Ore', side: deepRedstoneFace, top: deepRedstoneFace, bottom: deepRedstoneFace },
   { id: 32, name: 'Deepslate Diamond Ore', side: deepDiamondFace, top: deepDiamondFace, bottom: deepDiamondFace },
+  // Crafting-era blocks: player-placed only, ids 33+ (see blocks-extra.js).
+  // The furnace has no rotation state, so every side carries the fire mouth.
+  { id: CRAFTING_TABLE, name: 'Crafting Table', side: craftingSideFace, top: craftingTopFace, bottom: planksFace },
+  { id: FURNACE, name: 'Furnace', side: furnaceFrontFace, top: furnaceTopFace, bottom: furnaceTopFace },
+  { id: GLASS, name: 'Glass', side: glassFace, top: glassFace, bottom: glassFace },
+  { id: TNT, name: 'TNT', side: tntSideFace, top: tntTopFace, bottom: tntTopFace },
 ];
 
 /**
@@ -565,6 +938,11 @@ export const ITEM_DEFS = [
   { id: WATER_BUCKET, name: 'Water Bucket', item: true, side: waterBucketFace, top: waterBucketFace, bottom: waterBucketFace },
   { id: PICKAXE, name: 'Iron Pickaxe', item: true, side: pickaxeFace, top: pickaxeFace, bottom: pickaxeFace },
   { id: SHOVEL, name: 'Iron Shovel', item: true, side: shovelFace, top: shovelFace, bottom: shovelFace },
+  { id: STICKS, name: 'Sticks', item: true, side: sticksFace, top: sticksFace, bottom: sticksFace },
+  { id: WOOD_PICKAXE, name: 'Wooden Pickaxe', item: true, side: woodPickaxeFace, top: woodPickaxeFace, bottom: woodPickaxeFace },
+  { id: WOOD_SHOVEL, name: 'Wooden Shovel', item: true, side: woodShovelFace, top: woodShovelFace, bottom: woodShovelFace },
+  { id: STONE_PICKAXE, name: 'Stone Pickaxe', item: true, side: stonePickaxeFace, top: stonePickaxeFace, bottom: stonePickaxeFace },
+  { id: STONE_SHOVEL, name: 'Stone Shovel', item: true, side: stoneShovelFace, top: stoneShovelFace, bottom: stoneShovelFace },
 ];
 
 /** Everything with a texture in the atlas: blocks first, then items. */
@@ -1090,4 +1468,43 @@ export function getBlockDefById(id) {
 /** Display name for a block or item id. */
 export function blockName(id) {
   return getBlockDefById(id)?.name ?? 'Air';
+}
+
+/**
+ * A representative [r, g, b] tint (0..1) for a block id, for the block break
+ * particles. Not a pixel-perfect sample — a single colour the chips can fly
+ * out as, close enough to the block's look to read as bits of it.
+ */
+const TINT_BY_ID = {
+  1: [0.48, 0.74, 0.29],   // grass top green
+  2: [0.47, 0.33, 0.23],   // dirt
+  3: [0.50, 0.50, 0.50],   // stone
+  4: [0.54, 0.54, 0.54],   // cobblestone
+  5: [0.72, 0.58, 0.37],   // oak planks
+  6: [0.86, 0.83, 0.63],   // sand
+  7: [0.61, 0.31, 0.18],   // bricks
+  8: [0.29, 0.29, 0.29],   // bedrock
+  9: [0.96, 0.96, 0.96],   // snow
+  10: [0.42, 0.31, 0.16],  // oak log
+  11: [0.25, 0.50, 0.16],  // leaves
+  12: [0.24, 0.25, 0.27],  // deepslate
+  22: [0.46, 0.65, 0.85],  // ice
+  23: [0.42, 0.42, 0.45],  // coal ore
+  24: [0.58, 0.55, 0.50],  // iron ore
+  25: [0.62, 0.55, 0.35],  // gold ore
+  26: [0.55, 0.42, 0.42],  // redstone ore
+  27: [0.48, 0.62, 0.60],  // diamond ore
+  28: [0.30, 0.30, 0.32],  // deepslate coal ore
+  29: [0.42, 0.40, 0.38],  // deepslate iron ore
+  30: [0.46, 0.41, 0.30],  // deepslate gold ore
+  31: [0.40, 0.32, 0.32],  // deepslate redstone ore
+  32: [0.35, 0.47, 0.46],  // deepslate diamond ore
+  33: [0.72, 0.58, 0.37],  // crafting table
+  34: [0.50, 0.48, 0.46],  // furnace
+  35: [0.82, 0.92, 1.00],  // glass
+  36: [0.75, 0.18, 0.14],  // tnt
+};
+
+export function blockTint(id) {
+  return TINT_BY_ID[id] ?? [0.5, 0.5, 0.5];
 }

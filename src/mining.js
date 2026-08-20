@@ -30,9 +30,10 @@
 
 import {
   BEDROCK, GRASS, DIRT, SAND, SNOW, LEAVES, LOG, STONE, DEEPSLATE, ICE,
-  COBBLESTONE, PLANKS, BRICKS, ORE_IDS, isWater, AIR,
+  COBBLESTONE, PLANKS, BRICKS, CRAFTING_TABLE, FURNACE, GLASS, TNT,
+  ORE_IDS, isWater, AIR,
 } from './terrain.js';
-import { PICKAXE, SHOVEL } from './items.js';
+import { PICKAXE, SHOVEL, WOOD_PICKAXE, WOOD_SHOVEL, STONE_PICKAXE, STONE_SHOVEL } from './items.js';
 
 /** What a tool is *for*. A block wants one of these, or nothing in particular. */
 export const HAND = 0;
@@ -63,6 +64,10 @@ const BLOCKS = {
   [BRICKS]: { hardness: 2.0, tool: PICK, needsTool: true },
   [DEEPSLATE]: { hardness: 3.0, tool: PICK, needsTool: true },
   [ICE]: { hardness: 0.5, tool: PICK },
+  [CRAFTING_TABLE]: { hardness: 2.5, tool: HAND },
+  [FURNACE]: { hardness: 3.5, tool: PICK, needsTool: true },
+  [GLASS]: { hardness: 0.3, tool: HAND },
+  [TNT]: { hardness: 0, tool: HAND },
 };
 
 /**
@@ -77,10 +82,17 @@ for (const id of ORE_IDS) BLOCKS[id] = ORE;
 const DEFAULT = { hardness: 1.5, tool: PICK, needsTool: false };
 
 /**
- * What each tool is good at, and how fast. Minecraft's numbers for iron,
- * which is the tier both of these are: wood 2, stone 4, iron 6, diamond 8.
+ * What each tool is good at, and how fast. Minecraft's numbers, tier by
+ * tier: wood 2, stone 4, iron 6, diamond 8. The starter kit hands out iron;
+ * the crafting table makes wooden ones, which dig half as fast — enough to
+ * be worth having if you are out of iron, and enough to send you back to
+ * the iron when you remember it.
  */
 const TOOLS = {
+  [WOOD_PICKAXE]: { kind: PICK, speed: 2 },
+  [WOOD_SHOVEL]: { kind: SPADE, speed: 2 },
+  [STONE_PICKAXE]: { kind: PICK, speed: 4 },
+  [STONE_SHOVEL]: { kind: SPADE, speed: 4 },
   [PICKAXE]: { kind: PICK, speed: 6 },
   [SHOVEL]: { kind: SPADE, speed: 6 },
 };
@@ -143,6 +155,9 @@ export function breakTime(id, held, where) {
  */
 export function dropsFrom(id, held) {
   if (id === AIR || id === BEDROCK || isWater(id)) return 0;
+  // Glass has no Silk Touch here: it breaks into nothing, like Minecraft
+  // without the enchantment.
+  if (id === GLASS) return 0;
   return canHarvest(id, held) ? id : 0;
 }
 

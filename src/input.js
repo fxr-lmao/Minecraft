@@ -76,6 +76,7 @@ const ACTION_KEYS = {
   F3: 'debug',
   KeyF: 'fullscreen',
   F11: 'fullscreen',
+  KeyC: 'gamemode',
   Escape: 'escape',
 };
 

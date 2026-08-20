@@ -21,9 +21,10 @@ import {
 
 export {
   GRASS, DIRT, STONE, SAND, BEDROCK, DEEPSLATE, WATER, AIR, ICE,
-  isWater, isOpaque, isIce, waterLevel, waterId,
+  CRAFTING_TABLE, FURNACE, GLASS, TNT,
+  isWater, isOpaque, isSolid, isIce, waterLevel, waterId,
 } from './terrain.js';
-import { BEDROCK, AIR, isOpaque, isWater, isWaterSource, temperatureAt } from './terrain.js';
+import { BEDROCK, AIR, isOpaque, isSolid, isWater, isWaterSource, temperatureAt } from './terrain.js';
 
 const AREA = CHUNK_SIZE * CHUNK_SIZE;
 const CHUNK_CELLS = AREA * WORLD_HEIGHT;
@@ -185,10 +186,11 @@ export class World {
   /**
    * Solid means "you cannot walk through it". Water is a block but not an
    * obstacle, so everything that asks about collision, targeting or ground
-   * height goes through here rather than comparing against AIR.
+   * height goes through here rather than comparing against AIR. Glass is
+   * solid but not opaque, which is exactly the split `isSolid` captures.
    */
   isSolid(x, y, z) {
-    return isOpaque(this.get(x, y, z));
+    return isSolid(this.get(x, y, z));
   }
 
   /** True when this cell is water of any level. */
@@ -336,8 +338,8 @@ export class World {
     for (let y = Math.min(c.maxY, WORLD_MAX_Y); y >= WORLD_MIN_Y; y--) {
       // The sea is not ground: heightAt is what spawning and the debug screen
       // mean by "the surface", and that is the sea floor, not the surface of
-      // the water above it.
-      if (isOpaque(c.blocks[c.index(lx, y, lz)])) return y;
+      // the water above it. Glass counts as ground here — weather stops on it.
+      if (isSolid(c.blocks[c.index(lx, y, lz)])) return y;
     }
     return WORLD_MIN_Y - 1;
   }

@@ -21,6 +21,10 @@ export const SPEED_SNEAK = 1.295;
 // Airborne terminal speeds (walk/sprint)
 export const AIR_WALK = 4.444;
 export const AIR_SPRINT = 5.778;
+// Creative flight speeds (blocks/s) — Minecraft's fly 0.05 blocks/tick
+// (=10.9) and sprint-fly 0.108 (=21.6).
+export const SPEED_FLY = 10.9;
+export const SPEED_FLY_SPRINT = 21.6;
 
 // Drag coefficients (per second), derived from per-tick factors:
 //   k = -20 * ln(factor)

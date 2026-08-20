@@ -128,8 +128,23 @@ export const isWater = (id) => id >= WATER && id <= WATER_LAST;
 export const waterLevel = (id) => (id === WATER ? 0 : id - WATER_FLOW);
 /** The flowing block for a level. Sources only ever come from generation. */
 export const waterId = (level) => WATER_FLOW + level;
+
+// Player-placed blocks from the crafting pass (see blocks-extra.js). They are
+// imported here so the id namespace stays in one place and the rest of the
+// world code can refer to them without a second import.
+export const CRAFTING_TABLE = 33;
+export const FURNACE = 34;
+export const GLASS = 35;
+export const TNT = 36;
+
+/**
+ * Everything you cannot walk through. Differs from isOpaque in exactly one
+ * block: glass is solid (you stand on it, it stops you) but transparent
+ * (you see through it, and it never hides a face).
+ */
+export const isSolid = (id) => id !== AIR && !isWater(id);
 /** Everything you cannot walk through and cannot see through. */
-export const isOpaque = (id) => id !== AIR && !isWater(id);
+export const isOpaque = (id) => id !== AIR && !isWater(id) && id !== GLASS;
 /** A permanent block of water — the sea, and pools that Minecraft refills. */
 export const isWaterSource = (id) => id === WATER;
 

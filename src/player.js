@@ -12,7 +12,7 @@
 import * as THREE from '../vendor/three.module.min.js';
 import {
   GRAVITY, JUMP_VELOCITY,
-  SPEED_WALK, SPEED_SNEAK, AIR_WALK,
+  SPEED_WALK, SPEED_SNEAK, AIR_WALK, SPEED_FLY, SPEED_FLY_SPRINT,
   DRAG_GROUND, DRAG_AIR, DRAG_ICE,
   PLAYER_WIDTH, PLAYER_HEIGHT, PLAYER_EYE,
   SWIM_HEIGHT, SWIM_EYE, SWIM_PITCH_GAIN,
@@ -99,6 +99,17 @@ export class Player {
     this.fallDistance = 0;
 
     this.horizontalSpeed = 0; // for head bob + HUD
+
+    /**
+     * Creative flight. When on, gravity is suspended and jump/sneak move
+     * you straight up and down at a fast cruise — Minecraft's creative fly
+     * speeds (10.9 walking, 21.6 sprinting).
+     */
+    this.flying = false;
+
+    /** Set by the game loop from the current mode; creative cannot be hurt. */
+    this.invulnerable = false;
+
     /** True while the player's feet are in water. */
     this.inWater = false;
     /** True while the head is under too — no air, and no jumping out. */
@@ -153,7 +164,7 @@ export class Player {
    * of that at a time and the bar goes down smoothly instead of in steps.
    */
   hurt(amount, cause) {
-    if (amount <= 0 || this.dead) return;
+    if (amount <= 0 || this.dead || this.invulnerable) return;
     this.health = Math.max(0, this.health - amount);
     this.sinceHurt = 0;
     if (this.health === 0) this.death = cause;
@@ -200,7 +211,7 @@ export class Player {
       // run. In water there is nothing to push off, so being *in* it is
       // enough — otherwise you could never start swimming out of your depth,
       // which is the only place swimming is any use.
-      if (input.sprint && !this.sprinting && (this.onGround || this.inWater)) {
+      if (input.sprint && !this.sprinting && (this.onGround || this.inWater || this.flying)) {
         this.sprinting = true;
       }
     }
@@ -238,17 +249,19 @@ export class Player {
     const f = Math.exp(-k * dt); // per-step velocity retention factor
 
     // Base target speed; sprint multiplies acceleration by 1.3 (like MC),
-    // so the terminal speed becomes 5.612 (ground) / 5.778 (air).
+    // so the terminal speed becomes 5.612 (ground) / 5.778 (air). In flight
+    // there is no 1.3 — sprinting *is* the double-speed fly.
     let target;
-    if (this.inWater) target = this.sprinting ? SPEED_SWIM_SPRINT : SPEED_SWIM;
+    if (this.flying) target = this.sprinting ? SPEED_FLY_SPRINT : SPEED_FLY;
+    else if (this.inWater) target = this.sprinting ? SPEED_SWIM_SPRINT : SPEED_SWIM;
     else if (grounded) target = this.sneaking ? SPEED_SNEAK : SPEED_WALK;
     else target = AIR_WALK;
 
     const hasInput = moveDir.lengthSq() > 0;
     if (hasInput) {
       // Swimming has no separate sprint multiplier — the sprint speed above
-      // already is Minecraft's swim-sprint terminal.
-      const a = target * (1 - f) * (this.sprinting && !this.inWater ? 1.3 : 1);
+      // already is Minecraft's swim-sprint terminal. Flying is the same.
+      const a = target * (1 - f) * (this.sprinting && !this.inWater && !this.flying ? 1.3 : 1);
       this.vel.x = this.vel.x * f + moveDir.x * a;
       this.vel.z = this.vel.z * f + moveDir.z * a;
     } else {
@@ -270,7 +283,15 @@ export class Player {
     this.onGround = false;
 
     // ---- vertical ----
-    if (this.inWater) {
+    if (this.flying) {
+      // Creative flight: no gravity; jump lifts, sneak sinks, and both
+      // settle at the fly terminal speed under the same drag model.
+      let settle = 0;
+      if (input.jump) settle = SPEED_FLY;
+      else if (input.sneak) settle = -SPEED_FLY;
+      this.vel.y = settle + (this.vel.y - settle) * f;
+      this.onGround = false;
+    } else if (this.inWater) {
       // Sinking, rising and jumping all settle to their Minecraft terminal
       // speeds under the same water drag, so the numbers below are the
       // speeds themselves rather than accelerations.
@@ -339,7 +360,8 @@ export class Player {
    * breaks your fall", and it is why a bucket is a parachute.
    */
   _settleFall(fellFrom, wasGrounded) {
-    if (this.inWater) {
+    // Creative flight suspends falling entirely: no distance, no damage.
+    if (this.inWater || this.flying) {
       this.fallDistance = 0;
       return;
     }
