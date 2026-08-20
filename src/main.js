@@ -15,7 +15,7 @@ import { World, AIR, BEDROCK, ICE, CRAFTING_TABLE, FURNACE, TNT, toChunk } from 
 import { isWater, waterHeight, SEA_LEVEL } from './terrain.js';
 import { WorldRenderer, buildSingleBlockGeometry, buildSingleItemGeometry } from './blocks.js';
 import { Player } from './player.js';
-import { Input, LOOK_FREE, LOOK_TOUCH } from './input.js';
+import { Input, LOOK_FREE, LOOK_TOUCH, playSource } from './input.js';
 import { WaterFlow, Freeze, FLOW_INTERVAL_MS, FREEZE_INTERVAL_MS } from './water.js';
 import { setCameraUnderwater, setSunDirection, setWaterOvercast } from './water-shader.js';
 import { WaterView, HELD_LAYER, WATER_QUALITY_NAMES } from './water-render.js';
@@ -1349,7 +1349,8 @@ function frame(now) {
   applyDaylight();
 
   // ---- input mode: touch UI and cursor visibility ----
-  document.body.classList.toggle('touch', input.usingTouch);
+  document.body.classList.toggle('touch', input.wantsTouchUi);
+  document.body.classList.toggle('has-touch', input.hasTouch);
   // A locked pointer has no cursor, so the on-screen buttons cannot be
   // clicked; they hide rather than sit there pretending.
   document.body.classList.toggle('pointer-locked', Boolean(document.pointerLockElement));
@@ -1425,11 +1426,11 @@ function frame(now) {
 hud.overlayEl.addEventListener('pointerdown', (e) => {
   if (e.target.closest('.panel')) return;
   e.preventDefault();
-  startPlaying(e.pointerType === 'touch' ? 'touch' : 'mouse');
+  startPlaying(playSource(e.pointerType, input.recentFinger));
 });
 
 hud.bindMenu({
-  onResume: (pointerType) => startPlaying(pointerType === 'touch' ? 'touch' : 'mouse'),
+  onResume: (pointerType) => startPlaying(playSource(pointerType, input.recentFinger)),
   onFullscreen: () => input.toggleFullscreen(),
   onRetryLock: () => {
     input.retryLock();

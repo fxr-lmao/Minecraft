@@ -147,8 +147,10 @@ body.nocursor #game { cursor: none; }
   background: rgba(24, 24, 24, 0.65);
   border: 2px solid;
   border-color: #1c1c1c #6a6a6a #6a6a6a #1c1c1c;
-  z-index: 10;
+  /* Above the full-screen touch overlay so slots stay tappable on iOS. */
+  z-index: 16;
   cursor: pointer;
+  touch-action: none;
 }
 
 /* ---------- hearts and air ---------- */
@@ -706,18 +708,43 @@ body.touch .tui-right { display: flex; }
   font-weight: bold;
   font-family: inherit;
   border-radius: 12px;
-  padding: 10px 14px;
+  padding: 12px 16px;
+  min-width: 44px;
+  min-height: 44px;
   -webkit-tap-highlight-color: transparent;
   touch-action: none;
+  user-select: none;
   transition: background 0.1s, color 0.1s;
 }
-.tbtn.small { font-size: 13px; padding: 7px 11px; }
+.tbtn.small { font-size: 13px; padding: 10px 12px; }
 .tbtn.active { background: rgba(255, 255, 255, 0.5); color: #111; }
 #btn-jump {
   width: 92px; height: 92px;
   border-radius: 50%;
   font-size: 17px;
 }
+#btn-break, #btn-place {
+  min-width: 72px;
+  min-height: 52px;
+}
+
+#joy-home {
+  display: none;
+  position: fixed;
+  left: calc(18px + env(safe-area-inset-left));
+  bottom: calc(96px + env(safe-area-inset-bottom));
+  width: 128px;
+  height: 128px;
+  border-radius: 50%;
+  border: 2px solid rgba(255, 255, 255, 0.28);
+  background: rgba(255, 255, 255, 0.08);
+  z-index: 14;
+  pointer-events: auto;
+  touch-action: none;
+  -webkit-tap-highlight-color: transparent;
+}
+body.touch #joy-home { display: block; }
+body.touch .slot .key { display: none; }
 
 #joy-base {
   display: none;
@@ -753,6 +780,10 @@ body.touch .tui-right { display: flex; }
 }
 @media (max-height: 480px) {
   #status { bottom: 26%; }
+  #btn-jump { width: 64px; height: 64px; font-size: 14px; }
+  .tui-right { bottom: calc(64px + env(safe-area-inset-bottom)); gap: 6px; }
+  #joy-home { width: 96px; height: 96px; bottom: calc(64px + env(safe-area-inset-bottom)); }
+  .tbtn { padding: 8px 10px; min-height: 40px; }
 }
 
 /*
