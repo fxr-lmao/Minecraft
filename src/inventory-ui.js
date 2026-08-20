@@ -14,6 +14,7 @@ import { getBlockAssets, getBlockDefById, blockName } from './textures.js';
 import { isTool, durabilityFraction } from './durability.js';
 import { GRID_2X2, GRID_3X3, matchRecipe, craft } from './crafting.js';
 import { bindSlotPress } from './slot-press.js';
+import { hotbarGesture } from './touch-controls.js';
 import * as sound from './sound.js';
 
 const iconCache = new Map();
@@ -170,13 +171,34 @@ export class InventoryUI {
     }
 
     // Selecting a hotbar slot by tapping it (touch / unlocked pointer).
+    // A mostly-horizontal swipe changes slot instead, so a thumb can cycle
+    // without having to hit a 32px cell on a phone.
+    this._hotbarGesture = null;
     this.hotbarEl.addEventListener('pointerdown', (e) => {
       const el = e.target.closest('.slot');
       if (!el) return;
       e.preventDefault();
       e.stopPropagation();
-      this.selectSlot(Number(el.dataset.slot));
+      this._hotbarGesture = {
+        x: e.clientX,
+        y: e.clientY,
+        slot: Number(el.dataset.slot),
+        id: e.pointerId,
+      };
+      try { this.hotbarEl.setPointerCapture?.(e.pointerId); } catch { /* ignore */ }
+      if (e.pointerType !== 'touch' && e.pointerType !== 'pen') {
+        this.selectSlot(this._hotbarGesture.slot);
+      }
     });
+    this.hotbarEl.addEventListener('pointerup', (e) => {
+      const g = this._hotbarGesture;
+      if (!g || g.id !== e.pointerId) return;
+      this._hotbarGesture = null;
+      const result = hotbarGesture(g.x, g.y, e.clientX, e.clientY, g.slot);
+      if (result.type === 'swipe') this.scrollSelection(result.dir);
+      else if (e.pointerType === 'touch' || e.pointerType === 'pen') this.selectSlot(result.slot);
+    });
+    this.hotbarEl.addEventListener('pointercancel', () => { this._hotbarGesture = null; });
 
     // Slot interaction inside the inventory screen.
     const onSlot = (el, secondary, e) => {

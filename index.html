@@ -102,7 +102,9 @@
     </div>
   </div>
 
-  <!-- touch controls (shown only while a finger is being used) -->
+  <!-- touch controls (shown while a finger is being used, or on a phone
+       that started Play with a bogus mouse pointerType) -->
+  <div id="joy-home" aria-label="Move"></div>
   <div id="joy-base"><div id="joy-knob"></div></div>
   <div id="touch-ui">
     <div class="tui-top">
@@ -206,7 +208,9 @@
           refuses to lock the pointer the game switches to free look automatically — moving the
           cursor turns the view and the screen edges keep turning. Going fullscreen usually makes
           the real lock work.<br />
-          👆 Touch only: left thumb steers, right thumb looks, on-screen buttons do the rest.<br />
+          👆 Touch: left thumb on the pad (or anywhere on the left) steers, right thumb looks,
+          on-screen buttons jump / break / place. Push the stick all the way forward to sprint.
+          Double-tap Jump to fly in creative. Swipe the hotbar to change slots.<br />
           💾 Your world saves itself in this browser.
         </p>
       </details>

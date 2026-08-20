@@ -27,7 +27,18 @@
 // and raw deltas come from GCMouse. attachNativeHost() switches to it — the
 // host owns the lock, so none of the browser's lock machinery runs.
 
-import { clamp } from './utils.js';
+import {
+  playSource as playSourceFromPointer,
+  isFingerPointer,
+  recentFinger as fingerIsRecent,
+  wantsTouchUi as computeWantsTouchUi,
+  idleHold, holdEvent,
+  joystickFromDelta, joystickKnobOffset, homeJoystickOrigin, touchRole,
+  combineMove, jumpTap, haptic,
+  JOY_KNOB_CAP, FINGER_MEMORY_MS,
+} from './touch-controls.js';
+
+export { playSourceFromPointer as playSource };
 
 export const LOOK_LOCK = 'lock';
 export const LOOK_FREE = 'free';
@@ -80,9 +91,6 @@ const ACTION_KEYS = {
   Escape: 'escape',
 };
 
-const JOY_RADIUS = 55; // px of finger travel for full deflection
-const JOY_DEADZONE = 8; // px before the stick responds
-
 // Free-look edge turning: how close to the edge (fraction of the viewport)
 // starts a turn, and how fast the turn runs at the very edge.
 const EDGE_ZONE = 0.12;
@@ -132,10 +140,13 @@ export class Input {
     };
 
     this._doubleTap = { forward: { last: 0, active: false } };
-    /** Last Space press, for the double-tap that toggles creative flight. */
+    /** Last Space / jump-button press, for the double-tap that toggles creative flight. */
     this._lastJumpAt = 0;
+    /** Last real `touchstart` (ms), used to recover from iOS reporting a finger as a mouse. */
+    this._fingerAt = 0;
     this._joyBase = document.getElementById('joy-base');
     this._joyKnob = document.getElementById('joy-knob');
+    this._joyHome = document.getElementById('joy-home');
     this._lockTimer = null;
     this._retryTimer = null;
     this._lockAttempt = 0;
@@ -144,6 +155,37 @@ export class Input {
     this._initPointer();
     this._initTouch();
     this._bindButtons();
+  }
+
+  /** True if a finger touched the page in the last couple of seconds. */
+  get recentFinger() {
+    return this.hasTouch && fingerIsRecent(performance.now(), this._fingerAt, FINGER_MEMORY_MS);
+  }
+
+  /**
+   * Show the movement pad and jump/break/place cluster.
+   *
+   * Hidden while a real pointer lock owns the mouse — those buttons would sit
+   * there unable to be clicked. Shown for touch play, and also for any
+   * touch-capable session that is not locked, so a phone that started Play
+   * with a bogus `pointerType: 'mouse'` still gets buttons it can press.
+   */
+  get wantsTouchUi() {
+    return computeWantsTouchUi({
+      locked: this.locked,
+      nativeLocked: this.nativeLocked,
+      usingTouch: this.usingTouch,
+      lookMode: this.lookMode,
+      hasTouch: this.hasTouch,
+      sessionActive: this.sessionActive,
+    });
+  }
+
+  /** Record that a real finger landed, for Play-source recovery. */
+  noteFinger() {
+    this._fingerAt = performance.now();
+    this.usingTouch = true;
+    if (this.sessionActive) this.lookMode = LOOK_TOUCH;
   }
 
   /** Game is running (in any look mode). */
@@ -552,21 +594,30 @@ export class Input {
   // ------------------------------------------------------------------ touch
 
   _initTouch() {
+    if (typeof window !== 'undefined') {
+      window.addEventListener('touchstart', () => { this._fingerAt = performance.now(); }, {
+        capture: true,
+        passive: true,
+      });
+    }
     if (!this.hasTouch) return;
     const cv = this.canvas;
 
     cv.addEventListener(
       'touchstart',
       (e) => {
-        this.usingTouch = true;
-        if (this.sessionActive) this.lookMode = LOOK_TOUCH;
+        this.noteFinger();
         e.preventDefault();
         if (!this.sessionActive || !this.enabled) return;
         for (const t of e.changedTouches) {
-          if (t.clientX < window.innerWidth * 0.45 && !this.touch.joy) {
+          const role = touchRole(
+            t.clientX, window.innerWidth,
+            Boolean(this.touch.joy), this.touch.look.id !== null,
+          );
+          if (role === 'joy') {
             this.touch.joy = { id: t.identifier, ox: t.clientX, oy: t.clientY, x: t.clientX, y: t.clientY };
             this._showJoystick(t.clientX, t.clientY);
-          } else if (this.touch.look.id === null) {
+          } else if (role === 'look') {
             this.touch.look = { id: t.identifier, px: t.clientX, py: t.clientY, dx: 0, dy: 0 };
           }
         }
@@ -581,7 +632,10 @@ export class Input {
         if (!this.enabled) return;
         for (const t of e.changedTouches) {
           const j = this.touch.joy;
-          if (j && t.identifier === j.id) {
+          // `home` sticks are keyed by pointerId, which lives in a different
+          // number space than Touch.identifier — matching across the two lets
+          // a look finger with a colliding id steal the pad.
+          if (j && !j.home && t.identifier === j.id) {
             j.x = t.clientX;
             j.y = t.clientY;
             this._updateJoystick(j.x - j.ox, j.y - j.oy);
@@ -599,7 +653,7 @@ export class Input {
 
     const endTouch = (e) => {
       for (const t of e.changedTouches) {
-        if (this.touch.joy && t.identifier === this.touch.joy.id) {
+        if (this.touch.joy && !this.touch.joy.home && t.identifier === this.touch.joy.id) {
           this.touch.joy = null;
           this._hideJoystick();
         }
@@ -608,9 +662,54 @@ export class Input {
     };
     cv.addEventListener('touchend', endTouch);
     cv.addEventListener('touchcancel', endTouch);
+
+    this._bindJoyHome();
+  }
+
+  _bindJoyHome() {
+    const el = this._joyHome;
+    if (!el) return;
+    const mine = (e) => {
+      const j = this.touch.joy;
+      return j && j.home === true && j.id === e.pointerId ? j : null;
+    };
+    const down = (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      if (isFingerPointer(e.pointerType)) this.noteFinger();
+      if (this.touch.joy) return;
+      if (!this.sessionActive || !this.enabled) return;
+      const { ox, oy } = homeJoystickOrigin(el.getBoundingClientRect());
+      this.touch.joy = { id: e.pointerId, ox, oy, x: e.clientX, y: e.clientY, home: true };
+      try { el.setPointerCapture(e.pointerId); } catch { /* not every stub has capture */ }
+      this._showJoystick(ox, oy);
+      this._updateJoystick(e.clientX - ox, e.clientY - oy);
+    };
+    const move = (e) => {
+      const j = mine(e);
+      if (!j) return;
+      j.x = e.clientX;
+      j.y = e.clientY;
+      this._updateJoystick(j.x - j.ox, j.y - j.oy);
+    };
+    const up = (e) => {
+      if (!mine(e)) return;
+      this.touch.joy = null;
+      this._hideJoystick();
+    };
+    el.addEventListener('pointerdown', down);
+    el.addEventListener('pointermove', move);
+    el.addEventListener('pointerup', up);
+    el.addEventListener('pointercancel', up);
+    // Capture normally retargets the release to the pad, but if it was
+    // refused the finger lifts somewhere else entirely — without this the
+    // stick stays pushed and the player walks off on their own.
+    window.addEventListener('pointerup', up);
+    window.addEventListener('pointercancel', up);
   }
 
   _showJoystick(x, y) {
+    if (!this._joyBase || !this._joyKnob) return;
     this._joyBase.style.left = `${x}px`;
     this._joyBase.style.top = `${y}px`;
     this._joyBase.classList.add('visible');
@@ -618,37 +717,60 @@ export class Input {
   }
 
   _updateJoystick(dx, dy) {
-    const len = Math.hypot(dx, dy);
-    const c = len > 44 ? 44 / len : 1; // knob travel cap (base is 140px)
-    this._joyKnob.style.left = `calc(50% + ${(dx * c).toFixed(1)}px)`;
-    this._joyKnob.style.top = `calc(50% + ${(dy * c).toFixed(1)}px)`;
+    if (!this._joyKnob) return;
+    const { x, y } = joystickKnobOffset(dx, dy, JOY_KNOB_CAP);
+    this._joyKnob.style.left = `calc(50% + ${x.toFixed(1)}px)`;
+    this._joyKnob.style.top = `calc(50% + ${y.toFixed(1)}px)`;
   }
 
   _hideJoystick() {
     this._joyBase?.classList.remove('visible');
   }
 
-  /** On-screen buttons: held (jump/break/place), toggled (sprint/sneak) or one-shot. */
+  /**
+   * On-screen buttons: held (jump/break/place), toggled (sprint/sneak) or
+   * one-shot. Hold uses the pure state machine in touch-controls.js so a
+   * Safari `pointerleave` on press cannot unpress Jump in the same frame.
+   */
   _bindButtons() {
     const hold = (id, apply) => {
       const el = document.getElementById(id);
       if (!el) return;
-      const down = (e) => {
-        e.preventDefault();
-        e.stopPropagation();
-        this.usingTouch = e.pointerType !== 'mouse';
-        apply(true);
-        el.classList.add('active');
+      let state = idleHold();
+      const run = (type, e) => {
+        if (e) {
+          e.preventDefault?.();
+          e.stopPropagation?.();
+        }
+        const result = holdEvent(state, type, e);
+        const wasDown = state.down;
+        state = result.state;
+        if (result.start && !wasDown) {
+          if (isFingerPointer(e?.pointerType)) this.noteFinger();
+          try { el.setPointerCapture?.(e.pointerId); } catch { /* ignore */ }
+          apply(true);
+          el.classList.add('active');
+        }
+        if (result.end && wasDown) {
+          apply(false);
+          el.classList.remove('active');
+        }
       };
-      const up = (e) => {
-        e?.preventDefault();
-        apply(false);
-        el.classList.remove('active');
+      el.addEventListener('pointerdown', (e) => run('pointerdown', e));
+      el.addEventListener('pointerup', (e) => run('pointerup', e));
+      el.addEventListener('pointercancel', (e) => run('pointercancel', e));
+      el.addEventListener('lostpointercapture', (e) => run('lostpointercapture', e));
+      el.addEventListener('pointerleave', (e) => run('pointerleave', e));
+      el.addEventListener('contextmenu', (e) => e.preventDefault());
+      // Same fallback as the movement pad: if capture was refused the release
+      // lands on whatever is under the finger, not on the button.
+      const away = (type) => (e) => {
+        if (!state.down) return;
+        if (e.pointerId !== state.pointerId) return;
+        run(type, e);
       };
-      el.addEventListener('pointerdown', down);
-      el.addEventListener('pointerup', up);
-      el.addEventListener('pointercancel', up);
-      el.addEventListener('pointerleave', up);
+      window.addEventListener('pointerup', away('pointerup'));
+      window.addEventListener('pointercancel', away('pointercancel'));
     };
 
     const toggle = (id, prop) => {
@@ -657,6 +779,7 @@ export class Input {
       el.addEventListener('pointerdown', (e) => {
         e.preventDefault();
         e.stopPropagation();
+        if (isFingerPointer(e.pointerType)) this.noteFinger();
         this.touch[prop] = !this.touch[prop];
         el.classList.toggle('active', this.touch[prop]);
       });
@@ -668,18 +791,33 @@ export class Input {
       el.addEventListener('pointerdown', (e) => {
         e.preventDefault();
         e.stopPropagation();
+        if (isFingerPointer(e.pointerType)) this.noteFinger();
         this.onAction(action);
       });
     };
 
-    hold('btn-jump', (v) => { this.touch.jump = v; });
+    hold('btn-jump', (v) => {
+      this.touch.jump = v;
+      if (v) {
+        haptic(8);
+        const tap = jumpTap(performance.now(), this._lastJumpAt);
+        this._lastJumpAt = tap.last;
+        if (tap.fly) this.onAction('fly');
+      }
+    });
     hold('btn-break', (v) => {
       this.pressed.break = v;
-      if (v) this.onAction('break');
+      if (v) {
+        haptic(8);
+        this.onAction('break');
+      }
     });
     hold('btn-place', (v) => {
       this.pressed.place = v;
-      if (v) this.onAction('place');
+      if (v) {
+        haptic(8);
+        this.onAction('place');
+      }
     });
     toggle('btn-sprint', 'sprint');
     toggle('btn-sneak', 'sneak');
@@ -727,37 +865,22 @@ export class Input {
 
     if (!this.keys.has('forward')) this._doubleTap.forward.active = false;
 
-    let forward = forwardKey;
-    let strafe = strafeKey;
+    // The stick is read by the same pure function the tests pin, so a thumb
+    // pushed all the way forward sprints — that is the only way to sprint on
+    // a phone without taking a hand off the screen to hit the toggle.
+    const j = this.touch.joy;
+    const joy = j ? joystickFromDelta(j.x - j.ox, j.y - j.oy) : null;
 
-    // touch joystick
-    if (this.touch.joy) {
-      const j = this.touch.joy;
-      let dx = j.x - j.ox;
-      let dy = j.y - j.oy;
-      const len = Math.hypot(dx, dy);
-      if (len < JOY_DEADZONE) {
-        dx = 0;
-        dy = 0;
-      } else {
-        const scale = Math.min(1, (len - JOY_DEADZONE) / (JOY_RADIUS - JOY_DEADZONE));
-        dx = (dx / len) * scale;
-        dy = (dy / len) * scale;
-      }
-      forward += -dy; // thumb up = forward
-      strafe += dx; // thumb right = strafe right
-    }
-
-    forward = clamp(forward, -1, 1);
-    strafe = clamp(strafe, -1, 1);
-
-    return {
-      forward,
-      strafe,
-      jump: this.keys.has('jump') || this.touch.jump,
-      sprint: this.keys.has('sprint') || this._doubleTap.forward.active || this.touch.sprint,
-      sneak: this.keys.has('sneak') || this.touch.sneak,
-    };
+    return combineMove(
+      { forward: forwardKey, strafe: strafeKey },
+      joy,
+      {
+        jump: this.keys.has('jump') || this.touch.jump,
+        sprint: this.keys.has('sprint') || this.touch.sprint,
+        doubleTapSprint: this._doubleTap.forward.active,
+        sneak: this.keys.has('sneak') || this.touch.sneak,
+      },
+    );
   }
 
   /** Double-tap W starts a sprint that lasts until W is released. */

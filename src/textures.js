@@ -9,6 +9,15 @@ import {
   BUCKET, WATER_BUCKET, PICKAXE, SHOVEL,
   STICKS, WOOD_PICKAXE, WOOD_SHOVEL, STONE_PICKAXE, STONE_SHOVEL, isItem,
 } from './items.js';
+import {
+  HAFT, HEAD_WOOD, HEAD_STONE, HEAD_IRON, BUCKET_PALETTE,
+  STICK_PX, PICKAXE_PX, SHOVEL_PX, BUCKET_PX, WATER_BUCKET_PX,
+} from './item-sprites.js';
+
+export {
+  HAFT, HEAD_WOOD, HEAD_STONE, HEAD_IRON, BUCKET_PALETTE,
+  STICK_PX, PICKAXE_PX, SHOVEL_PX, BUCKET_PX, WATER_BUCKET_PX,
+};
 
 export const TEX_SIZE = 16;
 
@@ -663,231 +672,65 @@ function tntTopFace(rand) {
 // shared material, and giving items a texture of their own would mean a
 // second material and a second draw call for the sake of two sprites. Three
 // identical tiles each is a rounding error against thirty-nine.
+//
+// Every item sprite is 16×16 pixel art: one colour per cell, no strokes.
+// Canvas paths anti-alias at fractional coordinates, and a 16×16 tile
+// magnified by nearest-neighbour turns that into a grey smudge. Same lesson
+// as the crack overlay. `.` in a map is transparent.
 
-/** An empty pail: a galvanised body, a rim, and a handle over the top. */
-function bucketFace(rand) {
-  return bucketCanvas(rand, null);
-}
-
-/** The same pail with water in it, which is what a full one looks like. */
-function waterBucketFace(rand) {
-  return bucketCanvas(rand, 0x3a63d2);
-}
-
-/**
- * A tool: a wooden haft corner to corner, and a head at the top of it.
- *
- * Both tools are the same picture with a different head, because that is what
- * they are — Minecraft's pickaxe and shovel share a stick and differ in what
- * is lashed to it, and at sixteen pixels the head is the only part with room
- * to say anything.
- */
-function toolCanvas(rand, head) {
+/** Paint a 16×16 sprite from a character map. Missing keys (and `.`) skip. */
+function paintSprite(rows, palette) {
   const cv = document.createElement('canvas');
   cv.width = cv.height = TEX_SIZE;
   const ctx = cv.getContext('2d');
   ctx.clearRect(0, 0, TEX_SIZE, TEX_SIZE);
-
-  // The haft, bottom-left to top-right, with a darker edge under it.
-  ctx.strokeStyle = '#4a3418';
-  ctx.lineWidth = 3;
-  ctx.beginPath();
-  ctx.moveTo(3.5, 13.5);
-  ctx.lineTo(10.5, 5.5);
-  ctx.stroke();
-  ctx.strokeStyle = '#8a6532';
-  ctx.lineWidth = 1.6;
-  ctx.beginPath();
-  ctx.moveTo(3.5, 13.5);
-  ctx.lineTo(10.5, 5.5);
-  ctx.stroke();
-
-  head(ctx);
-  return cv;
-}
-
-/** Iron, as three tones: the shadow, the metal, and the light along its edge. */
-const IRON_DARK = '#6e7378';
-const IRON = '#b9c0c6';
-const IRON_LIGHT = '#e7edf2';
-
-function pickaxeFace(rand) {
-  return toolCanvas(rand, (ctx) => {
-    // A shallow arc across the top with two points turned down at its ends.
-    ctx.strokeStyle = IRON_DARK;
-    ctx.lineWidth = 4;
-    ctx.beginPath();
-    ctx.moveTo(5.5, 5.5);
-    ctx.quadraticCurveTo(10.5, 1.0, 14.5, 5.0);
-    ctx.stroke();
-    ctx.strokeStyle = IRON;
-    ctx.lineWidth = 2.2;
-    ctx.beginPath();
-    ctx.moveTo(5.5, 5.5);
-    ctx.quadraticCurveTo(10.5, 1.6, 14.5, 5.0);
-    ctx.stroke();
-    ctx.fillStyle = IRON_LIGHT;
-    ctx.fillRect(9, 2, 3, 1);
-  });
-}
-
-function shovelFace(rand) {
-  return toolCanvas(rand, (ctx) => {
-    // A blade: a square with its bottom corners taken off.
-    ctx.fillStyle = IRON_DARK;
-    ctx.fillRect(8, 2, 7, 7);
-    ctx.fillStyle = IRON;
-    ctx.fillRect(9, 3, 5, 5);
-    ctx.fillStyle = IRON_LIGHT;
-    ctx.fillRect(9, 3, 2, 1);
-    ctx.clearRect(8, 8, 1, 1);
-    ctx.clearRect(14, 8, 1, 1);
-  });
-}
-
-/** Two sticks crossed: the crafting ingredient, drawn corner to corner. */
-function sticksFace(rand) {
-  const cv = document.createElement('canvas');
-  cv.width = cv.height = TEX_SIZE;
-  const ctx = cv.getContext('2d');
-  ctx.clearRect(0, 0, TEX_SIZE, TEX_SIZE);
-  const drawStick = (x0, y0, x1, y1, light, dark) => {
-    ctx.strokeStyle = dark;
-    ctx.lineWidth = 2.6;
-    ctx.beginPath();
-    ctx.moveTo(x0 + 0.5, y0 + 0.5);
-    ctx.lineTo(x1 + 0.5, y1 + 0.5);
-    ctx.stroke();
-    ctx.strokeStyle = light;
-    ctx.lineWidth = 1.4;
-    ctx.beginPath();
-    ctx.moveTo(x0, y0);
-    ctx.lineTo(x1, y1);
-    ctx.stroke();
-  };
-  // One stick bottom-left to top-right, one crossed over it.
-  drawStick(3, 13, 12, 4, '#a5824a', '#5c401f');
-  drawStick(3, 4, 12, 12, '#9a7a42', '#54401f');
-  return cv;
-}
-
-/**
- * Wooden tool heads: the same haft as the iron tools with a pale wood head.
- * Minecraft's wooden tools are visibly lighter than stone or iron, and the
- * difference matters here because you craft them — the sprite is how you
- * tell the tiers apart at a glance.
- */
-const WOOD_DARK = '#5c401f';
-const WOOD = '#8a6532';
-const WOOD_LIGHT = '#b8945f';
-
-function woodPickaxeFace(rand) {
-  return toolCanvas(rand, (ctx) => {
-    ctx.strokeStyle = WOOD_DARK;
-    ctx.lineWidth = 4;
-    ctx.beginPath();
-    ctx.moveTo(5.5, 5.5);
-    ctx.quadraticCurveTo(10.5, 1.0, 14.5, 5.0);
-    ctx.stroke();
-    ctx.strokeStyle = WOOD;
-    ctx.lineWidth = 2.2;
-    ctx.beginPath();
-    ctx.moveTo(5.5, 5.5);
-    ctx.quadraticCurveTo(10.5, 1.6, 14.5, 5.0);
-    ctx.stroke();
-    ctx.fillStyle = WOOD_LIGHT;
-    ctx.fillRect(9, 2, 3, 1);
-  });
-}
-
-function woodShovelFace(rand) {
-  return toolCanvas(rand, (ctx) => {
-    ctx.fillStyle = WOOD_DARK;
-    ctx.fillRect(8, 2, 7, 7);
-    ctx.fillStyle = WOOD;
-    ctx.fillRect(9, 3, 5, 5);
-    ctx.fillStyle = WOOD_LIGHT;
-    ctx.fillRect(9, 3, 2, 1);
-    ctx.clearRect(8, 8, 1, 1);
-    ctx.clearRect(14, 8, 1, 1);
-  });
-}
-
-/** Stone tool heads: the same haft, a grey head — Minecraft's stone tier. */
-const STONE_DARK = '#5a5a5a';
-const STONE_HEAD = '#8a8a8a';
-const STONE_LIGHT = '#bdbdbd';
-
-function stonePickaxeFace(rand) {
-  return toolCanvas(rand, (ctx) => {
-    ctx.strokeStyle = STONE_DARK;
-    ctx.lineWidth = 4;
-    ctx.beginPath();
-    ctx.moveTo(5.5, 5.5);
-    ctx.quadraticCurveTo(10.5, 1.0, 14.5, 5.0);
-    ctx.stroke();
-    ctx.strokeStyle = STONE_HEAD;
-    ctx.lineWidth = 2.2;
-    ctx.beginPath();
-    ctx.moveTo(5.5, 5.5);
-    ctx.quadraticCurveTo(10.5, 1.6, 14.5, 5.0);
-    ctx.stroke();
-    ctx.fillStyle = STONE_LIGHT;
-    ctx.fillRect(9, 2, 3, 1);
-  });
-}
-
-function stoneShovelFace(rand) {
-  return toolCanvas(rand, (ctx) => {
-    ctx.fillStyle = STONE_DARK;
-    ctx.fillRect(8, 2, 7, 7);
-    ctx.fillStyle = STONE_HEAD;
-    ctx.fillRect(9, 3, 5, 5);
-    ctx.fillStyle = STONE_LIGHT;
-    ctx.fillRect(9, 3, 2, 1);
-    ctx.clearRect(8, 8, 1, 1);
-    ctx.clearRect(14, 8, 1, 1);
-  });
-}
-
-function bucketCanvas(rand, fill) {
-  const cv = document.createElement('canvas');
-  cv.width = cv.height = TEX_SIZE;
-  const ctx = cv.getContext('2d');
-  ctx.clearRect(0, 0, TEX_SIZE, TEX_SIZE);
-  const px = (x, y, hex) => {
-    ctx.fillStyle = `#${(hex >>> 0).toString(16).padStart(6, '0')}`;
-    ctx.fillRect(x, y, 1, 1);
-  };
-  const IRON = 0x9ea4ad;
-  const DARK = 0x6b7079;
-  const LIGHT = 0xc6ccd4;
-
-  // The handle: an arc of single pixels over the mouth.
-  for (const [x, y] of [[4, 3], [5, 2], [6, 2], [9, 2], [10, 2], [11, 3]]) px(x, y, DARK);
-
-  // The body tapers in toward the base, the way a pail does.
-  for (let y = 4; y <= 13; y++) {
-    const inset = y >= 11 ? 1 : 0;
-    for (let x = 3 + inset; x <= 12 - inset; x++) {
-      const edge = x === 3 + inset || x === 12 - inset;
-      const shade = 0.86 + rand() * 0.2;
-      px(x, y, shadeHex(edge ? DARK : IRON, shade));
-    }
-  }
-  // A rim, and a highlight down the left so it does not read as a flat slab.
-  for (let x = 3; x <= 12; x++) px(x, 4, shadeHex(LIGHT, 0.9 + rand() * 0.2));
-  for (let y = 5; y <= 12; y++) px(4, y, shadeHex(LIGHT, 0.9));
-
-  if (fill !== null) {
-    for (let y = 5; y <= 12; y++) {
-      const inset = y >= 11 ? 1 : 0;
-      for (let x = 5 + inset; x <= 11 - inset; x++) {
-        px(x, y, shadeHex(fill, 0.82 + rand() * 0.3));
-      }
+  ctx.imageSmoothingEnabled = false;
+  for (let y = 0; y < TEX_SIZE; y++) {
+    const row = rows[y];
+    for (let x = 0; x < TEX_SIZE; x++) {
+      const colour = palette[row[x]];
+      if (!colour) continue;
+      ctx.fillStyle = colour;
+      ctx.fillRect(x, y, 1, 1);
     }
   }
   return cv;
+}
+
+function sticksFace() {
+  return paintSprite(STICK_PX, HAFT);
+}
+
+function pickaxeFace() {
+  return paintSprite(PICKAXE_PX, { ...HAFT, ...HEAD_IRON });
+}
+
+function shovelFace() {
+  return paintSprite(SHOVEL_PX, { ...HAFT, ...HEAD_IRON });
+}
+
+function woodPickaxeFace() {
+  return paintSprite(PICKAXE_PX, { ...HAFT, ...HEAD_WOOD });
+}
+
+function woodShovelFace() {
+  return paintSprite(SHOVEL_PX, { ...HAFT, ...HEAD_WOOD });
+}
+
+function stonePickaxeFace() {
+  return paintSprite(PICKAXE_PX, { ...HAFT, ...HEAD_STONE });
+}
+
+function stoneShovelFace() {
+  return paintSprite(SHOVEL_PX, { ...HAFT, ...HEAD_STONE });
+}
+
+function bucketFace() {
+  return paintSprite(BUCKET_PX, BUCKET_PALETTE);
+}
+
+function waterBucketFace() {
+  return paintSprite(WATER_BUCKET_PX, BUCKET_PALETTE);
 }
 
 // ---------- block registry ----------
