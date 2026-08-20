@@ -514,12 +514,19 @@ export function bucketBoxes(full = false) {
   inner([4, 2, 4], [12, 11, 4.001], ['front']);
   inner([4, 2, 11.999], [12, 11, 12], ['back']);
 
-  // --- rim ---
-  boxes.push({ from: [3, 11, 3], to: [13, 12, 13], color: IRON_LIGHT, faces: ['top', 'front', 'back', 'left', 'right'] });
-  // ...and the hole in the middle of it, which is what makes it a rim.
-  // Drawn as four bars rather than as one plate with a hole, because a box
-  // model has no holes.
-  boxes.push({ from: [4, 11, 4], to: [12, 11.001, 12], color: IRON_INNER, faces: ['top'], shades: { top: 0.55 } });
+  // --- rim: four bars around an open mouth ---
+  //
+  // A ring, not a slab. One box spanning the whole footprint would draw a
+  // top face straight across the opening — a lid — and a bucket you cannot
+  // see into is the bucket-shaped biscuit this model exists to stop being:
+  // the inner walls, the floor and the water plane would all be sealed under
+  // it and never drawn. A box model has no holes, so the hole is made out of
+  // the four bars that surround it.
+  const rim = (from, to) => boxes.push({ from, to, color: IRON_LIGHT });
+  rim([3, 11, 3], [13, 12, 4]);   // -z
+  rim([3, 11, 12], [13, 12, 13]); // +z
+  rim([3, 11, 4], [4, 12, 12]);   // -x
+  rim([12, 11, 4], [13, 12, 12]); // +x
 
   // --- handle: two uprights and a bar over the top ---
   boxes.push({ from: [2, 6, 7], to: [3, 13, 9], color: IRON_DARK });

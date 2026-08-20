@@ -24,7 +24,7 @@ import { setCameraUnderwater, setSunDirection, setWaterOvercast } from './water-
 import { WaterView, HELD_LAYER, WATER_QUALITY_NAMES } from './water-render.js';
 import { Particles } from './particles.js';
 import { Weather, SNOWING } from './weather.js';
-import { isItem, useBucket, fluidAim } from './items.js';
+import { isItem, useBucket, fluidAim, PICKAXE } from './items.js';
 import { breakTime, dropsFrom, wrongTool, toolNeeded } from './mining.js';
 import { installNativeBridge } from './native.js';
 import { Hud } from './hud.js';
