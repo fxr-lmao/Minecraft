@@ -91,6 +91,35 @@ export const PICKUP_DELAY = 0.5;
  */
 export const LAND_SOUND_SPEED = 6;
 
+/**
+ * The longest step the collision test may take.
+ *
+ * The test is a point sample of the destination cell, not a sweep: a drop is
+ * blocked if the block it *would end up in* is solid. That is exact while a
+ * step is shorter than a block and worthless once it is longer — at terminal
+ * velocity (40 blocks/s) a single 1/10 s frame moves four blocks, and a drop
+ * asked to cross a one-block floor in one go lands on the far side of it and
+ * keeps going, forever. Which is the failure the whole axis-at-a-time
+ * treatment exists to avoid: a drop that falls through the floor is a block
+ * you mined and cannot have.
+ *
+ * Frames are not reliably short — a chunk build, a tab coming back from the
+ * background, or a phone under load all hand back a dt far above the display
+ * refresh (main.js clamps at 0.25 s, which is thirty blocks of fall) — so the
+ * integrator sub-steps rather than trusting the caller. 1/120 s is a third of
+ * a block at terminal velocity, comfortably inside the thinnest floor there
+ * is.
+ */
+export const MAX_PHYSICS_STEP = 1 / 120;
+/**
+ * ...and a ceiling on how many of those one call may run, so that a caller
+ * handing over a minute of catch-up (a test, a debugger resuming) does not
+ * spin. 32 covers main.js's 0.25 s clamp with room to spare, which is what
+ * matters; past that the drop is being fast-forwarded and precision is not
+ * the point.
+ */
+export const MAX_SUBSTEPS = 32;
+
 /** Two drops merge if they are this close and hold the same thing. */
 export const MERGE_RADIUS = 0.6;
 /** ...and no more often than this, because it is an O(n²) scan. */
@@ -268,7 +297,7 @@ export class Drops {
         continue;
       }
 
-      this._physics(d, dt, world);
+      this._substep(d, dt, world);
 
       if (player && collect && d.pickupIn <= 0) {
         const took = this._tryCollect(d, dt, player, collect);
@@ -307,6 +336,21 @@ export class Drops {
   }
 
   /**
+   * One drop's motion for one frame, in steps short enough to collide with.
+   *
+   * The frame's dt is whatever the display and the machine agreed on, and the
+   * collision test is only sound while a step is shorter than a block — see
+   * MAX_PHYSICS_STEP. Splitting the frame here rather than asking every
+   * caller to do it means the guarantee holds for the game loop, the tests
+   * and anything that fast-forwards.
+   */
+  _substep(d, dt, world) {
+    const steps = Math.min(MAX_SUBSTEPS, Math.max(1, Math.ceil(dt / MAX_PHYSICS_STEP)));
+    const h = dt / steps;
+    for (let i = 0; i < steps; i++) this._physics(d, h, world);
+  }
+
+  /**
    * One drop's motion for one step.
    *
    * Axis at a time against the world, the same way the player moves, because
@@ -329,8 +373,17 @@ export class Drops {
       d.vz -= d.vz * k;
     } else {
       d.vy -= DROP_GRAVITY * dt;
+      // The drag is on all three axes, not just the horizontal ones, and that
+      // is the whole of what gives a drop a terminal velocity: gravity over
+      // drag, 16 / 0.4, is Minecraft's own 40 blocks/s. Leaving it off the
+      // vertical made a falling drop accelerate without limit, and two things
+      // downstream are written assuming it cannot — the landing latch (a
+      // bounce keeps BOUNCE of the impact, which has to stay under
+      // LAND_SOUND_SPEED or a long fall thuds twice) and the substep cap
+      // below, which sizes itself against exactly this number.
       const k = Math.min(1, DROP_DRAG * dt);
       d.vx -= d.vx * k;
+      d.vy -= d.vy * k;
       d.vz -= d.vz * k;
     }
 
@@ -361,7 +414,10 @@ export class Drops {
         // Recorded before the bounce eats it. Water swallows the sound, which
         // is also why a drop thrown into a lake is quiet.
         if (!d.inWater && d._canLand) {
-          d.landed = -d.vy;
+          // Max rather than assignment: a frame is several substeps now, and
+          // the one that reports the landing must not be overwritten by a
+          // later, gentler one inside the same frame.
+          d.landed = Math.max(d.landed, -d.vy);
           d._canLand = false;
         }
         // A bounce that keeps a tenth of the impact, so a block dropped from

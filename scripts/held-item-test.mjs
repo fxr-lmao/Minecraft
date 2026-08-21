@@ -284,6 +284,54 @@ function meshFor(id) {
   // handle rather than as a stripe.
   const handles = bucketBoxes(false).filter((box) => box.from[0] < 3 || box.to[0] > 13);
   assert('the bucket has a handle outside its walls', handles.length >= 2, handles.length);
+
+  // ...and the bucket is *open*, which is the one thing about it that is not
+  // decoration and the one thing nothing above was checking.
+  //
+  // A box model has no holes, so the mouth is whatever the boxes leave
+  // uncovered — and a rim written as one slab across the whole footprint
+  // draws a top face straight over it. That is a lid: the inner walls, the
+  // floor and the water plane are all still built, all still correct, and
+  // none of them can ever be seen. Nothing else here catches it, because a
+  // lid is not a doubled face, a backwards face or an out-of-bounds one.
+  //
+  // So: drop a ray down each cell of the mouth and ask what stops it. The
+  // handle bar legitimately crosses the middle (z 7..9) — a bucket handle
+  // does — so the test asks about the cells beside it.
+  const ALL_SIX = ['front', 'back', 'left', 'right', 'top', 'bottom'];
+  const topSurfaceAt = (boxes, x, z, above) => {
+    let best = null;
+    for (const box of boxes) {
+      const [fx, , fz] = box.from;
+      const [tx, ty, tz] = box.to;
+      if (x < fx || x > tx || z < fz || z > tz) continue;
+      if (ty <= above) continue;
+      if (!(box.faces ?? ALL_SIX).includes('top')) continue;
+      if (!best || ty > best.to[1]) best = box;
+    }
+    return best;
+  };
+  const mouth = [];
+  for (let x = 4.5; x < 12; x++) {
+    for (let z = 4.5; z < 12; z++) {
+      if (z > 6.9 && z < 9.1) continue; // the handle crosses here
+      mouth.push([x, z]);
+    }
+  }
+  const litFull = mouth.filter(([x, z]) => {
+    const hit = topSurfaceAt(bucketBoxes(true), x, z, 10);
+    return hit === null;
+  });
+  assert('nothing roofs over the mouth of a full bucket', litFull.length === mouth.length,
+    `${litFull.length} of ${mouth.length} cells open`);
+  const litEmpty = mouth.filter(([x, z]) => topSurfaceAt(bucketBoxes(false), x, z, 2) === null);
+  assert('...nor over an empty one, so you can see its floor',
+    litEmpty.length === mouth.length, `${litEmpty.length} of ${mouth.length} cells open`);
+  // And what you see through it is the water, not the underside of a rim.
+  const seen = topSurfaceAt(bucketBoxes(true), 5.5, 5.5, 2);
+  assert('looking into a full bucket you see water',
+    seen && (seen.color.startsWith('#4d86') || seen.color.startsWith('#2a4f')),
+    seen && seen.color);
 }
 
 // ------------------------------------------------- every held item, in bulk
