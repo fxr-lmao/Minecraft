@@ -826,7 +826,19 @@ export class Mobs {
     for (let dy = 0; dy < 5; dy++) {
       const at = y - dy;
       if (at <= minY + 3) break;
-      if (this._fits(world, x, at, z)) return { x: x + 0.5, y: at + 0.01, z: z + 0.5 };
+      if (!this._fits(world, x, at, z)) continue;
+      // SPAWN_MIN is a promise about *distance*, not about the surface: the
+      // ring this column was drawn from reaches closer in than 24 (a cave
+      // ring the size of the surface one would almost never find a pocket),
+      // and the depth usually makes up the difference — but not when you are
+      // down there with it. Underground the 24 blocks have to be measured,
+      // in three dimensions, or a zombie appears fifteen blocks along the
+      // tunnel you are standing in.
+      const dx = x + 0.5 - player.x;
+      const dy3 = at + 0.01 - player.y;
+      const dz = z + 0.5 - player.z;
+      if (dx * dx + dy3 * dy3 + dz * dz < SPAWN_MIN * SPAWN_MIN) continue;
+      return { x: x + 0.5, y: at + 0.01, z: z + 0.5 };
     }
     return null;
   }

@@ -27,8 +27,11 @@ export class MobsRenderer {
    * Bring the drawn population in line with the simulated one, and animate
    * everything that is staying.
    *
-   * `dt` is the *animation* clock — zero while paused — because a paused
-   * world is completely still, mobs very much included.
+   * There is no clock here on purpose: every animated quantity a model
+   * reads (the walk phase, the flash, the fuse, the fall-over) is a field
+   * the simulation already advanced on the game clock, so a paused world is
+   * completely still — mobs very much included — without this having to
+   * know what a paused world is.
    */
   update(mobs) {
     this._seen.clear();

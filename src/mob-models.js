@@ -226,20 +226,32 @@ function creeperTextures() {
 
 // ---------------------------------------------------------------- the parts
 
-/**
- * A textured box. Geometry is cached per (kind, part) so a mob is eight
- * meshes and zero geometry allocations, but every mesh gets its own
- * material — the hurt flash tints *this* zombie, not zombies generally.
- */
 const geoCache = new Map();
 
-function part(kind, name, w, h, d, pxScale, tex, seed) {
-  const key = `${kind}:${name}`;
+/**
+ * A box geometry, cached per (kind, part). *Every* box a mob is made of
+ * comes through here — the heads and the creeper's body included. They used
+ * to be built with a bare `new THREE.BoxGeometry` each, which the renderer
+ * then never disposed (it disposes materials only, on the promise that
+ * geometry is shared), so a night of spawning and despawning leaked one
+ * geometry per zombie and two per creeper. Shared is the promise; this is
+ * what keeps it.
+ */
+function boxGeo(key, w, h, d, pxScale) {
   let geo = geoCache.get(key);
   if (!geo) {
     geo = new THREE.BoxGeometry(w * pxScale, h * pxScale, d * pxScale);
     geoCache.set(key, geo);
   }
+  return geo;
+}
+
+/**
+ * A textured box: shared geometry, and a material of its very own — the
+ * hurt flash tints *this* zombie, not zombies generally.
+ */
+function part(kind, name, w, h, d, pxScale, tex, seed) {
+  const geo = boxGeo(`${kind}:${name}`, w, h, d, pxScale);
   const mat = new THREE.MeshLambertMaterial({
     map: tex,
     emissiveMap: tex,
@@ -300,7 +312,7 @@ export function createZombieModel() {
     map: T.skinDark, emissiveMap: T.skinDark, emissive: AMBIENT,
   });
   const head = new THREE.Mesh(
-    new THREE.BoxGeometry(8 * PX, 8 * PX, 8 * PX),
+    boxGeo(`${ZOMBIE}:head`, 8, 8, 8, PX),
     [skin(), skin(), topMat, skin(), skin(), faceMat]);
   head.position.y = 4 * PX;
   head.castShadow = true;
@@ -395,7 +407,7 @@ export function createCreeperModel() {
   const headPivot = new THREE.Group();
   headPivot.position.y = 18 * PX; // legs 6 + body 12
   root.add(headPivot);
-  const headGeo = new THREE.BoxGeometry(8 * PX, 8 * PX, 8 * PX);
+  const headGeo = boxGeo(`${CREEPER}:head`, 8, 8, 8, PX);
   const hide = () => new THREE.MeshLambertMaterial({
     map: T.hide, emissiveMap: T.hide, emissive: AMBIENT,
   });
@@ -408,7 +420,7 @@ export function createCreeperModel() {
   headPivot.add(head);
 
   // body: 8 wide (x), 12 tall (y), 4 deep (z), sitting on the legs
-  const body = new THREE.Mesh(new THREE.BoxGeometry(8 * PX, 12 * PX, 4 * PX), hide());
+  const body = new THREE.Mesh(boxGeo(`${CREEPER}:body`, 8, 12, 4, PX), hide());
   body.castShadow = true;
   body.position.y = 12 * PX;
   root.add(body);
@@ -496,7 +508,11 @@ function applyCommon(root, allMats, s) {
     flash = Math.max(flash, s.fuse * pulse);
     scale = 1 + s.fuse * 0.22;
   }
-  if (scale !== 1) root.scale.setScalar(scale);
+  // Set every time, not only when it is not 1: a creeper whose fuse was
+  // unwound — you got seven blocks away, or you killed it mid-swell, which
+  // zeroes the fuse — kept whatever size the last swelling frame left it,
+  // and stayed that size for the rest of its life and its corpse.
+  root.scale.setScalar(scale);
 
   // Fire: a warm flicker that sits on top of everything else the figure is
   // doing, because a burning zombie keeps walking. That is the point of it.

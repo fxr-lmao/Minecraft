@@ -769,7 +769,9 @@ function handleMobEvent(e) {
       if (count > 0) {
         drops.spawnFromBlock(Math.floor(e.x), Math.floor(e.y), Math.floor(e.z), spot.id, count);
       }
-      if (e.by === 'player' && xp.add(facts.xp) > 0) hud.showStatus(`Level ${xp.level}`);
+      if (e.by === 'player' && !gameMode.isCreative && xp.add(facts.xp) > 0) {
+        hud.showStatus(`Level ${xp.level}`);
+      }
       break;
     }
     case 'burn':
@@ -811,8 +813,9 @@ function attackMob() {
   sound.playZombieHurt(vol, mob.kind === CREEPER ? 1.35 : 1);
   // Minecraft's wear: a sword loses one use per entity hit, other tools
   // two. A tool that runs out mid-fight disappears out of your hand, same
-  // as mid-dig.
-  if (isTool(held)) {
+  // as mid-dig. Creative costs nothing, here as at the rock face — see
+  // breakBlock, which draws the same line.
+  if (isTool(held) && !gameMode.isCreative) {
     const wears = isSword(held) ? 1 : 2;
     for (let i = 0; i < wears; i++) {
       const stack = inventory.selectedStack();
@@ -1221,8 +1224,10 @@ input.onAction = (name, arg) => {
       // either. Nothing comes out of the world in one frame any more except
       // what takes no time at all.
       if (!screenOpen()) {
-        if (mobTarget && !mobTarget.mob.dead) attackMob();
-        else mine(0);
+        if (mobTarget && !mobTarget.mob.dead) {
+          if (mining) stopMining();
+          attackMob();
+        } else mine(0);
       }
       break;
     case 'place':
@@ -1440,8 +1445,14 @@ function frame(now) {
   // *does* repeat on hold — at the cadence the hurt window allows, which is
   // the Minecraft cadence without a timer anywhere in sight.
   if (playing && input.pressed.break && !screenOpen()) {
-    if (mobTarget && !mobTarget.mob.dead) attackMob();
-    else mine(frameDt);
+    if (mobTarget && !mobTarget.mob.dead) {
+      // A zombie walking into a dig takes the button — and the dig has to be
+      // put down as deliberately as the button being released puts it down,
+      // or the crack stays painted on the block behind it for as long as you
+      // are swinging.
+      if (mining) stopMining();
+      attackMob();
+    } else mine(frameDt);
   } else if (mining) stopMining();
   if (playing) {
     placeRepeat = input.pressed.place && !screenOpen() ? placeRepeat + frameDt : 0;

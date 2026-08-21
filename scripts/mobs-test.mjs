@@ -572,6 +572,39 @@ function waterWorld(depth = 4, floor = 0) {
   assert('...and every cave mob is underground',
     caveMobs.list.every((m) => m.y < 0), caveMobs.list.map((m) => m.y.toFixed(1)).join(','));
 
+  // Underground, the 24 blocks have to be measured in three dimensions. The
+  // cave ring reaches closer in than the surface one does (a ring the size
+  // of the surface's would almost never find a pocket), and the depth
+  // usually makes up the difference — but not when you are down there with
+  // it, and a zombie appearing fifteen blocks along your own tunnel is the
+  // one thing SPAWN_MIN exists to forbid.
+  const cavern = {
+    // A layer cake: a floor every fourth block, all the way down, so every
+    // probe finds somewhere and the distance is the only thing being asked.
+    minY: -64,
+    get(x, y, z) {
+      if (y >= 0) return AIR;
+      return y % 4 === 0 ? STONE : AIR;
+    },
+    isSolid(x, y, z) { return this.get(x, y, z) === STONE; },
+    inBounds: (x, y, z) => y >= -64 && y <= 80,
+    heightAt: () => -4,
+  };
+  const spelunker = { x: 0.5, y: -30, z: 0.5 };
+  const deep = new Mobs({ rand: Math.random });
+  let found = 0;
+  let closest = Infinity;
+  for (let i = 0; i < 400; i++) {
+    const s = deep._caveSpot(cavern, spelunker);
+    if (!s) continue;
+    found++;
+    closest = Math.min(closest,
+      Math.hypot(s.x - spelunker.x, s.y - spelunker.y, s.z - spelunker.z));
+  }
+  assert('a cave has somewhere to put a mob', found > 0, String(found));
+  assert('...and never inside the 24-block ring, depth counted in',
+    closest >= SPAWN_MIN, closest.toFixed(2));
+
   // The sea is not a nursery: every spawnable column is water.
   const ocean = {
     // A world that IS the ocean, without spelling out 54,000 cells.
@@ -858,6 +891,37 @@ function waterWorld(depth = 4, floor = 0) {
   assert('the swell grows the creeper',
     creeper.group.children[0].scale.x > before + 0.1,
     `${before.toFixed(2)} → ${creeper.group.children[0].scale.x.toFixed(2)}`);
+
+  // ...and comes back down. The scale used to be written only when it was
+  // not 1, so a creeper that unwound its fuse — you got away, or you killed
+  // it mid-swell, which zeroes the fuse — stayed the size the last swelling
+  // frame left it, corpse and all.
+  creeper.update({ ...standing, fuse: 0 });
+  assert('...and the swell comes back down again',
+    Math.abs(creeper.group.children[0].scale.x - 1) < 1e-6,
+    creeper.group.children[0].scale.x.toFixed(3));
+  creeper.update({ ...standing, fuse: 1 });
+  creeper.update({ ...standing, fuse: 0, dying: 0.9 });
+  assert('...and a creeper killed mid-swell is buried its own size',
+    Math.abs(creeper.group.children[0].scale.x - 1) < 1e-6,
+    creeper.group.children[0].scale.x.toFixed(3));
+
+  // Every box a mob is made of comes from the shared cache. This is not a
+  // nicety: the renderer disposes a dead mob's *materials* only, on the
+  // stated promise that its geometry is shared, so any geometry built
+  // per-mob is leaked once per spawn — and a night is a lot of spawns.
+  const geometriesOf = (model) => {
+    const out = new Set();
+    model.group.traverse((o) => { if (o.isMesh) out.add(o.geometry); });
+    return out;
+  };
+  for (const [name, build] of [['zombie', createZombieModel], ['creeper', createCreeperModel]]) {
+    const first = geometriesOf(build());
+    const second = geometriesOf(build());
+    assert(`a second ${name} allocates no geometry of its own`,
+      second.size > 0 && [...second].every((g) => first.has(g)),
+      `${[...second].filter((g) => first.has(g)).length}/${second.size}`);
+  }
 
   const zRoot = zombie.group.children[0];
   zombie.update({ ...standing, dying: 0.9 });
