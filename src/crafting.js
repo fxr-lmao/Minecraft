@@ -13,7 +13,8 @@ import {
   WOOD_AXE, STONE_AXE, IRON_AXE, DIAMOND_AXE,
   WOOD_SWORD, STONE_SWORD, IRON_SWORD, DIAMOND_SWORD,
   PICKAXE, SHOVEL, DIAMOND_PICKAXE, DIAMOND_SHOVEL,
-  IRON_INGOT, DIAMOND, COAL, TIER_WOOD, TIER_STONE, TIER_IRON, TIER_DIAMOND,
+  IRON_INGOT, DIAMOND, COAL, GUNPOWDER,
+  TIER_WOOD, TIER_STONE, TIER_IRON, TIER_DIAMOND,
 } from './items.js';
 import { CRAFTING_TABLE, FURNACE, GLASS, TNT } from './blocks-extra.js';
 
@@ -176,13 +177,17 @@ export const RECIPES = [
     out: { id: GLASS, count: 4 },
   },
   {
-    // Sand in the corners with a stick for the fuse — TNT's own recipe
-    // shape (4 sand + 5 gunpowder) with the fuse standing in for the
-    // gunpowder this world does not have.
+    // Minecraft's own TNT, at last: gunpowder in an X through four sand.
+    // For a long time this was sand with a stick for the fuse — a stand-in
+    // for the gunpowder the world did not have — and now the world has it,
+    // because creepers carry it. The loop that closes here is the neat
+    // part: the only way to get gunpowder is to fight the thing that
+    // explodes, so the recipe for making explosions is a reward for
+    // surviving one.
     name: 'TNT',
     shaped: true,
-    pattern: ['S S', ' T ', 'S S'],
-    key: { S: SAND, T: STICKS },
+    pattern: ['GSG', 'SGS', 'GSG'],
+    key: { G: GUNPOWDER, S: SAND },
     out: { id: TNT, count: 1 },
   },
 ];

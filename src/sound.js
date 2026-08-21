@@ -230,6 +230,113 @@ export function playDrown() {
   osc.stop(ctx.currentTime + 0.4);
 }
 
+// ---- mobs ----
+//
+// Zombies get a voice and creepers get none, which is the deal Minecraft
+// struck and it is the right one: the groan is what tells you a zombie is
+// somewhere in the dark, and a creeper's first and only sound is the fuse.
+// Volume arrives already scaled by distance (mobs.js folds it in), so every
+// one of these takes a 0..1 multiplier rather than a position.
+
+/** The groan: a low sawtooth that sags in the middle, like a long breath out. */
+let lastGroan = 0;
+export function playZombie(vol = 1) {
+  if (muted || vol <= 0.02) return;
+  const now = performance.now();
+  if (now - lastGroan < 400) return; // a crowd is a chorus, not a chord
+  lastGroan = now;
+  const { ctx, master } = getCtx();
+  const t = ctx.currentTime;
+  const osc = ctx.createOscillator();
+  osc.type = 'sawtooth';
+  const base = 82 + Math.random() * 16;
+  osc.frequency.setValueAtTime(base, t);
+  osc.frequency.linearRampToValueAtTime(base * 0.8, t + 0.5);
+  osc.frequency.linearRampToValueAtTime(base * 0.92, t + 0.9);
+  const lp = ctx.createBiquadFilter();
+  lp.type = 'lowpass';
+  lp.frequency.value = 420;
+  const g = ctx.createGain();
+  g.gain.setValueAtTime(0.0001, t);
+  g.gain.exponentialRampToValueAtTime(0.14 * vol, t + 0.12);
+  g.gain.exponentialRampToValueAtTime(0.0001, t + 0.95);
+  osc.connect(lp).connect(g).connect(master);
+  osc.start(t);
+  osc.stop(t + 1);
+}
+
+/**
+ * A zombie taking a hit: shorter, sharper, higher — the same instrument
+ * with the wind knocked out of it. Also its swing at you, one tone lower.
+ */
+export function playZombieHurt(vol = 1, pitch = 1) {
+  if (muted || vol <= 0.02) return;
+  const { ctx, master } = getCtx();
+  const t = ctx.currentTime;
+  const osc = ctx.createOscillator();
+  osc.type = 'sawtooth';
+  osc.frequency.setValueAtTime(150 * pitch, t);
+  osc.frequency.exponentialRampToValueAtTime(65 * pitch, t + 0.22);
+  const lp = ctx.createBiquadFilter();
+  lp.type = 'lowpass';
+  lp.frequency.value = 700;
+  const g = ctx.createGain();
+  g.gain.setValueAtTime(0.16 * vol, t);
+  g.gain.exponentialRampToValueAtTime(0.001, t + 0.28);
+  osc.connect(lp).connect(g).connect(master);
+  osc.start(t);
+  osc.stop(t + 0.3);
+}
+
+/**
+ * The hiss: a second and a half of noise that swells as it goes — a leak,
+ * then a pressure vessel. It plays in full whether the fuse finishes or
+ * not (Minecraft does the same, and it is a cruelty worth keeping: running
+ * away does not silence it, and the silence after it stops is worse).
+ */
+export function playCreeperHiss(vol = 1) {
+  if (muted || vol <= 0.02) return;
+  const { ctx, master } = getCtx();
+  const t = ctx.currentTime;
+  const src = ctx.createBufferSource();
+  src.buffer = noiseBuffer(ctx, 1.5);
+  const bp = ctx.createBiquadFilter();
+  bp.type = 'bandpass';
+  bp.frequency.setValueAtTime(2400, t);
+  bp.frequency.linearRampToValueAtTime(5200, t + 1.5);
+  bp.Q.value = 1.2;
+  const g = ctx.createGain();
+  g.gain.setValueAtTime(0.02 * vol, t);
+  g.gain.linearRampToValueAtTime(0.34 * vol, t + 1.42);
+  g.gain.linearRampToValueAtTime(0.0001, t + 1.5);
+  src.connect(bp).connect(g).connect(master);
+  src.start(t);
+  src.stop(t + 1.55);
+}
+
+/**
+ * The detonation. TNT already has thunder; this is a degree shorter and a
+ * shade brighter, so a creeper behind you is not a storm behind you — the
+ * two are the loudest things in the game and they should still not be
+ * each other.
+ */
+export function playExplosion(vol = 1) {
+  if (muted || vol <= 0.02) return;
+  const { ctx, master } = getCtx();
+  const t = ctx.currentTime;
+  burstNoise(ctx, 0.45, 260, 0.55 * vol, master);
+  const osc = ctx.createOscillator();
+  osc.type = 'sine';
+  osc.frequency.setValueAtTime(64, t);
+  osc.frequency.exponentialRampToValueAtTime(30, t + 0.5);
+  const g = ctx.createGain();
+  g.gain.setValueAtTime(0.24 * vol, t);
+  g.gain.exponentialRampToValueAtTime(0.001, t + 0.6);
+  osc.connect(g).connect(master);
+  osc.start(t);
+  osc.stop(t + 0.65);
+}
+
 // ---- weather ----
 
 export function playThunder() {
