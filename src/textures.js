@@ -13,6 +13,14 @@ import {
   DIAMOND_PICKAXE, DIAMOND_SHOVEL,
   COAL, RAW_IRON, IRON_INGOT, DIAMOND, RAW_GOLD, GOLD_INGOT, REDSTONE,
   GUNPOWDER, ROTTEN_FLESH,
+  RAW_BEEF, STEAK, RAW_PORKCHOP, COOKED_PORKCHOP,
+  RAW_CHICKEN, COOKED_CHICKEN, RAW_MUTTON, COOKED_MUTTON,
+  APPLE, BONE, ARROW, STRING, SPIDER_EYE, BOW, FEATHER,
+  LEATHER, CARROT, POTATO, BAKED_POTATO, GOLDEN_APPLE,
+  IRON_HELMET, IRON_CHESTPLATE, IRON_LEGGINGS, IRON_BOOTS,
+  DIAMOND_HELMET, DIAMOND_CHESTPLATE, DIAMOND_LEGGINGS, DIAMOND_BOOTS,
+  GOLD_HELMET, GOLD_CHESTPLATE, GOLD_LEGGINGS, GOLD_BOOTS,
+  LEATHER_HELMET, LEATHER_CHESTPLATE, LEATHER_LEGGINGS, LEATHER_BOOTS,
 } from './items.js';
 import {
   HAFT, HEAD_WOOD, HEAD_STONE, HEAD_IRON, HEAD_DIAMOND, BUCKET_PALETTE,
@@ -22,6 +30,15 @@ import {
   COAL_PALETTE, RAW_IRON_PALETTE, IRON_INGOT_PALETTE, DIAMOND_PALETTE,
   RAW_GOLD_PALETTE, GOLD_INGOT_PALETTE, REDSTONE_PALETTE,
   GUNPOWDER_PALETTE, ROTTEN_FLESH_PALETTE, ROTTEN_FLESH_PX,
+  RAW_MEAT_PALETTE, COOKED_MEAT_PALETTE,
+  CHICKEN_RAW_PALETTE, CHICKEN_COOKED_PALETTE, APPLE_PALETTE,
+  STEAK_PX, CHICKEN_PX, APPLE_PX,
+  BONE_PALETTE, BONE_PX, ARROW_PALETTE, ARROW_PX,
+  STRING_PALETTE, STRING_PX, SPIDER_EYE_PALETTE, SPIDER_EYE_PX,
+  BOW_PALETTE, BOW_PX, FEATHER_PALETTE, FEATHER_PX,
+  ARMOUR_LEATHER, HELMET_PX, CHESTPLATE_PX, LEGGINGS_PX, BOOTS_PX,
+  CARROT_PALETTE, CARROT_PX, LEATHER_PALETTE,
+  POTATO_PALETTE, BAKED_POTATO_PALETTE, GOLDEN_APPLE_PALETTE,
 } from './item-sprites.js';
 
 export {
@@ -854,6 +871,49 @@ export const ITEM_DEFS = [
   // not-quite-meat. See mobs.js for where they come from.
   ...itemDef(GUNPOWDER, 'Gunpowder', lumpFace(COAL_PX, GUNPOWDER_PALETTE)),
   ...itemDef(ROTTEN_FLESH, 'Rotten Flesh', lumpFace(ROTTEN_FLESH_PX, ROTTEN_FLESH_PALETTE)),
+  // Food. The four meats are one slab with a raw or a cooked palette; chicken
+  // is its own drumstick. The apple is the one food the trees hand over.
+  ...itemDef(RAW_BEEF, 'Raw Beef', lumpFace(STEAK_PX, RAW_MEAT_PALETTE)),
+  ...itemDef(STEAK, 'Steak', lumpFace(STEAK_PX, COOKED_MEAT_PALETTE)),
+  ...itemDef(RAW_PORKCHOP, 'Raw Porkchop', lumpFace(STEAK_PX, RAW_MEAT_PALETTE)),
+  ...itemDef(COOKED_PORKCHOP, 'Cooked Porkchop', lumpFace(STEAK_PX, COOKED_MEAT_PALETTE)),
+  ...itemDef(RAW_CHICKEN, 'Raw Chicken', lumpFace(CHICKEN_PX, CHICKEN_RAW_PALETTE)),
+  ...itemDef(COOKED_CHICKEN, 'Cooked Chicken', lumpFace(CHICKEN_PX, CHICKEN_COOKED_PALETTE)),
+  ...itemDef(RAW_MUTTON, 'Raw Mutton', lumpFace(STEAK_PX, RAW_MEAT_PALETTE)),
+  ...itemDef(COOKED_MUTTON, 'Cooked Mutton', lumpFace(STEAK_PX, COOKED_MEAT_PALETTE)),
+  ...itemDef(APPLE, 'Apple', lumpFace(APPLE_PX, APPLE_PALETTE)),
+  // Ranged combat: the skeleton's, the spider's, and the ones you build.
+  ...itemDef(BONE, 'Bone', lumpFace(BONE_PX, BONE_PALETTE)),
+  ...itemDef(ARROW, 'Arrow', lumpFace(ARROW_PX, ARROW_PALETTE)),
+  ...itemDef(STRING, 'String', lumpFace(STRING_PX, STRING_PALETTE)),
+  ...itemDef(SPIDER_EYE, 'Spider Eye', lumpFace(SPIDER_EYE_PX, SPIDER_EYE_PALETTE)),
+  ...itemDef(BOW, 'Bow', lumpFace(BOW_PX, BOW_PALETTE)),
+  ...itemDef(FEATHER, 'Feather', lumpFace(FEATHER_PX, FEATHER_PALETTE)),
+  // The last few foods.
+  ...itemDef(LEATHER, 'Leather', lumpFace(ROTTEN_FLESH_PX, LEATHER_PALETTE)),
+  ...itemDef(CARROT, 'Carrot', lumpFace(CARROT_PX, CARROT_PALETTE)),
+  ...itemDef(POTATO, 'Potato', lumpFace(RAW_IRON_PX, POTATO_PALETTE)),
+  ...itemDef(BAKED_POTATO, 'Baked Potato', lumpFace(RAW_IRON_PX, BAKED_POTATO_PALETTE)),
+  ...itemDef(GOLDEN_APPLE, 'Golden Apple', lumpFace(APPLE_PX, GOLDEN_APPLE_PALETTE)),
+  // Armour, four shapes across four materials: leather is brown, iron and
+  // gold and diamond borrow the tool palettes so a helmet's tier matches the
+  // pickaxe of the same tier on the hotbar.
+  ...itemDef(LEATHER_HELMET, 'Leather Cap', () => paintSprite(HELMET_PX, ARMOUR_LEATHER)),
+  ...itemDef(LEATHER_CHESTPLATE, 'Leather Tunic', () => paintSprite(CHESTPLATE_PX, ARMOUR_LEATHER)),
+  ...itemDef(LEATHER_LEGGINGS, 'Leather Pants', () => paintSprite(LEGGINGS_PX, ARMOUR_LEATHER)),
+  ...itemDef(LEATHER_BOOTS, 'Leather Boots', () => paintSprite(BOOTS_PX, ARMOUR_LEATHER)),
+  ...itemDef(IRON_HELMET, 'Iron Helmet', () => paintSprite(HELMET_PX, HEAD_IRON)),
+  ...itemDef(IRON_CHESTPLATE, 'Iron Chestplate', () => paintSprite(CHESTPLATE_PX, HEAD_IRON)),
+  ...itemDef(IRON_LEGGINGS, 'Iron Leggings', () => paintSprite(LEGGINGS_PX, HEAD_IRON)),
+  ...itemDef(IRON_BOOTS, 'Iron Boots', () => paintSprite(BOOTS_PX, HEAD_IRON)),
+  ...itemDef(GOLD_HELMET, 'Golden Helmet', () => paintSprite(HELMET_PX, GOLD_INGOT_PALETTE)),
+  ...itemDef(GOLD_CHESTPLATE, 'Golden Chestplate', () => paintSprite(CHESTPLATE_PX, GOLD_INGOT_PALETTE)),
+  ...itemDef(GOLD_LEGGINGS, 'Golden Leggings', () => paintSprite(LEGGINGS_PX, GOLD_INGOT_PALETTE)),
+  ...itemDef(GOLD_BOOTS, 'Golden Boots', () => paintSprite(BOOTS_PX, GOLD_INGOT_PALETTE)),
+  ...itemDef(DIAMOND_HELMET, 'Diamond Helmet', () => paintSprite(HELMET_PX, DIAMOND_PALETTE)),
+  ...itemDef(DIAMOND_CHESTPLATE, 'Diamond Chestplate', () => paintSprite(CHESTPLATE_PX, DIAMOND_PALETTE)),
+  ...itemDef(DIAMOND_LEGGINGS, 'Diamond Leggings', () => paintSprite(LEGGINGS_PX, DIAMOND_PALETTE)),
+  ...itemDef(DIAMOND_BOOTS, 'Diamond Boots', () => paintSprite(BOOTS_PX, DIAMOND_PALETTE)),
 ];
 
 /** Everything with a texture in the atlas: blocks first, then items. */
@@ -1331,6 +1391,41 @@ const BUBBLE_PIXELS = [
   '000222000',
 ];
 
+/**
+ * A drumstick: meat up top, the two bone nubs poking out the bottom — the
+ * shape that has meant "hunger" in every Minecraft HUD ever drawn. Ten of
+ * them sit to the right of the hearts, and the bar works like the hearts do:
+ * the empty socket is one sprite, the full one is laid over it and clipped
+ * by width, so a half drumstick is the same picture cut in two.
+ */
+const DRUMSTICK_PIXELS = [
+  '..11111..',
+  '.1222221.',
+  '122222221',
+  '122222221',
+  '.1222221.',
+  '..12221..',
+  '..12221..',
+  '..13331..',
+  '...333...',
+];
+
+/**
+ * An armour pip: a rounded chestplate silhouette, one per point of defence,
+ * drawn above the hearts and only while something is actually worn.
+ */
+const ARMOUR_PIXELS = [
+  '000111000',
+  '001222100',
+  '012222210',
+  '112222211',
+  '112222211',
+  '112222211',
+  '012222210',
+  '001222100',
+  '000111000',
+];
+
 /** Paint a 9x9 sprite map with a palette and hand back a data URL. */
 function spriteUrl(rows, palette, scale = 4) {
   const size = rows.length;
@@ -1363,6 +1458,16 @@ export const heartEmptyUrl = () =>
 /** Half a heart is the same sprite with its right half cut away — see hud.js. */
 export const bubbleUrl = () =>
   hudSprite('bubble', BUBBLE_PIXELS, { 1: '#ffffff', 2: '#0b1c3a', 3: '#8fd2ff' });
+/** A drumstick, and the empty socket that shows where one used to be. */
+export const drumstickUrl = () =>
+  hudSprite('drumstick', DRUMSTICK_PIXELS, { 1: '#b56a34', 2: '#e8e2d8', 3: '#4a2a10' });
+export const drumstickEmptyUrl = () =>
+  hudSprite('drumstick-empty', DRUMSTICK_PIXELS, { 1: '#3b3b3b', 2: '#141414', 3: '#141414' });
+/** An armour pip, drawn grey like the iron it usually is. */
+export const armourUrl = () =>
+  hudSprite('armour', ARMOUR_PIXELS, { 1: '#9aa2aa', 2: '#4a5058' });
+export const armourEmptyUrl = () =>
+  hudSprite('armour-empty', ARMOUR_PIXELS, { 1: '#3b3b3b', 2: '#141414' });
 
 const cache = new Map();
 
@@ -1447,6 +1552,42 @@ const ITEM_TINT = {
   [BUCKET]: [0.60, 0.64, 0.67],
   [WATER_BUCKET]: [0.23, 0.41, 0.81],
   [STICKS]: [0.54, 0.34, 0.16],
+  [RAW_BEEF]: [0.72, 0.20, 0.14],
+  [STEAK]: [0.55, 0.33, 0.16],
+  [RAW_PORKCHOP]: [0.75, 0.24, 0.16],
+  [COOKED_PORKCHOP]: [0.60, 0.36, 0.18],
+  [RAW_CHICKEN]: [0.78, 0.40, 0.30],
+  [COOKED_CHICKEN]: [0.62, 0.42, 0.20],
+  [RAW_MUTTON]: [0.66, 0.18, 0.12],
+  [COOKED_MUTTON]: [0.52, 0.30, 0.14],
+  [APPLE]: [0.80, 0.18, 0.10],
+  [BONE]: [0.78, 0.78, 0.74],
+  [ARROW]: [0.62, 0.60, 0.58],
+  [STRING]: [0.70, 0.62, 0.42],
+  [SPIDER_EYE]: [0.80, 0.42, 0.42],
+  [BOW]: [0.55, 0.36, 0.16],
+  [FEATHER]: [0.86, 0.86, 0.84],
+  [LEATHER]: [0.62, 0.42, 0.20],
+  [CARROT]: [0.88, 0.42, 0.10],
+  [POTATO]: [0.62, 0.46, 0.22],
+  [BAKED_POTATO]: [0.70, 0.50, 0.26],
+  [GOLDEN_APPLE]: [0.90, 0.76, 0.20],
+  [IRON_HELMET]: [0.70, 0.72, 0.76],
+  [IRON_CHESTPLATE]: [0.70, 0.72, 0.76],
+  [IRON_LEGGINGS]: [0.70, 0.72, 0.76],
+  [IRON_BOOTS]: [0.70, 0.72, 0.76],
+  [DIAMOND_HELMET]: [0.35, 0.70, 0.66],
+  [DIAMOND_CHESTPLATE]: [0.35, 0.70, 0.66],
+  [DIAMOND_LEGGINGS]: [0.35, 0.70, 0.66],
+  [DIAMOND_BOOTS]: [0.35, 0.70, 0.66],
+  [GOLD_HELMET]: [0.90, 0.78, 0.28],
+  [GOLD_CHESTPLATE]: [0.90, 0.78, 0.28],
+  [GOLD_LEGGINGS]: [0.90, 0.78, 0.28],
+  [GOLD_BOOTS]: [0.90, 0.78, 0.28],
+  [LEATHER_HELMET]: [0.62, 0.42, 0.20],
+  [LEATHER_CHESTPLATE]: [0.62, 0.42, 0.20],
+  [LEATHER_LEGGINGS]: [0.62, 0.42, 0.20],
+  [LEATHER_BOOTS]: [0.62, 0.42, 0.20],
 };
 
 export function blockTint(id) {

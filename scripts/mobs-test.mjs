@@ -26,18 +26,21 @@
 
 import {
   Mobs, Mob, moveMob, rayHitsMob, pickMob, playerAttack, attackDamage,
-  MOB_FACTS, ZOMBIE, CREEPER,
-  ZOMBIE_SPEED, CREEPER_SPEED,
+  MOB_FACTS, ZOMBIE, CREEPER, SKELETON, SPIDER, PIG, COW, CHICKEN, SHEEP,
+  ZOMBIE_SPEED, CREEPER_SPEED, SKELETON_SPEED, SPIDER_SPEED,
   HURT_IFRAME, KNOCKBACK, KNOCKBACK_SPRINT,
   SWELL_RANGE, FUSE_SECONDS, CANCEL_RANGE, CREEPER_BLAST_RADIUS,
+  SKELETON_RANGE_MIN, SKELETON_RANGE_MAX, SKELETON_SHOT_INTERVAL,
+  SPIDER_LEAP_RANGE, SPIDER_LEAP_COOLDOWN,
   SPAWN_MIN, SPAWN_MAX, SPAWN_INTERVAL, DESPAWN_RANGE, MAX_MOBS,
-  NIGHT_SUN, BURN_SUN,
+  PASSIVE_CAP, PANIC_SECONDS, NIGHT_SUN, BURN_SUN,
 } from '../src/mobs.js';
 import {
   IRON_SWORD, WOOD_SWORD, STONE_SWORD, DIAMOND_SWORD, IRON_AXE, WOOD_AXE,
   PICKAXE, SHOVEL, BUCKET, GUNPOWDER, ROTTEN_FLESH, COAL,
+  BONE, ARROW, STRING, SPIDER_EYE, RAW_PORKCHOP, RAW_BEEF, RAW_MUTTON, FEATHER,
 } from '../src/items.js';
-import { STONE, DIRT, WATER, AIR } from '../src/terrain.js';
+import { STONE, DIRT, WATER, AIR, GRASS } from '../src/terrain.js';
 
 const results = [];
 const assert = (name, cond, detail) =>
@@ -123,7 +126,7 @@ function waterWorld(depth = 4, floor = 0) {
   assert('zombie: the Java hitbox, 0.6 × 1.95',
     z.width === 0.6 && z.height === 1.95);
   assert('zombie: drops rotten flesh 0–2, pays 5 xp',
-    z.drop.id === ROTTEN_FLESH && z.drop.min === 0 && z.drop.max === 2 && z.xp === 5);
+    z.drops[0].id === ROTTEN_FLESH && z.drops[0].min === 0 && z.drops[0].max === 2 && z.xp === 5);
   assert('zombie is the one that burns', z.burns === true);
 
   const c = MOB_FACTS[CREEPER];
@@ -541,9 +544,10 @@ function waterWorld(depth = 4, floor = 0) {
     dists.every((d) => d >= SPAWN_MIN - 0.75), Math.min(...dists).toFixed(2));
   assert('nothing spawns outside the spawn ring',
     dists.every((d) => d <= SPAWN_MAX + 1.5), Math.max(...dists).toFixed(2));
-  assert('every spawned mob is one of the two kinds',
-    mobs.list.every((m) => m.kind === ZOMBIE || m.kind === CREEPER));
-  assert('the pinned roll makes a zombie', mobs.list.every((m) => m.kind === ZOMBIE));
+  assert('every spawned mob is one of the four kinds',
+    mobs.list.every((m) => [ZOMBIE, CREEPER, SKELETON, SPIDER].includes(m.kind)));
+  assert('the pinned roll makes a spider',
+    mobs.list.every((m) => m.kind === SPIDER));
 
   // Day on the same world (a one-block floor has no underworld): nothing, ever.
   const day = makeWorld();
@@ -939,6 +943,159 @@ function waterWorld(depth = 4, floor = 0) {
     for (const m of mats) redness = Math.max(redness, m.emissive.r - m.emissive.g);
   });
   assert('a hit reddens the whole figure', redness > 0.2, redness.toFixed(3));
+
+  delete globalThis.document;
+}
+
+// ------------------------------------------------------- the new kinds\u2019 facts
+{
+  const s = MOB_FACTS[SKELETON];
+  assert('skeleton: 20 hp, the tallest box, and it burns',
+    s.health === 20 && s.height === 1.99 && s.burns === true);
+  assert('skeleton: drops bone and arrows', s.drops.length === 2
+    && s.drops[0].id === BONE && s.drops[1].id === ARROW);
+
+  const sp = MOB_FACTS[SPIDER];
+  assert('spider: wide, low, and faster than the rest',
+    sp.width > sp.height && SPIDER_SPEED > ZOMBIE_SPEED && SPIDER_SPEED > CREEPER_SPEED);
+  assert('spider: climbs and leaps', sp.climber === true && sp.leaper === true);
+  assert('spider: drops string and eye', sp.drops.length === 2
+    && sp.drops[0].id === STRING && sp.drops[1].id === SPIDER_EYE);
+
+  for (const kind of [PIG, COW, CHICKEN, SHEEP]) {
+    assert(`${MOB_FACTS[kind].name}: passive and harmless`,
+      MOB_FACTS[kind].passive === true && MOB_FACTS[kind].damage === 0);
+  }
+  assert('pig drops pork, cow drops beef, sheep drops mutton',
+    MOB_FACTS[PIG].drop.id === RAW_PORKCHOP
+    && MOB_FACTS[COW].drops[0].id === RAW_BEEF
+    && MOB_FACTS[SHEEP].drop.id === RAW_MUTTON);
+  assert('chicken drops meat and feathers', MOB_FACTS[CHICKEN].drops.length === 2
+    && MOB_FACTS[CHICKEN].drops[1].id === FEATHER);
+}
+
+// ------------------------------------------------------ skeleton and spider AI
+{
+  const world = makeWorld();
+  const player = { x: 10, y: 0.001, z: 10 };
+  const mobs = new Mobs({ rand: () => 0.5, cap: 4 });
+
+  // A skeleton with a clear line to the player shoots, on a cadence.
+  const skel = mobs.spawn(SKELETON, 8, 0.001, 10);
+  const ev = run(mobs, 3, world, player, { sun: 0 });
+  const shots = ev.filter((e) => e.type === 'shoot');
+  assert('a skeleton shoots on sight', shots.length >= 1, String(shots.length));
+  assert('...aimed at the player\u2019s eye',
+    shots.length > 0 && shots[0].ty > 1.5, shots[0] ? shots[0].ty.toFixed(2) : '');
+
+  // It keeps its distance rather than walking into you: after it has shot
+  // once it backs off when you close in, rather than charging.
+  const close = new Mobs({ rand: () => 0.5, cap: 4 });
+  const skel2 = close.spawn(SKELETON, 10.5, 0.001, 10);
+  skel2.attackTimer = 5; // do not shoot, so we see only the movement
+  const ev2 = run(close, 0.5, world, player, { sun: 0 });
+  assert('a skeleton inside its minimum backs away',
+    skel2.x > 10.5, skel2.x.toFixed(2));
+
+  // A spider leaps when close, and never shoots.
+  const spmobs = new Mobs({ rand: () => 0.5, cap: 4 });
+  const spider = spmobs.spawn(SPIDER, 12.5, 0.001, 10);
+  const ev3 = run(spmobs, 3, world, player, { sun: 0 });
+  assert('a spider leaps rather than shooting',
+    ev3.some((e) => e.type === 'sound' && e.name === 'spiderLeap')
+    && !ev3.some((e) => e.type === 'shoot'));
+}
+
+// ---------------------------------------------------------------- passives
+{
+  const world = makeWorld();
+  const player = { x: 10, y: 0.001, z: 10 };
+  const mobs = new Mobs({ rand: () => 0.5, cap: 4 });
+  const pig = mobs.spawn(PIG, 9, 0.001, 10);
+
+  // A pig never hunts: even with the player a block away it has no target.
+  run(mobs, 2, world, player, { sun: 1 });
+  assert('a passive animal never targets the player', pig.hasTarget === false);
+
+  // ...but hit it and it runs away, and calms down afterwards.
+  const before = pig.x;
+  pig.hurt(3, { kx: 0, kz: 0 });
+  assert('a struck animal panics', pig.panic > 0);
+  run(mobs, 0.5, world, player, { sun: 1 });
+  assert('...and runs away from the player', pig.x < before, pig.x.toFixed(2));
+  run(mobs, PANIC_SECONDS + 1, world, player, { sun: 1 });
+  assert('...then calms down', pig.panic === 0);
+
+  // Animals spawn on grass in daylight; the flat stone floor spawns none. A
+  // whole-grass surface makes the spawn question deterministic enough to ask.
+  const grass = makeWorld();
+  grass.get = (x, y, z) => (y === 0 ? GRASS : (y < 0 ? STONE : AIR));
+  const dayMobs = new Mobs({ rand: Math.random, cap: 8 });
+  run(dayMobs, 20, grass, { x: 0, y: 0.001, z: 0 }, { sun: 1 });
+  assert('animals can spawn on grass in daylight', dayMobs.list.length >= 1,
+    String(dayMobs.list.length));
+}
+
+// ------------------------------------------------------------- the new models
+{
+  class Ctx {
+    constructor() { this.fillStyle = '#000'; }
+    fillRect() {}
+  }
+  class Canvas {
+    constructor() { this.width = 8; this.height = 8; this._ctx = new Ctx(); }
+    getContext() { return this._ctx; }
+  }
+  globalThis.document = {
+    createElement: (tag) => (tag === 'canvas' ? new Canvas() : {}),
+    createElementNS: (ns, tag) => (tag === 'canvas' ? new Canvas() : {}),
+  };
+
+  const models = await import('../src/mob-models.js');
+
+  const bounds = (model) => {
+    model.group.updateMatrixWorld(true);
+    const axes = ['x', 'y', 'z'];
+    const min = [Infinity, Infinity, Infinity];
+    const max = [-Infinity, -Infinity, -Infinity];
+    model.group.traverse((o) => {
+      if (!o.isMesh) return;
+      o.geometry.computeBoundingBox();
+      const b = o.geometry.boundingBox;
+      for (let i = 0; i < 3; i++) {
+        const a = axes[i];
+        min[i] = Math.min(min[i], o.matrixWorld.elements[12 + i] + b.min[a]);
+        max[i] = Math.max(max[i], o.matrixWorld.elements[12 + i] + b.max[a]);
+      }
+    });
+    return { height: max[1] - min[1], width: Math.max(max[0] - min[0], max[2] - min[2]) };
+  };
+
+  for (const [kind, name] of [[SKELETON, 'skeleton'], [SPIDER, 'spider'],
+    [PIG, 'pig'], [COW, 'cow'], [CHICKEN, 'chicken'], [SHEEP, 'sheep']]) {
+    const model = models.createMobModel(kind);
+    assert(`the ${name} model builds`, model.kind === kind && model.group.children.length > 0);
+    const b = bounds(model);
+    assert(`...and stands no taller than its hitbox (${name})`,
+      b.height <= MOB_FACTS[kind].height + 0.15, `${b.height.toFixed(2)} vs ${MOB_FACTS[kind].height}`);
+    assert(`...with its feet at the origin (${name})`,
+      Math.abs(model.group.children[0].position.y) < 0.01);
+    // No per-model geometry: a second build shares every geometry the first
+    // allocated, so a night of spawns cannot leak meshes.
+    const g1 = new Set();
+    model.group.traverse((o) => { if (o.isMesh) g1.add(o.geometry); });
+    const g2 = new Set();
+    models.createMobModel(kind).group.traverse((o) => { if (o.isMesh) g2.add(o.geometry); });
+    assert(`a second ${name} allocates no geometry of its own`,
+      g2.size > 0 && [...g2].every((g) => g1.has(g)),
+      `${[...g2].filter((g) => g1.has(g)).length}/${g2.size}`);
+  }
+
+  // The spider is the one mob wider than it is tall, which is the whole of
+  // its silhouette.
+  const spider = bounds(models.createMobModel(SPIDER));
+  assert('the spider is wider than it is tall', spider.width > spider.height,
+    `${spider.width.toFixed(2)} vs ${spider.height.toFixed(2)}`);
 
   delete globalThis.document;
 }

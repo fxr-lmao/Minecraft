@@ -12,7 +12,7 @@
 
 import * as THREE from '../vendor/three.module.min.js';
 import { World, AIR, BEDROCK, ICE, CRAFTING_TABLE, FURNACE, TNT, toChunk } from './world.js';
-import { isWater, waterHeight, SEA_LEVEL } from './terrain.js';
+import { isWater, waterHeight, SEA_LEVEL, LEAVES } from './terrain.js';
 import { WorldRenderer, buildSingleBlockGeometry } from './blocks.js';
 import { FirstPersonHand, warmItemModels } from './held-item.js';
 import { Drops, throwAlong } from './drops.js';
@@ -26,8 +26,13 @@ import { setCameraUnderwater, setSunDirection, setWaterOvercast } from './water-
 import { WaterView, HELD_LAYER, WATER_QUALITY_NAMES } from './water-render.js';
 import { Particles } from './particles.js';
 import { Weather, SNOWING } from './weather.js';
-import { isItem, useBucket, fluidAim, PICKAXE } from './items.js';
-import { breakTime, dropsFrom, wrongTool, toolNeeded } from './mining.js';
+import { isItem, useBucket, fluidAim, PICKAXE, BOW, ARROW } from './items.js';
+import { breakTime, dropsFrom, dropsFromLeaf, wrongTool, toolNeeded } from './mining.js';
+import { Eater, isFood } from './food.js';
+import { EXHAUST_MINE, EXHAUST_ATTACK } from './hunger.js';
+import { Arrows, aimAt, ARROW_DAMAGE, BOW_DAMAGE } from './arrows.js';
+import { ArrowsRenderer } from './arrows-render.js';
+import { totalArmourPoints } from './armour.js';
 import { installNativeBridge } from './native.js';
 import { Hud } from './hud.js';
 import { Inventory } from './inventory.js';
@@ -399,6 +404,9 @@ const mobs = new Mobs();
 
 const player = new Player(world);
 player.autoJump = settings.autoJump;
+// The armour the player wears lives in the inventory's four slots; the
+// player reads them straight from the array whenever it is hurt.
+player.armour = inventory.armour;
 if (restored?.player) {
   player.pos.set(restored.player.x, restored.player.y, restored.player.z);
   player.yaw = restored.player.yaw ?? player.yaw;
@@ -410,6 +418,14 @@ if (restored?.player) {
   }
   if (Number.isFinite(restored.player.air)) {
     player.air = Math.min(MAX_AIR, restored.player.air);
+  }
+  if (restored.player.hunger) {
+    player.hunger.fromJSON(restored.player.hunger);
+  }
+  if (Array.isArray(restored.player.armour)) {
+    inventory.armour = restored.player.armour.map((s) =>
+      Array.isArray(s) && s[0] ? { id: s[0], count: 1, durability: Number.isFinite(s[1]) ? s[1] : undefined } : null
+    );
   }
   // A v1 save came from the old flat world; the terrain under those
   // coordinates is now hilly, so drop the player onto the new surface.
@@ -566,6 +582,16 @@ const dropsRenderer = new DropsRenderer(scene, blockGeometryFor, heldMaterial);
  * when the simulation forgets it.
  */
 const mobsRenderer = new MobsRenderer(scene);
+
+/**
+ * ...and the arrows, on the same deal: `arrows` is the simulation (pure, in
+ * src/arrows.js) and `arrowsRenderer` believes it. Every arrow in the air —
+ * a skeleton's shot or yours — lives in this one collection, which is what
+ * lets a bow from either side use the same gravity, the same walls and the
+ * same bodies.
+ */
+const arrows = new Arrows();
+const arrowsRenderer = new ArrowsRenderer(scene);
 
 /**
  * Pick a drop up. Returns how many items actually went in, which is what
@@ -752,6 +778,23 @@ function handleMobEvent(e) {
       }
       break;
     }
+    case 'shoot': {
+      // A skeleton loosed an arrow. The sim aimed it at your eye; the arrow
+      // itself is this loop's to put in the air, with a little spread so a
+      // skeleton can miss and a moving player can make it miss.
+      const aim = aimAt(e.x, e.y, e.z, e.tx, e.ty, e.tz);
+      // A little spread, so a skeleton can miss and a moving player can make
+      // it miss — a perfect archer is a hitscan weapon, not a mob.
+      const jitter = 0.6;
+      arrows.shoot(
+        e.x, e.y, e.z,
+        aim.vx + (Math.random() - 0.5) * jitter,
+        aim.vy + (Math.random() - 0.5) * jitter,
+        aim.vz + (Math.random() - 0.5) * jitter,
+        { owner: e.mob }
+      );
+      break;
+    }
     case 'explode':
       // A creeper finished its fuse. Same crater, same maths, same radius
       // as TNT — only the epitaph differs, and it is the mob's own.
@@ -761,13 +804,16 @@ function handleMobEvent(e) {
       const facts = MOB_FACTS[e.kind];
       // A creeper's own detonation is the one death that leaves nothing —
       // it spent itself. Everything else drops what it was carrying, on
-      // the floor with everything else, and only a sword that connected
-      // pays experience: fire and gravity do the work for free.
+      // the floor with everything else — a skeleton leaves its bone and its
+      // arrows, a chicken its meat and its feathers — and only a sword that
+      // connected pays experience: fire and gravity do the work for free.
       if (e.by === 'self') break;
-      const spot = facts.drop;
-      const count = spot.min + Math.floor(Math.random() * (spot.max - spot.min + 1));
-      if (count > 0) {
-        drops.spawnFromBlock(Math.floor(e.x), Math.floor(e.y), Math.floor(e.z), spot.id, count);
+      const piles = facts.drops ?? (facts.drop ? [facts.drop] : []);
+      for (const spot of piles) {
+        const count = spot.min + Math.floor(Math.random() * (spot.max - spot.min + 1));
+        if (count > 0) {
+          drops.spawnFromBlock(Math.floor(e.x), Math.floor(e.y), Math.floor(e.z), spot.id, count);
+        }
       }
       if (e.by === 'player' && !gameMode.isCreative && xp.add(facts.xp) > 0) {
         hud.showStatus(`Level ${xp.level}`);
@@ -783,9 +829,43 @@ function handleMobEvent(e) {
       if (e.name === 'zombie') sound.playZombie(e.volume);
       else if (e.name === 'zombieAttack') sound.playZombieHurt(e.volume, 0.75);
       else if (e.name === 'hiss') sound.playCreeperHiss(e.volume);
+      else if (e.name === 'skeleton') sound.playSkeleton(e.volume);
+      else if (e.name === 'bow') sound.playBowTwang(e.volume);
+      else if (e.name === 'spiderAttack') sound.playSpiderHurt(e.volume);
+      else if (e.name === 'spiderLeap') sound.playSpiderLeap(e.volume);
       break;
     default:
       break;
+  }
+}
+
+/**
+ * What an arrow did. The sim reports a hit; this turns it into damage, a
+ * puff of particles and a noise — and hands a player's arrow the same
+ * credit a sword gets, so a bow kill drops its loot and pays its XP.
+ */
+function handleArrowEvent(e) {
+  if (e.type === 'hitEntity') {
+    const arrow = e.arrow;
+    if (e.ref === 'player') {
+      // A skeleton's shot. The hurt is the player's; the shove is small —
+      // an arrow knocks you back a step, not across the field.
+      player.hurt(arrow.damage, 'shot by a skeleton');
+      if (!player.flying && !player.dead) {
+        const len = Math.hypot(arrow.vx, arrow.vz) || 1;
+        player.vel.x += (arrow.vx / len) * 2.5;
+        player.vel.z += (arrow.vz / len) * 2.5;
+      }
+    } else {
+      const byPlayer = arrow.owner === 'player';
+      e.ref.hurt(arrow.damage, { byPlayer, cause: 'shot by an arrow' });
+    }
+    particles.dustPuff(e.x, e.y, e.z, 1);
+    sound.playArrowHit();
+  } else if (e.type === 'hitBlock') {
+    // Stuck in a wall: a puff where it bit, and the dull thock of it.
+    particles.dustPuff(e.x, e.y, e.z, 1);
+    sound.playArrowThud();
   }
 }
 
@@ -809,6 +889,9 @@ function attackMob() {
     mobTarget.mob, held, player.lookDirection(), player.sprinting);
   if (result === 'immune') return;
   swingHand();
+  // A landed blow costs a little hunger too — a fight is something you eat
+  // your way back from, like everything else that is worth doing.
+  player.hunger.addExhaustion(EXHAUST_ATTACK);
   const vol = Math.max(0.15, 1 - mobTarget.dist / REACH);
   sound.playZombieHurt(vol, mob.kind === CREEPER ? 1.35 : 1);
   // Minecraft's wear: a sword loses one use per entity hit, other tools
@@ -899,7 +982,7 @@ function breakBlock() {
   // destroy the block (dig a diamond seam with no room and the diamonds were
   // simply gone), and now it does not — the drop lies there until you make
   // space. See drops.js.
-  const drop = dropsFrom(id, held);
+  const drop = id === LEAVES ? dropsFromLeaf() : dropsFrom(id, held);
   if (!drop) {
     if (wrongTool(id, held)) hud.showStatus(`You need a ${toolNeeded(id)} for that`);
   } else {
@@ -910,6 +993,9 @@ function breakBlock() {
   // original — it is the same ore, just further down.
   const gained = xpForBlock(id);
   if (gained > 0 && xp.add(gained) > 0) hud.showStatus(`Level ${xp.level}`);
+
+  // Digging is work, and work is hunger — Minecraft's own cost per block.
+  player.hunger.addExhaustion(EXHAUST_MINE);
 
   // The tool spends a use on the block, and the last use breaks it.
   spendTool();
@@ -1029,6 +1115,37 @@ function useHeldItem(stack) {
   saveNeeded = true;
 }
 
+/**
+ * Loose the drawn bow. `power` is 0..1 of a full draw; a weak release is a
+ * wasted arrow's worth of effort and does nothing, so the player commits to
+ * the draw or lets it go quietly. The arrow flies along the look direction,
+ * the bow spends a use, and an arrow comes out of whichever slot holds one.
+ */
+function fireBow(power) {
+  if (power < 0.2) return;
+  const dir = player.lookDirection();
+  const speed = 8 + power * 16; // a weak pull lobs, a full one flies
+  const damage = Math.max(1, Math.round(BOW_DAMAGE * power));
+  arrows.shoot(
+    lastEye.x + dir.x * 0.4,
+    lastEye.y + dir.y * 0.4,
+    lastEye.z + dir.z * 0.4,
+    dir.x * speed, dir.y * speed, dir.z * speed,
+    { owner: 'player', damage }
+  );
+  sound.playBowTwang(0.8);
+  swingHand();
+  inventory.consume(ARROW, 1);
+  const stack = inventory.selectedStack();
+  if (stack && stack.id === BOW && !gameMode.isCreative) {
+    const { stack: next, broke } = spendDurability(stack);
+    inventory.set(inventory.selected, next);
+    if (broke) hud.showStatus('Your bow broke');
+  }
+  invUI.render();
+  saveNeeded = true;
+}
+
 /** Middle click / pick block: select the targeted block in the hotbar. */
 function pickBlock() {
   if (!target) return;
@@ -1145,6 +1262,7 @@ function startPlaying(source) {
   if (player.dead) {
     player.respawn();
     particles.clear();
+    arrows.clear();
     saveNeeded = true;
   }
   input.start(source);
@@ -1274,6 +1392,16 @@ let eyeOffset = 0; // smooth sneak crouch
  */
 let eyeHeight = PLAYER_EYE;
 let placeRepeat = 0;
+/**
+ * The meal in progress, if any. Holding place with food in hand fills this
+ * instead of placing blocks; releasing the button interrupts it. See food.js.
+ */
+const eater = new Eater();
+/** Seconds to draw a bow to full power. */
+const BOW_DRAW_SECONDS = 0.8;
+/** True while place is held down with a bow in hand; `bowCharge` is 0..1. */
+let bowCharging = false;
+let bowCharge = 0;
 let lastClock = null;
 /**
  * Seconds of *unpaused* game time since the page loaded.
@@ -1357,9 +1485,10 @@ function frame(now) {
     acc = 0;
   }
 
-  // Hearts and bubbles. Drawn whenever there is a world to be hurt in, which
-  // is any time the title screen is not up.
-  hud.setVitals(player.health, player.air, hasPlayed);
+  // Hearts, bubbles and drumsticks. Drawn whenever there is a world to be
+  // hurt in, which is any time the title screen is not up.
+  hud.setVitals(player.health, player.air, player.hunger.food,
+    totalArmourPoints(inventory.armour), hasPlayed);
   hud.setXp(xp.fraction, xp.level);
   hud.refreshMode(gameMode);
   // The clock changes once a minute of game time; no reason to write the DOM
@@ -1438,13 +1567,76 @@ function frame(now) {
     mobsRenderer.update(mobs);
   }
 
+  // ---- arrows ---- 
+  // The sim advances on the game clock like everything else that moves, and
+  // the targets it tests are the bodies in the world: the player and the
+  // mobs, each as a feet-centred box, passed in so arrows.js never has to
+  // know what a player or a mob is.
+  const arrowEvents = arrows.update(animDt, world, [
+    {
+      x: player.pos.x, y: player.pos.y, z: player.pos.z,
+      width: PLAYER_WIDTH, height: player.height, ref: 'player',
+    },
+    ...mobs.list
+      .filter((m) => !m.dead)
+      .map((m) => ({
+        x: m.x, y: m.y, z: m.z, width: m.facts.width, height: m.facts.height, ref: m,
+      })),
+  ]);
+  for (const e of arrowEvents) handleArrowEvent(e);
+  arrowsRenderer.update(arrows);
+
+  // ---- eating and the bow ----
+  // Holding place (right-click) does three different things by what is in
+  // hand: food is a meal, a bow is drawn, anything else is placed or used.
+  // The meal and the draw both fill while the button stays down; the meal is
+  // spent when it fills, the bow when the button is let go.
+  const handStack = inventory.selectedStack();
+  const holdingBow = Boolean(handStack && handStack.id === BOW
+    && (gameMode.isCreative || inventory.countOf(ARROW) > 0));
+
+  if (playing && !screenOpen() && input.pressed.place) {
+    if (handStack && isFood(handStack.id) && player.hunger.canEat) {
+      if (!eater.eating) eater.start(handStack.id);
+      const meal = eater.update(frameDt);
+      if (meal?.done) {
+        if (player.hunger.eat(meal.info.nutrition, meal.info.saturation)) {
+          inventory.consumeSelected(1);
+          if (meal.poison) player.hunger.applyPoison();
+          // A golden apple is the one food that heals as well as feeds.
+          if (meal.info.heal) player.heal(meal.info.heal);
+          sound.playEat();
+        }
+        invUI.render();
+        saveNeeded = true;
+      }
+    } else if (holdingBow) {
+      // Draw. The longer the hold, the harder the shot.
+      bowCharging = true;
+      bowCharge = Math.min(1, bowCharge + frameDt / BOW_DRAW_SECONDS);
+    }
+  } else {
+    if (eater.eating) eater.cancel();
+    if (bowCharging) {
+      // The button was let go: loose what was drawn. Dropping the bow off
+      // the hotbar mid-draw (or opening a screen) quietly discards the draw.
+      if (playing && holdingBow && !screenOpen()) fireBow(bowCharge);
+      bowCharging = false;
+      bowCharge = 0;
+    }
+  }
+  // The one meter serves both: it is "the item in hand is being used".
+  hud.setEating(eater.eating ? eater.fraction : (bowCharging ? bowCharge : 0));
+
   // ---- digging, swinging, and the place button's auto-repeat ----
   // Breaking is no longer an event that repeats; it is a stopwatch that runs
   // while the button is down and resets the moment you look somewhere else.
   // A mob under the crosshair preempts the block behind it, and attacking
   // *does* repeat on hold — at the cadence the hurt window allows, which is
-  // the Minecraft cadence without a timer anywhere in sight.
-  if (playing && input.pressed.break && !screenOpen()) {
+  // the Minecraft cadence without a timer anywhere in sight. A meal or a
+  // drawn bow owns both buttons: you cannot dig and chew at once.
+  const busy = eater.eating || bowCharging;
+  if (playing && input.pressed.break && !screenOpen() && !busy) {
     if (mobTarget && !mobTarget.mob.dead) {
       // A zombie walking into a dig takes the button — and the dig has to be
       // put down as deliberately as the button being released puts it down,
@@ -1455,7 +1647,8 @@ function frame(now) {
     } else mine(frameDt);
   } else if (mining) stopMining();
   if (playing) {
-    placeRepeat = input.pressed.place && !screenOpen() ? placeRepeat + frameDt : 0;
+    placeRepeat = input.pressed.place && !screenOpen() && !busy && !holdingBow
+      ? placeRepeat + frameDt : 0;
     if (placeRepeat >= USE_REPEAT) {
       placeRepeat = 0;
       placeBlock();
@@ -1720,6 +1913,7 @@ hud.bindMenu({
   onReset: () => {
     savingDisabled = true;
     particles.clear();
+    arrows.clear();
     mobs.list.length = 0;
     mobsRenderer.clear();
     savegame.clear();

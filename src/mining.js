@@ -37,7 +37,7 @@ import {
   PICKAXE, SHOVEL, WOOD_PICKAXE, WOOD_SHOVEL, STONE_PICKAXE, STONE_SHOVEL,
   WOOD_AXE, STONE_AXE, IRON_AXE, DIAMOND_AXE,
   WOOD_SWORD, STONE_SWORD, IRON_SWORD, DIAMOND_SWORD,
-  DIAMOND_PICKAXE, DIAMOND_SHOVEL, oreDrop,
+  DIAMOND_PICKAXE, DIAMOND_SHOVEL, oreDrop, APPLE,
 } from './items.js';
 
 /** What a tool is *for*. A block wants one of these, or nothing in particular. */
@@ -246,6 +246,23 @@ export function dropsFrom(id, held) {
   // the ground, you have to cook it.
   if (id === STONE) return COBBLESTONE;
   return id;
+}
+
+/**
+ * Leaves mostly drop leaves; occasionally an apple.
+ *
+ * The apple is the one food the trees give for free, and the chance is the
+ * thing that decides whether it is a treat or a diet. Minecraft's oak leaves
+ * give one apple per two hundred leaves broken; that is the right rarity for
+ * a game where wheat fields exist, and far too rare for this one, where the
+ * tree is the *only* apple tree. So the chance is raised to one in ten, and
+ * noted as such rather than passed off as Minecraft's number.
+ */
+export const APPLE_CHANCE = 0.1;
+
+/** The leaf's drop, rolled against APPLE_CHANCE. */
+export function dropsFromLeaf(rand = Math.random) {
+  return rand() < APPLE_CHANCE ? APPLE : LEAVES;
 }
 
 /**

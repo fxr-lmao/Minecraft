@@ -112,6 +112,65 @@ export const REDSTONE = 225;
 export const GUNPOWDER = 226;
 export const ROTTEN_FLESH = 227;
 
+/**
+ * Food, and the two things ranged combat is made of.
+ *
+ * The meats are the reason a night is survivable: animals drop them raw, the
+ * furnace cooks them, and cooking is the difference between a snack and a
+ * meal (see food.js for the numbers). Rotten flesh, already in the world, is
+ * food too — the bad kind. The last three are the skeleton-and-spider
+ * economy: a bow made of spider string, an arrow fletched with a chicken's
+ * feather, and the bone the skeleton leaves for the trouble.
+ */
+export const RAW_BEEF = 228;
+export const STEAK = 229;
+export const RAW_PORKCHOP = 230;
+export const COOKED_PORKCHOP = 231;
+export const RAW_CHICKEN = 232;
+export const COOKED_CHICKEN = 233;
+export const RAW_MUTTON = 234;
+export const COOKED_MUTTON = 235;
+export const APPLE = 236;
+export const BONE = 237;
+export const ARROW = 238;
+export const STRING = 239;
+export const SPIDER_EYE = 240;
+export const BOW = 241;
+export const FEATHER = 242;
+
+/**
+ * Armour, and the last few foods.
+ *
+ * Armour is the answer to the night the skeletons brought: sixteen pieces
+ * across four materials (leather from cows, then iron, gold and diamond),
+ * each worn in one of four slots and each shaving damage off every hit. The
+ * foods close the other loop — a carrot and a potato out of a zombie's
+ * pocket (Minecraft's own drop), the potato baked in the furnace, and a
+ * golden apple, which is an apple gilded with eight ingots and the one food
+ * that heals as well as feeds.
+ */
+export const LEATHER = 243;
+export const CARROT = 244;
+export const POTATO = 245;
+export const BAKED_POTATO = 246;
+export const GOLDEN_APPLE = 247;
+export const IRON_HELMET = 248;
+export const IRON_CHESTPLATE = 249;
+export const IRON_LEGGINGS = 250;
+export const IRON_BOOTS = 251;
+export const DIAMOND_HELMET = 252;
+export const DIAMOND_CHESTPLATE = 253;
+export const DIAMOND_LEGGINGS = 254;
+export const DIAMOND_BOOTS = 255;
+export const GOLD_HELMET = 256;
+export const GOLD_CHESTPLATE = 257;
+export const GOLD_LEGGINGS = 258;
+export const GOLD_BOOTS = 259;
+export const LEATHER_HELMET = 260;
+export const LEATHER_CHESTPLATE = 261;
+export const LEATHER_LEGGINGS = 262;
+export const LEATHER_BOOTS = 263;
+
 /** Item ids, in the order their textures are packed into the atlas. */
 export const ITEM_IDS = [
   BUCKET, WATER_BUCKET, PICKAXE, SHOVEL, STICKS,
@@ -122,6 +181,14 @@ export const ITEM_IDS = [
   DIAMOND_PICKAXE, DIAMOND_SHOVEL, DIAMOND_AXE, DIAMOND_SWORD,
   RAW_GOLD, GOLD_INGOT, REDSTONE,
   GUNPOWDER, ROTTEN_FLESH,
+  RAW_BEEF, STEAK, RAW_PORKCHOP, COOKED_PORKCHOP,
+  RAW_CHICKEN, COOKED_CHICKEN, RAW_MUTTON, COOKED_MUTTON,
+  APPLE, BONE, ARROW, STRING, SPIDER_EYE, BOW, FEATHER,
+  LEATHER, CARROT, POTATO, BAKED_POTATO, GOLDEN_APPLE,
+  IRON_HELMET, IRON_CHESTPLATE, IRON_LEGGINGS, IRON_BOOTS,
+  DIAMOND_HELMET, DIAMOND_CHESTPLATE, DIAMOND_LEGGINGS, DIAMOND_BOOTS,
+  GOLD_HELMET, GOLD_CHESTPLATE, GOLD_LEGGINGS, GOLD_BOOTS,
+  LEATHER_HELMET, LEATHER_CHESTPLATE, LEATHER_LEGGINGS, LEATHER_BOOTS,
 ];
 
 /**
@@ -183,6 +250,29 @@ export const ITEM_SHAPES = {
   [REDSTONE]: SHAPE_LUMP,
   [GUNPOWDER]: SHAPE_LUMP,
   [ROTTEN_FLESH]: SHAPE_LUMP,
+  // Food, held flat like everything else you carry to your mouth.
+  [RAW_BEEF]: SHAPE_LUMP, [STEAK]: SHAPE_LUMP,
+  [RAW_PORKCHOP]: SHAPE_LUMP, [COOKED_PORKCHOP]: SHAPE_LUMP,
+  [RAW_CHICKEN]: SHAPE_LUMP, [COOKED_CHICKEN]: SHAPE_LUMP,
+  [RAW_MUTTON]: SHAPE_LUMP, [COOKED_MUTTON]: SHAPE_LUMP,
+  [APPLE]: SHAPE_LUMP,
+  // Ranged combat: the bow is a lump too, because its real shape comes from
+  // its sprite and there is no bespoke bow model — the extruded arc reads as
+  // a bow at every size the game draws it.
+  [BONE]: SHAPE_LUMP, [ARROW]: SHAPE_LUMP, [STRING]: SHAPE_LUMP,
+  [SPIDER_EYE]: SHAPE_LUMP, [BOW]: SHAPE_LUMP, [FEATHER]: SHAPE_LUMP,
+  // Armour and the last foods are carried flat too — a chestplate in the
+  // hand is a thing, not a block.
+  [LEATHER]: SHAPE_LUMP, [CARROT]: SHAPE_LUMP, [POTATO]: SHAPE_LUMP,
+  [BAKED_POTATO]: SHAPE_LUMP, [GOLDEN_APPLE]: SHAPE_LUMP,
+  [IRON_HELMET]: SHAPE_LUMP, [IRON_CHESTPLATE]: SHAPE_LUMP,
+  [IRON_LEGGINGS]: SHAPE_LUMP, [IRON_BOOTS]: SHAPE_LUMP,
+  [DIAMOND_HELMET]: SHAPE_LUMP, [DIAMOND_CHESTPLATE]: SHAPE_LUMP,
+  [DIAMOND_LEGGINGS]: SHAPE_LUMP, [DIAMOND_BOOTS]: SHAPE_LUMP,
+  [GOLD_HELMET]: SHAPE_LUMP, [GOLD_CHESTPLATE]: SHAPE_LUMP,
+  [GOLD_LEGGINGS]: SHAPE_LUMP, [GOLD_BOOTS]: SHAPE_LUMP,
+  [LEATHER_HELMET]: SHAPE_LUMP, [LEATHER_CHESTPLATE]: SHAPE_LUMP,
+  [LEATHER_LEGGINGS]: SHAPE_LUMP, [LEATHER_BOOTS]: SHAPE_LUMP,
 };
 
 /** The shape of an item, or null for a block (which is a cube already). */
@@ -204,6 +294,10 @@ export const isAxe = (id) => TOOL_KINDS[id]?.shape === SHAPE_AXE;
 export const MATERIALS = [
   COAL, RAW_IRON, IRON_INGOT, DIAMOND, RAW_GOLD, GOLD_INGOT, REDSTONE,
   GUNPOWDER, ROTTEN_FLESH,
+  RAW_BEEF, STEAK, RAW_PORKCHOP, COOKED_PORKCHOP,
+  RAW_CHICKEN, COOKED_CHICKEN, RAW_MUTTON, COOKED_MUTTON, APPLE,
+  BONE, ARROW, STRING, SPIDER_EYE, BOW, FEATHER,
+  LEATHER, CARROT, POTATO, BAKED_POTATO, GOLDEN_APPLE,
 ];
 export const isMaterial = (id) => MATERIALS.includes(id);
 
@@ -260,6 +354,42 @@ export const ITEM_NAMES = {
   [REDSTONE]: 'Redstone Dust',
   [GUNPOWDER]: 'Gunpowder',
   [ROTTEN_FLESH]: 'Rotten Flesh',
+  [RAW_BEEF]: 'Raw Beef',
+  [STEAK]: 'Steak',
+  [RAW_PORKCHOP]: 'Raw Porkchop',
+  [COOKED_PORKCHOP]: 'Cooked Porkchop',
+  [RAW_CHICKEN]: 'Raw Chicken',
+  [COOKED_CHICKEN]: 'Cooked Chicken',
+  [RAW_MUTTON]: 'Raw Mutton',
+  [COOKED_MUTTON]: 'Cooked Mutton',
+  [APPLE]: 'Apple',
+  [BONE]: 'Bone',
+  [ARROW]: 'Arrow',
+  [STRING]: 'String',
+  [SPIDER_EYE]: 'Spider Eye',
+  [BOW]: 'Bow',
+  [FEATHER]: 'Feather',
+  [LEATHER]: 'Leather',
+  [CARROT]: 'Carrot',
+  [POTATO]: 'Potato',
+  [BAKED_POTATO]: 'Baked Potato',
+  [GOLDEN_APPLE]: 'Golden Apple',
+  [IRON_HELMET]: 'Iron Helmet',
+  [IRON_CHESTPLATE]: 'Iron Chestplate',
+  [IRON_LEGGINGS]: 'Iron Leggings',
+  [IRON_BOOTS]: 'Iron Boots',
+  [DIAMOND_HELMET]: 'Diamond Helmet',
+  [DIAMOND_CHESTPLATE]: 'Diamond Chestplate',
+  [DIAMOND_LEGGINGS]: 'Diamond Leggings',
+  [DIAMOND_BOOTS]: 'Diamond Boots',
+  [GOLD_HELMET]: 'Golden Helmet',
+  [GOLD_CHESTPLATE]: 'Golden Chestplate',
+  [GOLD_LEGGINGS]: 'Golden Leggings',
+  [GOLD_BOOTS]: 'Golden Boots',
+  [LEATHER_HELMET]: 'Leather Cap',
+  [LEATHER_CHESTPLATE]: 'Leather Tunic',
+  [LEATHER_LEGGINGS]: 'Leather Pants',
+  [LEATHER_BOOTS]: 'Leather Boots',
 };
 
 /**

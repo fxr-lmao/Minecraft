@@ -757,21 +757,36 @@ const assert = (name, cond, detail) => {
   for (let i = 0; i < 6 * 120; i++) p.update(PHYSICS_DT, up);
   assert('a gulp at the surface is a gulp', p.air === MAX_AIR, p.air.toFixed(2));
 
-  // And with nothing hurting you, health comes back on its own.
+  // Health comes back from being well fed now, not from a timer that starts
+  // when the wound does. A player spawns full of food with a little
+  // saturation, so a hurt player heals — one hit point every four seconds,
+  // and only while that saturation lasts.
   const hurt = new Player(new World(6, { flat: 3 }));
   hurt.hurt(6, 'a test');
   assert('damage is remembered', hurt.health === MAX_HEALTH - 6 && hurt.sinceHurt === 0);
-  // A step either side of the delay: nothing has healed by the time it is up,
-  // and the tolerance is there because the healing starts on the very step
-  // that crosses it.
-  for (let i = 0; i < REGEN_DELAY * 120; i++) hurt.update(PHYSICS_DT, still);
-  assert('...and nothing heals while the wound is fresh',
-    Math.abs(hurt.health - (MAX_HEALTH - 6)) < 0.01, hurt.health.toFixed(4));
-  for (let i = 0; i < 8 * 120; i++) hurt.update(PHYSICS_DT, still);
-  assert('...but it comes back slowly once it is not',
+  assert('taking a hit costs a little hunger',
+    hurt.hunger.food === 20 && Math.abs(hurt.hunger.saturation - 5) < 1e-9);
+
+  for (let i = 0; i < 4 * 120 + 1; i++) hurt.update(PHYSICS_DT, still);
+  assert('a well-fed player heals one every four seconds',
     hurt.health > MAX_HEALTH - 6 && hurt.health < MAX_HEALTH, hurt.health.toFixed(2));
-  for (let i = 0; i < 120 * 120; i++) hurt.update(PHYSICS_DT, still);
-  assert('...all the way, and no further', hurt.health === MAX_HEALTH, hurt.health);
+
+  // Healing spends saturation, and once it is gone the bar stops — five
+  // saturation is not enough to heal six wounds, which is why a real meal
+  // matters and a snack is only a snack.
+  for (let i = 0; i < 120 * 120 + 1; i++) hurt.update(PHYSICS_DT, still);
+  assert('...and only while the saturation lasts',
+    hurt.health > MAX_HEALTH - 6 && hurt.health < MAX_HEALTH, hurt.health.toFixed(2));
+
+  // The counterweight: a starving player heals nothing, and hunger itself
+  // takes a hit point every four seconds.
+  const starve = new Player(new World(7, { flat: 3 }));
+  starve.hunger.food = 0;
+  starve.hunger.saturation = 0;
+  starve.hurt(6, 'a test');
+  for (let i = 0; i < 4 * 120 + 1; i++) starve.update(PHYSICS_DT, still);
+  assert('a starving player takes damage from hunger',
+    starve.health < MAX_HEALTH - 6, starve.health.toFixed(2));
 }
 
 console.log(results.join('\n'));

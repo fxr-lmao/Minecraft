@@ -13,6 +13,9 @@
 import { SAND, GLASS, COBBLESTONE, STONE, LOG, PLANKS } from './terrain.js';
 import {
   STICKS, RAW_IRON, IRON_INGOT, RAW_GOLD, GOLD_INGOT, COAL,
+  RAW_BEEF, STEAK, RAW_PORKCHOP, COOKED_PORKCHOP,
+  RAW_CHICKEN, COOKED_CHICKEN, RAW_MUTTON, COOKED_MUTTON,
+  POTATO, BAKED_POTATO,
 } from './items.js';
 
 /** Real seconds to smelt one item (Minecraft's 200 ticks). */
@@ -43,6 +46,16 @@ export const SMELT_RECIPES = {
   // change: a diamond needs no furnace, and raw iron is useless without one.
   [RAW_IRON]: IRON_INGOT,
   [RAW_GOLD]: GOLD_INGOT,
+  // And the meats. A furnace is a kitchen as well as a smelter, which is the
+  // whole of why cooked food exists: raw is survival, cooked is a meal (see
+  // food.js), and the difference runs through this one table.
+  [RAW_BEEF]: STEAK,
+  [RAW_PORKCHOP]: COOKED_PORKCHOP,
+  [RAW_CHICKEN]: COOKED_CHICKEN,
+  [RAW_MUTTON]: COOKED_MUTTON,
+  // The potato is the one vegetable the furnace improves: a raw potato is a
+  // mouthful of almost nothing, a baked one is a meal (see food.js).
+  [POTATO]: BAKED_POTATO,
 };
 
 export const isFuel = (id) => id in FUEL_SECONDS;

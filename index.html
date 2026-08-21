@@ -19,15 +19,26 @@
   <div id="clock" class="hidden"></div>
 
   <div id="held-name"></div>
-  <!-- hearts on the left, air bubbles on the right, above the hotbar -->
+  <!-- armour over the hearts, hearts on the left, air and drumsticks on the
+       right, all above the hotbar -->
   <div id="vitals" class="hidden">
-    <div id="health"></div>
-    <div id="air"></div>
+    <div id="vitals-left">
+      <div id="armour"></div>
+      <div id="health"></div>
+    </div>
+    <div id="vitals-right">
+      <div id="air"></div>
+      <div id="hunger"></div>
+    </div>
   </div>
   <!-- experience: the bar above the hotbar and the level number -->
   <div id="xp-wrap" class="hidden">
     <div id="xp-bar"><i></i></div>
     <div id="xp-level">0</div>
+  </div>
+  <!-- eating progress: fills while a meal is held to the mouth -->
+  <div id="eating" class="hidden">
+    <div id="eating-bar"><i></i></div>
   </div>
   <div id="hotbar"></div>
 
@@ -56,6 +67,10 @@
         <div class="inv-craft-out">
           <div class="inv-label">Result</div>
           <div id="craft-result" class="slot"></div>
+        </div>
+        <div class="inv-armour">
+          <div class="inv-label">Armour</div>
+          <div id="armour-slots"></div>
         </div>
       </div>
       <div id="inv-main"></div>
@@ -196,7 +211,7 @@
           <b>CTRL / double-tap W</b><span>Sprint</span>
           <b>SHIFT</b><span>Sneak</span>
           <b>MOUSE</b><span>Look around</span>
-          <b>LEFT / RIGHT CLICK</b><span>Break / place a block</span>
+          <b>LEFT / RIGHT CLICK</b><span>Break / place a block · hold right-click to eat or draw a bow</span>
           <b>MIDDLE CLICK</b><span>Pick the block you are looking at</span>
           <b>1–9 / scroll</b><span>Select a hotbar slot</span>
           <b>Q</b><span>Drop one of the held item</span>
