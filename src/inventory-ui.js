@@ -11,7 +11,8 @@
 
 import { HOTBAR_SIZE, MAIN_COLS, MAIN_ROWS, TOTAL_SLOTS, Inventory } from './inventory.js';
 import { getBlockAssets, getBlockDefById, blockName } from './textures.js';
-import { isTool, durabilityFraction } from './durability.js';
+import { isDurable, durabilityFraction } from './durability.js';
+import { ARMOUR_SLOTS, SLOT_NAMES } from './armour.js';
 import { GRID_2X2, GRID_3X3, matchRecipe, craft } from './crafting.js';
 import { bindSlotPress } from './slot-press.js';
 import { hotbarGesture } from './touch-controls.js';
@@ -70,10 +71,13 @@ export class InventoryUI {
     this.screenViews = new Array(TOTAL_SLOTS);
     /** Crafting grid cell views, rebuilt when the grid resizes. */
     this.craftViews = [];
+    /** The four armour slots, worn not carried. */
+    this.armourViews = [];
 
     this._buildHotbar();
     this._buildScreen();
     this._buildCraftGrid();
+    this._buildArmour();
     this._bindEvents();
     this.render();
   }
@@ -126,6 +130,20 @@ export class InventoryUI {
       const view = makeSlotEl(i, 'hotbar-slot');
       this.screenViews[i] = view;
       this.rowEl.appendChild(view.el);
+    }
+  }
+
+  /** Build the four armour slots once — they never resize. */
+  _buildArmour() {
+    const host = document.getElementById('armour-slots');
+    if (!host) return;
+    host.innerHTML = '';
+    for (let i = 0; i < ARMOUR_SLOTS; i++) {
+      const view = makeSlotEl(i, 'armour-slot');
+      view.el.dataset.armour = String(i);
+      view.el.title = SLOT_NAMES[i];
+      host.appendChild(view.el);
+      this.armourViews.push(view);
     }
   }
 
@@ -203,14 +221,33 @@ export class InventoryUI {
     // Slot interaction inside the inventory screen.
     const onSlot = (el, secondary, e) => {
       const index = Number(el.dataset.slot);
-      if (e.shiftKey) this.inv.quickMove(index);
-      else this.inv.clickSlot(index, secondary);
+      // Shift-click tries armour on first (a helmet goes on your head), and
+      // falls back to the hotbar <-> main grid shuffle for everything else.
+      if (e.shiftKey) {
+        if (!this.inv.equipArmour(index)) this.inv.quickMove(index);
+      } else {
+        this.inv.clickSlot(index, secondary);
+      }
       this._moveCursor(e.clientX, e.clientY);
       this.render();
     };
     const pickSlot = (e) => e.target.closest('.slot');
     bindSlotPress(this.mainGridEl, pickSlot, onSlot);
     bindSlotPress(this.rowEl, pickSlot, onSlot);
+
+    // The armour slots: only armour may enter, and only its own slot.
+    const armourEl = document.getElementById('armour-slots');
+    if (armourEl) {
+      bindSlotPress(
+        armourEl,
+        (e) => e.target.closest('.slot'),
+        (el, secondary) => {
+          this.inv.clickArmourSlot(Number(el.dataset.armour), secondary);
+          this._moveCursorToCursor();
+          this.render();
+        }
+      );
+    }
 
     // Backdrop: put the held stack back, or close if the hand is empty.
     this.screenEl.addEventListener('pointerdown', (e) => {
@@ -275,6 +312,10 @@ export class InventoryUI {
         if (view) this._paint(view, grid.get(r, c), false);
       }
     }
+    // Armour slots, helmet first.
+    for (let i = 0; i < ARMOUR_SLOTS; i++) {
+      this._paint(this.armourViews[i], this.inv.armour[i], false);
+    }
     // Craft result: the recipe the grid forms, or empty.
     const recipe = matchRecipe(grid);
     const resultEl = document.getElementById('craft-result');
@@ -312,9 +353,9 @@ export class InventoryUI {
       view.img.style.display = 'none';
       view.count.textContent = '';
     }
-    // Durability bar under any tool: green while healthy, amber below half,
-    // red when nearly spent.
-    if (view.dura && stack && isTool(stack.id)) {
+    // Durability bar under any tool or piece of armour: green while healthy,
+    // amber below half, red when nearly spent.
+    if (view.dura && stack && isDurable(stack.id)) {
       const frac = durabilityFraction(stack);
       view.dura.style.display = '';
       view.duraFill.style.width = `${Math.round(frac * 100)}%`;

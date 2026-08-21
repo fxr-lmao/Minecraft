@@ -22,11 +22,16 @@ import {
   DRAG_WATER, SPEED_SWIM, SPEED_SWIM_SPRINT, SINK_SPEED, SWIM_UP_SPEED,
   FLOW_PUSH_SPEED,
   MAX_HEALTH, MAX_AIR, DROWN_DAMAGE, AIR_REFILL, FALL_SAFE,
-  REGEN_DELAY, REGEN_RATE,
+  REGEN_DELAY,
 } from './constants.js';
+import {
+  Hunger,
+  EXHAUST_WALK, EXHAUST_SPRINT, EXHAUST_JUMP, EXHAUST_JUMP_SPRINT, EXHAUST_HURT,
+} from './hunger.js';
 import { lookVector } from './view.js';
 import { isWater, waterHeight, isIce, AIR } from './terrain.js';
 import { fluidFlow } from './water-mesh.js';
+import { absorb } from './armour.js';
 
 const HALF = PLAYER_WIDTH / 2;
 const EPS = 1e-4;
@@ -88,9 +93,16 @@ export class Player {
      */
     this.health = MAX_HEALTH;
     this.air = MAX_AIR;
+    /**
+     * The hunger bar, and with it the real healing rule: health comes back
+     * only while the food bar is full and there is saturation to spend, so a
+     * good meal is healing and an empty stomach is a slow countdown. See
+     * hunger.js for the numbers.
+     */
+    this.hunger = new Hunger();
     /** What killed you, for the screen that says so. */
     this.death = null;
-    /** Seconds since anything last hurt you — healing waits on this. */
+    /** Seconds since anything last hurt you — kept for the future. */
     this.sinceHurt = REGEN_DELAY;
     /**
      * How far you have fallen since you were last on something, in blocks.
@@ -109,6 +121,13 @@ export class Player {
 
     /** Set by the game loop from the current mode; creative cannot be hurt. */
     this.invulnerable = false;
+
+    /**
+     * The four worn armour slots, if the game loop has one to hand over.
+     * Worn armour shaves a percentage off every hit (see armour.js) before
+     * the damage ever reaches the health bar, and wears out doing it.
+     */
+    this.armour = null;
 
     /** True while the player's feet are in water. */
     this.inWater = false;
@@ -141,6 +160,7 @@ export class Player {
     this.onIce = false;
     this.health = MAX_HEALTH;
     this.air = MAX_AIR;
+    this.hunger = new Hunger();
     this.death = null;
     this.sinceHurt = REGEN_DELAY;
     this.fallDistance = 0;
@@ -165,9 +185,29 @@ export class Player {
    */
   hurt(amount, cause) {
     if (amount <= 0 || this.dead || this.invulnerable) return;
+    // Worn armour softens the blow before the health bar ever sees it, and
+    // each worn piece pays a use of durability for the trouble.
+    if (this.armour && this.armour.some(Boolean)) {
+      amount = absorb(this.armour, amount).through;
+      if (amount <= 0) return;
+    }
     this.health = Math.max(0, this.health - amount);
     this.sinceHurt = 0;
+    // Being hurt is work too: taking a hit costs a little hunger, Minecraft's
+    // way of making a fight something you have to *recover* from.
+    this.hunger.addExhaustion(EXHAUST_HURT * amount);
     if (this.health === 0) this.death = cause;
+  }
+
+  /** Give health back — the hunger system's heal, applied here. */
+  heal(amount) {
+    if (amount <= 0 || this.dead || this.invulnerable) return;
+    this.health = Math.min(MAX_HEALTH, this.health + amount);
+  }
+
+  /** A jump costs hunger — more when sprinting, Minecraft's numbers. */
+  _jumpExhaustion() {
+    this.hunger.addExhaustion(this.sprinting ? EXHAUST_JUMP_SPRINT : EXHAUST_JUMP);
   }
 
   /** Horizontal forward vector from yaw (camera forward projected on XZ). */
@@ -307,15 +347,23 @@ export class Player {
       this.vel.y = settle + (this.vel.y - settle) * f;
       // Breaking the surface with jump held turns the swim into a real jump,
       // which is what gets you out onto the bank.
-      if (rising && !this.submerged && wasGrounded) this.vel.y = JUMP_VELOCITY;
+      if (rising && !this.submerged && wasGrounded) {
+        this.vel.y = JUMP_VELOCITY;
+        this._jumpExhaustion();
+      }
     } else {
       this.vel.y -= GRAVITY * dt;
       if (this.vel.y < -TERMINAL_FALL) this.vel.y = -TERMINAL_FALL;
-      if (input.jump && wasGrounded) this.vel.y = JUMP_VELOCITY;
+      if (input.jump && wasGrounded) {
+        this.vel.y = JUMP_VELOCITY;
+        this._jumpExhaustion();
+      }
     }
 
     // ---- integrate + collide (axis separated, with auto-step) ----
     const fellFrom = this.pos.y;
+    const px = this.pos.x;
+    const pz = this.pos.z;
     const moved = this._moveWithCollision(dt);
     this._settleFall(fellFrom, wasGrounded);
 
@@ -334,6 +382,7 @@ export class Player {
         && this._canHopOver(moveDir)) {
       this.vel.y = JUMP_VELOCITY;
       this.onGround = false;
+      this._jumpExhaustion();
     } else if (this.sprinting && moved.blockedHorizontal && this.onGround) {
       // Sprinting into a wall you cannot hop cancels the sprint (like Minecraft)
       this.sprinting = false;
@@ -344,6 +393,15 @@ export class Player {
     // a backstop in case anything ever puts the player under the floor.
     if (this.pos.y < FALL_RESPAWN_Y) {
       this.respawn();
+    }
+
+    // Distance actually covered this step, spent as hunger — walking is a
+    // tenth of a shank a metre and sprinting ten times that, Minecraft's
+    // tariff, which is why food is something you run out of rather than a
+    // number that never moves. Creative flight is free: no hunger there.
+    const dist = Math.hypot(this.pos.x - px, this.pos.z - pz);
+    if (dist > 0 && !this.flying) {
+      this.hunger.addExhaustion(dist * (this.sprinting ? EXHAUST_SPRINT : EXHAUST_WALK));
     }
 
     this.horizontalSpeed = Math.hypot(this.vel.x, this.vel.z);
@@ -397,9 +455,13 @@ export class Player {
       this.air = Math.min(MAX_AIR, this.air + AIR_REFILL * dt);
     }
     this.sinceHurt += dt;
-    if (this.sinceHurt >= REGEN_DELAY && this.health < MAX_HEALTH) {
-      this.health = Math.min(MAX_HEALTH, this.health + REGEN_RATE * dt);
-    }
+
+    // Hunger's slow clocks: healing while well fed, starving while not. The
+    // numbers come back as hit points to give and to take; health itself is
+    // this class's, so they are applied here rather than inside hunger.js.
+    const s = this.hunger.tick(dt);
+    if (s.heal > 0) this.heal(s.heal);
+    if (s.starve > 0) this.hurt(s.starve, 'starved to death');
   }
 
   /**

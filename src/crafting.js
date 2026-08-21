@@ -14,6 +14,13 @@ import {
   WOOD_SWORD, STONE_SWORD, IRON_SWORD, DIAMOND_SWORD,
   PICKAXE, SHOVEL, DIAMOND_PICKAXE, DIAMOND_SHOVEL,
   IRON_INGOT, DIAMOND, COAL, GUNPOWDER,
+  BOW, ARROW, STRING, FEATHER,
+  GOLDEN_APPLE, LEATHER, APPLE,
+  IRON_HELMET, IRON_CHESTPLATE, IRON_LEGGINGS, IRON_BOOTS,
+  DIAMOND_HELMET, DIAMOND_CHESTPLATE, DIAMOND_LEGGINGS, DIAMOND_BOOTS,
+  GOLD_HELMET, GOLD_CHESTPLATE, GOLD_LEGGINGS, GOLD_BOOTS,
+  LEATHER_HELMET, LEATHER_CHESTPLATE, LEATHER_LEGGINGS, LEATHER_BOOTS,
+  GOLD_INGOT,
   TIER_WOOD, TIER_STONE, TIER_IRON, TIER_DIAMOND,
 } from './items.js';
 import { CRAFTING_TABLE, FURNACE, GLASS, TNT } from './blocks-extra.js';
@@ -190,6 +197,38 @@ export const RECIPES = [
     key: { G: GUNPOWDER, S: SAND },
     out: { id: TNT, count: 1 },
   },
+  // ------------------------------------------------------- the ranged tier
+  //
+  // The bow and its arrows are the other half of the combat the skeletons
+  // brought with them: they shoot, so you shoot back. The bow is Minecraft's
+  // ">" of string and sticks — three string down the left, two sticks on the
+  // right diagonals. An arrow is the vertical stack of string, stick and
+  // feather, and it makes four at once, because one arrow is a thing you run
+  // out of mid-fight and four is a quiver.
+  {
+    name: 'Bow',
+    shaped: true,
+    pattern: ['ST ', 'S T', 'ST '],
+    key: { S: STRING, T: STICKS },
+    out: { id: BOW, count: 1 },
+  },
+  {
+    name: 'Arrow',
+    shaped: true,
+    pattern: ['S', 'T', 'F'],
+    key: { S: STRING, T: STICKS, F: FEATHER },
+    out: { id: ARROW, count: 4 },
+  },
+  {
+    // A golden apple: an apple in the middle, eight gold ingots around it.
+    // The one food that heals as well as feeds, and the reason gold ingots
+    // have a use beyond decoration.
+    name: 'Golden Apple',
+    shaped: true,
+    pattern: ['GGG', 'GAG', 'GGG'],
+    key: { G: GOLD_INGOT, A: APPLE },
+    out: { id: GOLDEN_APPLE, count: 1 },
+  },
 ];
 
 // ------------------------------------------------------- generated tool set
@@ -304,7 +343,58 @@ export function buildToolRecipes() {
   return out;
 }
 
+/**
+ * Minecraft's four armour patterns — the helmet is the odd one out, a row
+ * across the top and one down each side; the chestplate is a filled coat;
+ * the leggings and boots are the coat with pieces cut out of the bottom.
+ */
+const ARMOUR_PATTERNS = {
+  helmet: ['MMM', 'M M'],
+  chestplate: ['M M', 'MMM', 'MMM'],
+  leggings: ['MMM', 'M M', 'M M'],
+  boots: ['M M', 'M M'],
+};
+
+/** Which item each (piece, material) pair produces. */
+const ARMOUR_OUTPUTS = {
+  helmet: { [LEATHER]: LEATHER_HELMET, [IRON_INGOT]: IRON_HELMET, [GOLD_INGOT]: GOLD_HELMET, [DIAMOND]: DIAMOND_HELMET },
+  chestplate: { [LEATHER]: LEATHER_CHESTPLATE, [IRON_INGOT]: IRON_CHESTPLATE, [GOLD_INGOT]: GOLD_CHESTPLATE, [DIAMOND]: DIAMOND_CHESTPLATE },
+  leggings: { [LEATHER]: LEATHER_LEGGINGS, [IRON_INGOT]: IRON_LEGGINGS, [GOLD_INGOT]: GOLD_LEGGINGS, [DIAMOND]: DIAMOND_LEGGINGS },
+  boots: { [LEATHER]: LEATHER_BOOTS, [IRON_INGOT]: IRON_BOOTS, [GOLD_INGOT]: GOLD_BOOTS, [DIAMOND]: DIAMOND_BOOTS },
+};
+
+const ARMOUR_LABELS = {
+  helmet: 'Helmet', chestplate: 'Chestplate', leggings: 'Leggings', boots: 'Boots',
+};
+
+/**
+ * Every armour recipe, generated: four pieces across four materials. The
+ * patterns are Minecraft's exactly, so a helmet is three across the top and
+ * the sides, and a chestplate is a coat with a head-hole in it.
+ */
+export function buildArmourRecipes() {
+  const out = [];
+  const labels = {
+    [LEATHER]: 'Leather', [IRON_INGOT]: 'Iron',
+    [GOLD_INGOT]: 'Gold', [DIAMOND]: 'Diamond',
+  };
+  for (const [piece, pattern] of Object.entries(ARMOUR_PATTERNS)) {
+    for (const [material, id] of Object.entries(ARMOUR_OUTPUTS[piece])) {
+      const m = Number(material);
+      out.push({
+        name: `${labels[m]} ${ARMOUR_LABELS[piece]}`,
+        shaped: true,
+        pattern: pattern.map((row) => row.replace(/\./g, ' ')),
+        key: { M: m },
+        out: { id, count: 1 },
+      });
+    }
+  }
+  return out;
+}
+
 RECIPES.push(...buildToolRecipes());
+RECIPES.push(...buildArmourRecipes());
 
 /** Count how many of each id a shapeless recipe's inputs need. */
 function inputCounts(inputs) {

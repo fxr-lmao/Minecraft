@@ -230,6 +230,34 @@ export function playDrown() {
   osc.stop(ctx.currentTime + 0.4);
 }
 
+// ---- food ----
+//
+// Eating is a mouthful, and a mouthful is a couple of short crunches — a
+// bright little burst of noise, twice, because one burst reads as a click
+// and three as a bag of gravel. No files, like everything else here.
+
+export function playEat() {
+  if (muted) return;
+  const { ctx, master } = getCtx();
+  const t = ctx.currentTime;
+  for (let i = 0; i < 2; i++) {
+    const at = t + i * 0.14;
+    burstNoise(ctx, 0.06, 2200 + Math.random() * 600, 0.22, master);
+    // A soft low thump under each crunch gives it a jaw.
+    const osc = ctx.createOscillator();
+    osc.type = 'sine';
+    osc.frequency.setValueAtTime(160, at);
+    osc.frequency.exponentialRampToValueAtTime(90, at + 0.07);
+    const g = ctx.createGain();
+    g.gain.setValueAtTime(0.0001, at);
+    g.gain.exponentialRampToValueAtTime(0.1, at + 0.01);
+    g.gain.exponentialRampToValueAtTime(0.0001, at + 0.08);
+    osc.connect(g).connect(master);
+    osc.start(at);
+    osc.stop(at + 0.1);
+  }
+}
+
 // ---- mobs ----
 //
 // Zombies get a voice and creepers get none, which is the deal Minecraft
@@ -335,6 +363,95 @@ export function playExplosion(vol = 1) {
   osc.connect(g).connect(master);
   osc.start(t);
   osc.stop(t + 0.65);
+}
+
+/**
+ * The skeleton's idle: a rattle of dry bones, the click of a maraca rather
+ * than a voice. Like the zombie's groan it is the sound of the night coming,
+ * and it is why a skeleton is heard before it is seen.
+ */
+let lastRattle = 0;
+export function playSkeleton(vol = 1) {
+  if (muted || vol <= 0.02) return;
+  const now = performance.now();
+  if (now - lastRattle < 380) return;
+  lastRattle = now;
+  const { ctx, master } = getCtx();
+  const t = ctx.currentTime;
+  for (let i = 0; i < 6; i++) {
+    const at = t + i * 0.045;
+    burstNoise(ctx, 0.02, 3200 + Math.random() * 1200, 0.05 * vol, master);
+  }
+}
+
+/** A bow's twang: a short bright snap with a pitch that drops off. */
+export function playBowTwang(vol = 1) {
+  if (muted || vol <= 0.02) return;
+  const { ctx, master } = getCtx();
+  const t = ctx.currentTime;
+  burstNoise(ctx, 0.05, 5200, 0.14 * vol, master);
+  const osc = ctx.createOscillator();
+  osc.type = 'triangle';
+  osc.frequency.setValueAtTime(880, t);
+  osc.frequency.exponentialRampToValueAtTime(220, t + 0.09);
+  const g = ctx.createGain();
+  g.gain.setValueAtTime(0.0001, t);
+  g.gain.exponentialRampToValueAtTime(0.12 * vol, t + 0.008);
+  g.gain.exponentialRampToValueAtTime(0.0001, t + 0.12);
+  osc.connect(g).connect(master);
+  osc.start(t);
+  osc.stop(t + 0.13);
+}
+
+/** A spider's bite and its hiss, one shared voice: a high, thin rasp. */
+export function playSpiderHurt(vol = 1) {
+  if (muted || vol <= 0.02) return;
+  const { ctx, master } = getCtx();
+  const t = ctx.currentTime;
+  const osc = ctx.createOscillator();
+  osc.type = 'sawtooth';
+  osc.frequency.setValueAtTime(900, t);
+  osc.frequency.exponentialRampToValueAtTime(320, t + 0.2);
+  const lp = ctx.createBiquadFilter();
+  lp.type = 'bandpass';
+  lp.frequency.value = 1400;
+  lp.Q.value = 0.8;
+  const g = ctx.createGain();
+  g.gain.setValueAtTime(0.0001, t);
+  g.gain.exponentialRampToValueAtTime(0.1 * vol, t + 0.02);
+  g.gain.exponentialRampToValueAtTime(0.0001, t + 0.24);
+  osc.connect(lp).connect(g).connect(master);
+  osc.start(t);
+  osc.stop(t + 0.26);
+}
+
+/** A spider's leap: the same voice, pitched down into a pounce. */
+export function playSpiderLeap(vol = 1) {
+  playSpiderHurt(vol * 0.8);
+}
+
+/** An arrow finding a body: a short, dull thock. */
+export function playArrowHit() {
+  if (muted) return;
+  const { ctx, master } = getCtx();
+  burstNoise(ctx, 0.06, 1400, 0.18, master);
+  const osc = ctx.createOscillator();
+  osc.type = 'sine';
+  osc.frequency.setValueAtTime(300, ctx.currentTime);
+  osc.frequency.exponentialRampToValueAtTime(120, ctx.currentTime + 0.07);
+  const g = ctx.createGain();
+  g.gain.setValueAtTime(0.12, ctx.currentTime);
+  g.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.09);
+  osc.connect(g).connect(master);
+  osc.start(ctx.currentTime);
+  osc.stop(ctx.currentTime + 0.1);
+}
+
+/** An arrow sticking in a wall: quieter and deader than a body hit. */
+export function playArrowThud() {
+  if (muted) return;
+  const { ctx, master } = getCtx();
+  burstNoise(ctx, 0.04, 900, 0.1, master);
 }
 
 // ---- weather ----

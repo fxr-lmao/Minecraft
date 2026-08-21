@@ -33,15 +33,36 @@ import {
   DRAG_GROUND, DRAG_AIR, DRAG_WATER, FALL_SAFE,
 } from './constants.js';
 import { raycastVoxel } from './raycast.js';
-import { isWater } from './terrain.js';
+import { isWater, GRASS } from './terrain.js';
 import {
   GUNPOWDER, ROTTEN_FLESH, toolKind,
+  BONE, ARROW, STRING, SPIDER_EYE,
+  RAW_BEEF, RAW_PORKCHOP, RAW_CHICKEN, RAW_MUTTON, FEATHER,
+  LEATHER, CARROT, POTATO,
   SHAPE_SWORD, SHAPE_AXE, SHAPE_PICKAXE, SHAPE_SHOVEL,
   TIER_WOOD, TIER_STONE, TIER_IRON, TIER_DIAMOND,
 } from './items.js';
 
 export const ZOMBIE = 'zombie';
 export const CREEPER = 'creeper';
+/**
+ * The rest of the night. A skeleton keeps its distance and shoots — the one
+ * hostile that punishes you for standing still, which makes it the natural
+ * partner to the walker and the bomber. A spider closes fast, climbs walls,
+ * and leaps, so there is no corner a wall will save you from that a spider
+ * cannot simply come over.
+ */
+export const SKELETON = 'skeleton';
+export const SPIDER = 'spider';
+/**
+ * The day's own population. Four animals, none of them a threat, all of them
+ * food on the hoof: they wander, they flee when struck, and they are the
+ * whole reason the furnace has anything worth cooking.
+ */
+export const PIG = 'pig';
+export const COW = 'cow';
+export const CHICKEN = 'chicken';
+export const SHEEP = 'sheep';
 
 /**
  * Zombie speed on the ground, blocks/s: 0.23² × 43.17 ≈ 2.284.
@@ -53,6 +74,12 @@ export const CREEPER = 'creeper';
 export const ZOMBIE_SPEED = 0.23 * 0.23 * 43.17;
 /** Creeper speed: 0.25² × 43.17 ≈ 2.698, a shade quicker than a zombie. */
 export const CREEPER_SPEED = 0.25 * 0.25 * 43.17;
+/** Skeleton speed: the same 0.25 attribute as a creeper. */
+export const SKELETON_SPEED = CREEPER_SPEED;
+/** Spider speed: 0.3 attribute — faster than anything else in the night. */
+export const SPIDER_SPEED = 0.3 * 0.3 * 43.17;
+/** Passive animals amble; 0.2 attribute, which is a cow's wander. */
+export const PASSIVE_SPEED = 0.2 * 0.2 * 43.17;
 
 /** How fast anything here falls — the player's terminal fall, same world. */
 const TERMINAL_FALL = 78.4;
@@ -129,7 +156,14 @@ export const MOB_FACTS = {
     /** The one mob here the sun has an opinion about. */
     burns: true,
     xp: 5,
-    drop: { id: ROTTEN_FLESH, min: 0, max: 2 },
+    /** Rotten flesh, plus the occasional vegetable the zombie was carrying —
+     * Minecraft's own drop, and the one free source of carrots and potatoes.
+     */
+    drops: [
+      { id: ROTTEN_FLESH, min: 0, max: 2 },
+      { id: CARROT, min: 0, max: 1 },
+      { id: POTATO, min: 0, max: 1 },
+    ],
   },
   [CREEPER]: {
     kind: CREEPER,
@@ -144,6 +178,113 @@ export const MOB_FACTS = {
     burns: false,
     xp: 5,
     drop: { id: GUNPOWDER, min: 0, max: 2 },
+  },
+  [SKELETON]: {
+    kind: SKELETON,
+    name: 'Skeleton',
+    width: 0.6,
+    height: 1.99, // Java Edition's exact box, a hair taller than a zombie
+    health: 20,
+    speed: SKELETON_SPEED,
+    damage: 0, // it never swings; the bow does the hurting
+    followRange: 16,
+    attackCooldown: 0,
+    burns: true, // like every undead, the sun is its problem too
+    xp: 5,
+    /** Two piles: the bone and the ammunition it was firing at you. */
+    drops: [
+      { id: BONE, min: 0, max: 2 },
+      { id: ARROW, min: 0, max: 2 },
+    ],
+  },
+  [SPIDER]: {
+    kind: SPIDER,
+    name: 'Spider',
+    width: 1.4, // wider than it is tall — the shape that reads as a spider
+    height: 0.9,
+    health: 16,
+    speed: SPIDER_SPEED,
+    damage: 2, // its bite, on Normal
+    followRange: 16,
+    attackCooldown: 1,
+    burns: false,
+    /** Spiders climb walls instead of hopping over them, and they leap. */
+    climber: true,
+    leaper: true,
+    xp: 5,
+    drops: [
+      { id: STRING, min: 0, max: 2 },
+      { id: SPIDER_EYE, min: 0, max: 1 },
+    ],
+  },
+  [PIG]: {
+    kind: PIG,
+    name: 'Pig',
+    width: 0.9,
+    height: 0.9,
+    health: 10,
+    speed: PASSIVE_SPEED,
+    damage: 0,
+    followRange: 0,
+    attackCooldown: 0,
+    burns: false,
+    /** Passives never hunt; they wander, and flee once struck. */
+    passive: true,
+    xp: 2,
+    drop: { id: RAW_PORKCHOP, min: 1, max: 3 },
+  },
+  [COW]: {
+    kind: COW,
+    name: 'Cow',
+    width: 0.9,
+    height: 1.4,
+    health: 10,
+    speed: PASSIVE_SPEED,
+    damage: 0,
+    followRange: 0,
+    attackCooldown: 0,
+    burns: false,
+    passive: true,
+    xp: 2,
+    /** Beef for the pot, and the leather every piece of leather armour wants. */
+    drops: [
+      { id: RAW_BEEF, min: 1, max: 3 },
+      { id: LEATHER, min: 0, max: 2 },
+    ],
+  },
+  [CHICKEN]: {
+    kind: CHICKEN,
+    name: 'Chicken',
+    width: 0.5,
+    height: 0.85,
+    health: 4,
+    speed: PASSIVE_SPEED,
+    damage: 0,
+    followRange: 0,
+    attackCooldown: 0,
+    burns: false,
+    passive: true,
+    xp: 1,
+    /** The feather is the third ingredient of an arrow — see crafting.js. */
+    drops: [
+      { id: RAW_CHICKEN, min: 1, max: 1 },
+      { id: FEATHER, min: 0, max: 2 },
+    ],
+  },
+  [SHEEP]: {
+    kind: SHEEP,
+    name: 'Sheep',
+    width: 0.9,
+    height: 1.3,
+    health: 8,
+    speed: PASSIVE_SPEED,
+    damage: 0,
+    followRange: 0,
+    attackCooldown: 0,
+    burns: false,
+    passive: true,
+    xp: 2,
+    drop: { id: RAW_MUTTON, min: 1, max: 2 },
   },
 };
 
@@ -165,6 +306,38 @@ export const SWELL_RANGE = 3;
 export const FUSE_SECONDS = 1.5;
 export const CANCEL_RANGE = 7;
 export const CREEPER_BLAST_RADIUS = 3;
+
+// ------------------------------------------------------------- ranged night
+
+/**
+ * Skeleton etiquette, the ranged counterpart to the creeper's:
+ *
+ *   * It holds a band of range. Inside SKELETON_RANGE_MIN it backs off —
+ *     a skeleton in your face is a skeleton that made a mistake — and beyond
+ *     SKELETON_RANGE_MAX it closes again. Between the two it strafes,
+ *     circling rather than charging, which is what makes it feel like an
+ *     archer and not a zombie with a different model.
+ *   * It shoots only with line of sight and only on a cadence. Every
+ *     SKELETON_SHOT_INTERVAL seconds, if it can see you, it looses an arrow
+ *     at your eye; the draw is instant in the sim (the aim and the cadence
+ *     are the game, not a wind-up), and the speed is aimAt()'s straight
+ *     line — a standing target is a hit, a moving one is not.
+ */
+export const SKELETON_RANGE_MIN = 5;
+export const SKELETON_RANGE_MAX = 14;
+export const SKELETON_SHOT_INTERVAL = 2;
+
+/** How fast a spider goes straight up a wall, blocks/s. */
+export const SPIDER_CLIMB_SPEED = 3.2;
+/** It leaps when it gets this close, once per cooldown. */
+export const SPIDER_LEAP_RANGE = 3.6;
+export const SPIDER_LEAP_COOLDOWN = 2.5;
+/** The leap's forward speed and its lift, blocks/s. */
+export const SPIDER_LEAP_SPEED = 9;
+export const SPIDER_LEAP_LIFT = 6.5;
+
+/** How long a struck animal runs for before it calms down. */
+export const PANIC_SECONDS = 4;
 
 // ------------------------------------------------------------------ spawning
 
@@ -201,6 +374,13 @@ export const SOFT_DESPAWN_CHANCE = 0.08;
  */
 export const MAX_MOBS = 16;
 
+/**
+ * Passive animals get their own, smaller budget. They share the world with
+ * the hostiles but not the queue — a meadow full of cows should not crowd
+ * out the night, and a night full of zombies should not eat the meadow.
+ */
+export const PASSIVE_CAP = 8;
+
 /** How often the world tries to place a mob, in seconds. */
 export const SPAWN_INTERVAL = 1;
 /** Attempts per try — most fail (water, cliff, too close), which is normal. */
@@ -209,10 +389,13 @@ export const SPAWN_ATTEMPTS = 4;
 /**
  * Which mob a spawn becomes. Minecraft's overworld weights zombies and
  * creepers roughly equally, but two enemies that both simply walk at you is
- * a coin flip with no stakes; here the walker is the common case and the
- * bomber is the one you learn to check for.
+ * a coin flip with no stakes; here the walker is the common case, the bomber
+ * and the archer split the rest, and the spider is the rare one you learn to
+ * listen for.
  */
-export const CREEPER_CHANCE = 0.3;
+export const CREEPER_CHANCE = 0.25;
+export const SKELETON_CHANCE = 0.25;
+export const SPIDER_CHANCE = 0.15;
 
 /**
  * How dark the world must be before the surface will spawn anything.
@@ -284,20 +467,27 @@ export class Mob {
     this.aggro = false;
 
     // ---- idle behaviour ----
-    /** 'idle' | 'wander' | 'chase'. */
+    /** 'idle' | 'wander' | 'chase' | 'flee'. */
     this.state = 'idle';
     /** Seconds until the wander picks a new heading (or stops for a rest). */
     this.stateTimer = rand() * 3;
     this.wanderX = 0; // unit heading; zero pair means standing
     this.wanderZ = 0;
+    /** Which way a strafing skeleton circles, flipped now and then. */
+    this.strafeSign = rand() < 0.5 ? 1 : -1;
+    this.strafeTimer = 1.5;
 
     // ---- combat ----
-    /** Seconds until the next swing may land. */
+    /** Seconds until the next swing (or shot, for a skeleton) may land. */
     this.attackTimer = 0;
     /** Creeper fuse, 0..1: builds in range, decays out of it, fires at 1. */
     this.fuse = 0;
     /** Set once per swell, so the hiss is one event and not a stream. */
     this.hissed = false;
+    /** Seconds a struck animal keeps running before it calms down. */
+    this.panic = 0;
+    /** Seconds until a spider may leap again. */
+    this.leapTimer = 0;
     /** Zombie shuffling noises; creepers are famously given none. */
     this.groanTimer = 2 + rand() * 6;
 
@@ -365,7 +555,9 @@ export class Mob {
     this.health -= paid;
     this.hurtFlash = 1;
     // Being hit is being noticed, even through a wall, even in the dark.
+    // For a passive animal "noticed" means the opposite of a chase: it runs.
     this.aggro = true;
+    if (this.facts.passive) this.panic = PANIC_SECONDS;
     this._shove(opts);
     if (this.health <= 0) {
       this.kill(opts.byPlayer ? 'player' : (opts.cause ?? 'player'));
@@ -730,17 +922,28 @@ export class Mobs {
     mob.sinceHurt += dt;
     mob.hurtFlash = Math.max(0, mob.hurtFlash - dt * 3);
     mob.attackTimer = Math.max(0, mob.attackTimer - dt);
+    mob.panic = Math.max(0, mob.panic - dt);
+    mob.leapTimer = Math.max(0, mob.leapTimer - dt);
+    mob.strafeTimer = Math.max(0, mob.strafeTimer - dt);
 
-    // The sounds of a zombie: a groan every so often, only when near enough
-    // to be worth hearing. Creepers make no idle sound at all, which the
-    // wiki notes with some feeling and this matches on purpose — the hiss
-    // is the entire soundtrack of a creeper, and it only comes at the end.
+    // The sounds of the night. A zombie groans, every so often, only when
+    // near enough to be worth hearing; a skeleton's bones click instead.
+    // Creepers and spiders make no idle sound at all — the hiss and the
+    // leap are the entire soundtrack of either, and both come at the end.
     if (mob.kind === ZOMBIE) {
       mob.groanTimer -= dt;
       if (mob.groanTimer <= 0) {
         mob.groanTimer = 4 + mob.rand() * 6;
         if (Math.hypot(mob.x - player.x, mob.z - player.z) < 24) {
           events.push(soundEvent('zombie', mob.x, mob.y + 1, mob.z, player, 24));
+        }
+      }
+    } else if (mob.kind === SKELETON) {
+      mob.groanTimer -= dt;
+      if (mob.groanTimer <= 0) {
+        mob.groanTimer = 3 + mob.rand() * 5;
+        if (Math.hypot(mob.x - player.x, mob.z - player.z) < 24) {
+          events.push(soundEvent('skeleton', mob.x, mob.y + 1, mob.z, player, 24));
         }
       }
     }
@@ -757,18 +960,65 @@ export class Mobs {
    * to come out of. Underground, any hour — a cave is dark at noon, and
    * dark is the whole of the rule. At night the surface gets the larger
    * share of the attempts, because that is where the night actually is.
+   * And by day, while the hostiles sleep, the surface fills with animals:
+   * the meadow is the daylight half of the same population.
    */
   _trySpawn(world, player, night) {
     if (this.list.length >= this.cap) return;
+    // Daytime animals get a share of the attempts, on their own budget so a
+    // full meadow never crowds out the night that is coming.
+    if (!night && this.rand() < 0.5 && this._passiveCount() < PASSIVE_CAP) {
+      if (this._trySpawnPassive(world, player)) return;
+    }
     for (let i = 0; i < SPAWN_ATTEMPTS; i++) {
       const wantSurface = night ? this.rand() < 0.65 : false;
       const spot = wantSurface
         ? this._surfaceSpot(world, player)
         : this._caveSpot(world, player);
       if (!spot) continue;
-      const kind = this.rand() < CREEPER_CHANCE ? CREEPER : ZOMBIE;
+      const kind = this._hostileKind();
       if (this.spawn(kind, spot.x, spot.y, spot.z)) return;
     }
+  }
+
+  /** How many passive animals are already out there. */
+  _passiveCount() {
+    let n = 0;
+    for (const m of this.list) if (m.facts.passive) n++;
+    return n;
+  }
+
+  /**
+   * Which hostile the night sends. The walker is the common case, the bomber
+   * and the archer split the rest, and the spider is the rare one.
+   */
+  _hostileKind() {
+    const r = this.rand();
+    if (r < CREEPER_CHANCE) return CREEPER;
+    if (r < CREEPER_CHANCE + SKELETON_CHANCE) return SKELETON;
+    if (r < CREEPER_CHANCE + SKELETON_CHANCE + SPIDER_CHANCE) return SPIDER;
+    return ZOMBIE;
+  }
+
+  /**
+   * A passive animal, on grass, in daylight. The checks are the same as the
+   * hostile surface spawn's with one extra: the ground must be grass, which
+   * is Minecraft's own rule and the reason animals live in the meadows and
+   * not on a beach or a mountain.
+   */
+  _trySpawnPassive(world, player) {
+    const spot = this._surfaceSpot(world, player);
+    if (!spot) return false;
+    const gx = Math.floor(spot.x);
+    const gz = Math.floor(spot.z);
+    const under = world.get(gx, world.heightAt(gx, gz), gz);
+    if (under !== GRASS) return false;
+    const roll = this.rand();
+    const kind = roll < 0.3 ? PIG
+      : roll < 0.6 ? COW
+        : roll < 0.85 ? SHEEP
+          : CHICKEN;
+    return Boolean(this.spawn(kind, spot.x, spot.y, spot.z));
   }
 
   /**
@@ -859,6 +1109,15 @@ export class Mobs {
    * just hit never needed to see you — the hit was introduction enough.
    */
   _sense(mob, world, player, ctx) {
+    // A passive animal has no quarry. It never acquires the player as a
+    // target — "fleeing" is its own state, entered from a hit, not from
+    // sight. This is the one place a cow differs from a zombie before the
+    // thinking even begins.
+    if (mob.facts.passive) {
+      mob.canSee = false;
+      mob.hasTarget = false;
+      return;
+    }
     const dx = player.x - mob.x;
     const dz = player.z - mob.z;
     const distSq = dx * dx + dz * dz;
@@ -901,21 +1160,33 @@ export class Mobs {
     const ux = dx / dist;
     const uz = dz / dist;
 
+    // A struck animal runs; the rest of the time it wanders. No chase, no
+    // target — the only player-directed thought a cow ever has is "away".
+    if (mob.facts.passive) {
+      if (mob.panic > 0) {
+        mob.state = 'flee';
+        mob.headYaw = Math.atan2(ux, uz);
+        return { x: -ux, z: -uz };
+      }
+      return this._wander(mob, dt);
+    }
+
     if (mob.hasTarget && !ctx.creative) {
       mob.state = 'chase';
       mob.headYaw = Math.atan2(-ux, -uz);
       mob.headPitch = Math.atan2(
         player.y + 1.4 - (mob.y + mob.facts.height * 0.85), dist);
 
-      // ---- zombie: walk in, swing when the boxes touch ----
-      if (mob.kind === ZOMBIE) {
-        if (mob.attackTimer <= 0 && mob.withinMelee(player.x, player.z)
-            && Math.abs(player.y - mob.y) < 2.2) {
-          mob.attackTimer = mob.facts.attackCooldown;
-          return { event: 'attack', damage: mob.facts.damage, kx: ux, kz: uz };
-        }
-        return { x: ux, z: uz };
+      // ---- melee (zombie, spider): walk in, swing when the boxes touch ----
+      if (mob.facts.damage > 0
+          && mob.attackTimer <= 0 && mob.withinMelee(player.x, player.z)
+          && Math.abs(player.y - mob.y) < 2.2) {
+        mob.attackTimer = mob.facts.attackCooldown;
+        return { event: 'attack', damage: mob.facts.damage, kx: ux, kz: uz };
       }
+
+      if (mob.kind === SKELETON) return this._thinkSkeleton(mob, ux, uz, dist, player);
+      if (mob.kind === SPIDER) return this._thinkSpider(mob, ux, uz, dist, player);
 
       // ---- creeper: close to swell range, then stand and be a bomb ----
       //
@@ -924,26 +1195,29 @@ export class Mobs {
       // at arm's length, and that one already hissing stops the moment the
       // line breaks. That is the one place this engine can be more faithful
       // than a shrug, because the block ray to decide it is already here.
-      const inSwell = dist < SWELL_RANGE && mob.canSee;
-      if (inSwell) {
-        if (!mob.hissed) {
-          mob.hissed = true;
-          return { event: 'hiss' };
+      if (mob.kind === CREEPER) {
+        const inSwell = dist < SWELL_RANGE && mob.canSee;
+        if (inSwell) {
+          if (!mob.hissed) {
+            mob.hissed = true;
+            return { event: 'hiss' };
+          }
+          mob.fuse += dt / FUSE_SECONDS;
+          if (mob.fuse >= 1) {
+            mob.fuse = 1;
+            return { event: 'explode' };
+          }
+          return null; // planted: swelling, flashing, going nowhere
         }
-        mob.fuse += dt / FUSE_SECONDS;
-        if (mob.fuse >= 1) {
-          mob.fuse = 1;
-          return { event: 'explode' };
+        // Out past cancel range the fuse unwinds at the rate it wound;
+        // inside it — the band between three and seven — the fuse simply
+        // holds, and the creeper walks back in to close the distance again.
+        if (dist > CANCEL_RANGE || !mob.canSee) {
+          mob.fuse = Math.max(0, mob.fuse - dt / FUSE_SECONDS);
+          if (mob.fuse === 0) mob.hissed = false;
         }
-        return null; // planted: swelling, flashing, going nowhere
       }
-      // Out past cancel range the fuse unwinds at the rate it wound; inside
-      // it — the band between three and seven — the fuse simply holds, and
-      // the creeper walks back in to close the distance again.
-      if (dist > CANCEL_RANGE || !mob.canSee) {
-        mob.fuse = Math.max(0, mob.fuse - dt / FUSE_SECONDS);
-        if (mob.fuse === 0) mob.hissed = false;
-      }
+      // Zombie (and anything else that walks) just closes the distance.
       return { x: ux, z: uz };
     }
 
@@ -954,6 +1228,44 @@ export class Mobs {
       mob.fuse = Math.max(0, mob.fuse - dt / FUSE_SECONDS);
       if (mob.fuse === 0) mob.hissed = false;
     }
+    return this._wander(mob, dt);
+  }
+
+  /**
+   * The skeleton's game: shoot on a cadence when it can see you, and hold
+   * a band of distance otherwise — back off inside it, close outside it, and
+   * circle between, so it is an archer and not a zombie with a bow.
+   */
+  _thinkSkeleton(mob, ux, uz, dist, player) {
+    if (mob.canSee && mob.attackTimer <= 0) {
+      mob.attackTimer = SKELETON_SHOT_INTERVAL;
+      return { event: 'shoot', tx: player.x, ty: player.y + 1.62, tz: player.z };
+    }
+    if (dist < SKELETON_RANGE_MIN) return { x: -ux, z: -uz };
+    if (dist > SKELETON_RANGE_MAX) return { x: ux, z: uz };
+    if (mob.strafeTimer <= 0) {
+      mob.strafeTimer = 1.2 + mob.rand() * 1.6;
+      mob.strafeSign = mob.rand() < 0.5 ? 1 : -1;
+    }
+    return { x: -uz * mob.strafeSign, z: ux * mob.strafeSign };
+  }
+
+  /**
+   * The spider's game: close, then leap — a shove at the player plus lift,
+   * on a cooldown, and only with line of sight so it cannot fly blind over a
+   * wall. Otherwise it simply walks, faster than anything else out there.
+   */
+  _thinkSpider(mob, ux, uz, dist, player) {
+    if (mob.canSee && mob.leapTimer <= 0 && dist < SPIDER_LEAP_RANGE
+        && dist > mob.halfWidth + PLAYER_HALF + 0.2) {
+      mob.leapTimer = SPIDER_LEAP_COOLDOWN;
+      return { event: 'leap', dx: ux, dz: uz };
+    }
+    return { x: ux, z: uz };
+  }
+
+  /** The idle walk, shared by hostiles that have lost interest and animals. */
+  _wander(mob, dt) {
     mob.stateTimer -= dt;
     if (mob.stateTimer <= 0) {
       if (mob.wanderX !== 0 || mob.wanderZ !== 0) {
@@ -975,18 +1287,38 @@ export class Mobs {
     return { x: mob.wanderX, z: mob.wanderZ };
   }
 
-  /** The two intent-events, turned into tick events the loop can consume. */
+  /** The intent-events, turned into tick events the loop can consume. */
   _onIntentEvent(mob, intent, player, events) {
     if (intent.event === 'attack') {
       events.push({
         type: 'attack', damage: intent.damage,
         kx: intent.kx, kz: intent.kz,
         x: mob.x, y: mob.y + 1.2, z: mob.z,
-        cause: 'slain by a zombie',
+        cause: mob.kind === SPIDER ? 'slain by a spider' : 'slain by a zombie',
       });
-      events.push(soundEvent('zombieAttack', mob.x, mob.y + 1, mob.z, player, 16));
+      events.push(soundEvent(
+        mob.kind === SPIDER ? 'spiderAttack' : 'zombieAttack',
+        mob.x, mob.y + 1, mob.z, player, 16));
     } else if (intent.event === 'hiss') {
       events.push(soundEvent('hiss', mob.x, mob.y + 0.8, mob.z, player, 16));
+    } else if (intent.event === 'shoot') {
+      // The sim reports the aim; the game loop owns the arrow. The origin is
+      // the eye and the target is the player's, so the shot is the honest
+      // straight line and whether it lands is the player's business. The mob
+      // rides along so the arrow knows who fired it (and cannot hit itself).
+      events.push({
+        type: 'shoot',
+        mob,
+        x: mob.x, y: mob.y + mob.facts.height * 0.85, z: mob.z,
+        tx: intent.tx, ty: intent.ty, tz: intent.tz,
+      });
+      events.push(soundEvent('bow', mob.x, mob.y + 1, mob.z, player, 20));
+    } else if (intent.event === 'leap') {
+      mob.vx = intent.dx * SPIDER_LEAP_SPEED;
+      mob.vz = intent.dz * SPIDER_LEAP_SPEED;
+      mob.vy = SPIDER_LEAP_LIFT;
+      mob.onGround = false;
+      events.push(soundEvent('spiderLeap', mob.x, mob.y + 0.4, mob.z, player, 20));
     } else if (intent.event === 'explode') {
       // The creeper's own blast is its death; it leaves nothing behind —
       // Minecraft's creepers drop no gunpowder for their own explosion.
@@ -1010,7 +1342,11 @@ export class Mobs {
     const feetId = world.get(Math.floor(mob.x), Math.floor(mob.y + 0.1), Math.floor(mob.z));
     mob.inWater = isWater(feetId);
 
-    const speed = mob.facts.speed * (mob.inWater ? 0.55 : 1);
+    // A fleeing animal moves faster than one that is only wandering — panic
+    // is a sprint, not a stroll.
+    const speed = mob.facts.speed
+      * (mob.state === 'flee' ? 1.25 : 1)
+      * (mob.inWater ? 0.55 : 1);
     const k = mob.inWater ? DRAG_WATER : (mob.onGround ? DRAG_GROUND : DRAG_AIR);
     const f = Math.exp(-k * dt);
 
@@ -1051,12 +1387,18 @@ export class Mobs {
       mob.fallDistance = 0;
     }
 
-    // The hop: pushed into something while meaning to walk, and standing on
-    // the floor. Every ground mob in Minecraft climbs one block this way —
-    // it is why hills do not stop a zombie — and none of them climbs two.
+    // Pushed into something while meaning to walk, and standing on the
+    // floor. Every ground mob climbs one block by hopping — it is why hills
+    // do not stop a zombie — and none of them climbs two. A spider does not
+    // hop: it goes straight up the wall in front of it, which is the whole
+    // reason a spider is the one thing a wall will not save you from.
     if ((moved.blockedX || moved.blockedZ) && mob.onGround
         && intent && (intent.x !== 0 || intent.z !== 0)) {
-      mob.vy = JUMP_VELOCITY;
+      if (mob.facts.climber) {
+        mob.vy = SPIDER_CLIMB_SPEED;
+      } else {
+        mob.vy = JUMP_VELOCITY;
+      }
       mob.onGround = false;
     }
 
