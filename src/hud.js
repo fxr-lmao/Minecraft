@@ -381,7 +381,7 @@ export class Hud {
       `Looking at: ${target}`,
       ``,
       `Speed: ${info.speed.toFixed(2)} m/s  ${info.mode}${info.inWater ? (info.submerged ? '  · underwater' : '  · in water') : ''}`,
-      `On ground: ${info.onGround}${info.flowing ? `  ·  water flowing (${info.flowing})` : ''}${info.ice ? `  ·  ice (${info.ice})` : ''}`,
+      `On ground: ${info.onGround}${info.flowing ? `  ·  water flowing (${info.flowing})` : ''}${info.ice ? `  ·  ice (${info.ice})` : ''}${info.mobs ? `  ·  mobs (${info.mobs})` : ''}`,
       `View: ${info.view}`,
       ``,
       `FPS: ${info.fps}  (${info.frameMs.toFixed(1)} ms)`,

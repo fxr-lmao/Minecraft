@@ -2,8 +2,8 @@
 // crafting consumption, and the 2x2/3x3 split.
 
 import { CraftingGrid, GRID_2X2, GRID_3X3, matchRecipe, craft, recipeName } from '../src/crafting.js';
-import { PLANKS, LOG, COBBLESTONE, SAND, CRAFTING_TABLE, FURNACE, GLASS } from '../src/terrain.js';
-import { STICKS, WOOD_PICKAXE, WOOD_SHOVEL } from '../src/items.js';
+import { PLANKS, LOG, COBBLESTONE, SAND, CRAFTING_TABLE, FURNACE, GLASS, TNT } from '../src/terrain.js';
+import { STICKS, WOOD_PICKAXE, WOOD_SHOVEL, GUNPOWDER } from '../src/items.js';
 
 let passed = 0;
 let failed = 0;
@@ -76,6 +76,28 @@ g3.set(2, 2, { id: COBBLESTONE, count: 1 });
 check('8 cobblestone in a ring make a furnace', recipeName(g3) === 'Furnace');
 const furnace = craft(g3, matchRecipe(g3), 1);
 check('furnace output', furnace.id === FURNACE && furnace.count === 1);
+
+// ---- TNT (gunpowder X through four sand — the real recipe, creeper-funded) ----
+const tnt = new CraftingGrid(GRID_3X3);
+for (let r = 0; r < 3; r++) {
+  for (let c = 0; c < 3; c++) {
+    // gunpowder on the diagonals, sand on the cross
+    tnt.set(r, c, { id: r === c || r + c === 2 ? GUNPOWDER : SAND, count: 1 });
+  }
+}
+check('5 gunpowder through 4 sand make TNT', recipeName(tnt) === 'TNT');
+const charge = craft(tnt, matchRecipe(tnt), 1);
+check('TNT output', charge.id === TNT && charge.count === 1);
+// The old stand-in — sand corners and a stick — must not still work now the
+// world has the real powder; a recipe nobody removed is a recipe nobody
+// notices has a twin.
+const oldStyle = new CraftingGrid(GRID_3X3);
+oldStyle.set(0, 0, { id: SAND, count: 1 });
+oldStyle.set(0, 2, { id: SAND, count: 1 });
+oldStyle.set(1, 1, { id: STICKS, count: 1 });
+oldStyle.set(2, 0, { id: SAND, count: 1 });
+oldStyle.set(2, 2, { id: SAND, count: 1 });
+check('the stick-and-sand stand-in no longer makes TNT', recipeName(oldStyle) === '');
 
 // ---- wooden pickaxe needs the 3x3 ----
 const pick = new CraftingGrid(GRID_3X3);

@@ -12,6 +12,7 @@ import {
   WOOD_SWORD, STONE_SWORD, IRON_SWORD, DIAMOND_SWORD,
   DIAMOND_PICKAXE, DIAMOND_SHOVEL,
   COAL, RAW_IRON, IRON_INGOT, DIAMOND, RAW_GOLD, GOLD_INGOT, REDSTONE,
+  GUNPOWDER, ROTTEN_FLESH,
 } from './items.js';
 import {
   HAFT, HEAD_WOOD, HEAD_STONE, HEAD_IRON, HEAD_DIAMOND, BUCKET_PALETTE,
@@ -20,6 +21,7 @@ import {
   COAL_PX, RAW_IRON_PX, IRON_INGOT_PX, DIAMOND_PX,
   COAL_PALETTE, RAW_IRON_PALETTE, IRON_INGOT_PALETTE, DIAMOND_PALETTE,
   RAW_GOLD_PALETTE, GOLD_INGOT_PALETTE, REDSTONE_PALETTE,
+  GUNPOWDER_PALETTE, ROTTEN_FLESH_PALETTE, ROTTEN_FLESH_PX,
 } from './item-sprites.js';
 
 export {
@@ -848,6 +850,10 @@ export const ITEM_DEFS = [
   ...itemDef(RAW_GOLD, 'Raw Gold', lumpFace(RAW_IRON_PX, RAW_GOLD_PALETTE)),
   ...itemDef(GOLD_INGOT, 'Gold Ingot', lumpFace(IRON_INGOT_PX, GOLD_INGOT_PALETTE)),
   ...itemDef(REDSTONE, 'Redstone Dust', lumpFace(COAL_PX, REDSTONE_PALETTE)),
+  // What the night pays: a creeper's grey dust and a zombie's slab of
+  // not-quite-meat. See mobs.js for where they come from.
+  ...itemDef(GUNPOWDER, 'Gunpowder', lumpFace(COAL_PX, GUNPOWDER_PALETTE)),
+  ...itemDef(ROTTEN_FLESH, 'Rotten Flesh', lumpFace(ROTTEN_FLESH_PX, ROTTEN_FLESH_PALETTE)),
 ];
 
 /** Everything with a texture in the atlas: blocks first, then items. */

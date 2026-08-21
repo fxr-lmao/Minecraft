@@ -97,6 +97,20 @@ export const DIAMOND_SWORD = 222;
 export const RAW_GOLD = 223;
 export const GOLD_INGOT = 224;
 export const REDSTONE = 225;
+/**
+ * What the mobs you kill are worth carrying.
+ *
+ * Gunpowder is the point of the creeper: the TNT recipe has wanted five of
+ * it since the crafting table went in, and had a stick standing in for it
+ * because there was no way to get any. Now there is, and it is the honest
+ * one — the only source of gunpowder in Minecraft is creepers, which means
+ * the only way to arm yourself with TNT is to go and fight the thing that
+ * explodes. Rotten flesh is the other half of the bargain: mostly junk, as
+ * it is in Minecraft, but *real* junk — the zombie drops it, it stacks, it
+ * sits in a chest, and it is what most of the night's work actually pays.
+ */
+export const GUNPOWDER = 226;
+export const ROTTEN_FLESH = 227;
 
 /** Item ids, in the order their textures are packed into the atlas. */
 export const ITEM_IDS = [
@@ -107,6 +121,7 @@ export const ITEM_IDS = [
   COAL, RAW_IRON, IRON_INGOT, DIAMOND,
   DIAMOND_PICKAXE, DIAMOND_SHOVEL, DIAMOND_AXE, DIAMOND_SWORD,
   RAW_GOLD, GOLD_INGOT, REDSTONE,
+  GUNPOWDER, ROTTEN_FLESH,
 ];
 
 /**
@@ -166,6 +181,8 @@ export const ITEM_SHAPES = {
   [RAW_GOLD]: SHAPE_LUMP,
   [GOLD_INGOT]: SHAPE_LUMP,
   [REDSTONE]: SHAPE_LUMP,
+  [GUNPOWDER]: SHAPE_LUMP,
+  [ROTTEN_FLESH]: SHAPE_LUMP,
 };
 
 /** The shape of an item, or null for a block (which is a cube already). */
@@ -186,6 +203,7 @@ export const isAxe = (id) => TOOL_KINDS[id]?.shape === SHAPE_AXE;
  */
 export const MATERIALS = [
   COAL, RAW_IRON, IRON_INGOT, DIAMOND, RAW_GOLD, GOLD_INGOT, REDSTONE,
+  GUNPOWDER, ROTTEN_FLESH,
 ];
 export const isMaterial = (id) => MATERIALS.includes(id);
 
@@ -240,6 +258,8 @@ export const ITEM_NAMES = {
   [RAW_GOLD]: 'Raw Gold',
   [GOLD_INGOT]: 'Gold Ingot',
   [REDSTONE]: 'Redstone Dust',
+  [GUNPOWDER]: 'Gunpowder',
+  [ROTTEN_FLESH]: 'Rotten Flesh',
 };
 
 /**
