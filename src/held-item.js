@@ -17,7 +17,7 @@
 
 import * as THREE from '../vendor/three.module.min.js';
 import {
-  buildExtrudedSprite, buildBucketModel, buildToolModel, meshBounds,
+  buildExtrudedSprite, buildBucketModel, buildSolidModel, meshBounds,
 } from './held-geometry.js';
 import {
   modelSpec, poseKind, firstPersonPose, thirdPersonPose,
@@ -57,8 +57,8 @@ export function itemGeometry(id) {
   }
   const mesh = spec.kind === 'bucket'
     ? buildBucketModel(spec.full)
-    : spec.kind === 'tool'
-      ? buildToolModel(spec)
+    : spec.kind === 'solid'
+      ? buildSolidModel(spec.parts)
       : buildExtrudedSprite(spec.rows, spec.palette, spec);
   const geo = toGeometry(mesh);
   geometryCache.set(id, geo);

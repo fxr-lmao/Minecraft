@@ -1,14 +1,14 @@
 // Render the dimensional tool models to PNGs with the same software
 // rasteriser the mob preview uses, so a tool's silhouette and its depth
 // profile can be checked without WebGL. Each tool is built through the real
-// pipeline — modelSpec -> buildToolModel — then drawn at two angles.
+// pipeline — modelSpec -> buildSolidModel/buildExtrudedSprite — then drawn at two angles.
 //
 // Usage: node scripts/tool-preview.mjs
 
 import { mkdirSync, writeFileSync } from 'node:fs';
 import zlib from 'node:zlib';
 import { modelSpec, MODELLED_ITEMS, POSE_KIND_TOOL, poseKind } from '../src/item-models.js';
-import { buildToolModel, buildBucketModel } from '../src/held-geometry.js';
+import { buildSolidModel, buildBucketModel, buildExtrudedSprite } from '../src/held-geometry.js';
 import { ITEM_NAMES } from '../src/items.js';
 
 // ---- png encoder ----
@@ -126,7 +126,11 @@ mkdirSync('preview', { recursive: true });
 for (const id of MODELLED_ITEMS) {
   const spec = modelSpec(id);
   if (!spec) continue;
-  const mesh = spec.kind === 'bucket' ? buildBucketModel(spec.full) : buildToolModel(spec);
+  const mesh = spec.kind === 'bucket'
+    ? buildBucketModel(spec.full)
+    : spec.kind === 'solid'
+      ? buildSolidModel(spec.parts)
+      : buildExtrudedSprite(spec.rows, spec.palette, spec);
   const name = (ITEM_NAMES[id] ?? `item-${id}`).toLowerCase().replace(/[^a-z0-9]+/g, '-');
   const a = render(mesh, { yaw: -0.5, pitch: 0.35 });
   png(`preview/tool-${name}-a.png`, a.w, a.h, a.rgba);

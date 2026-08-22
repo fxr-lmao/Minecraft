@@ -22,7 +22,7 @@
 
 import {
   buildExtrudedSprite, buildBoxModel, buildBucketModel, bucketBoxes,
-  buildToolModel, spriteCells, parseHex, meshBounds, coincidentFaces,
+  buildSolidModel, spriteCells, parseHex, meshBounds, coincidentFaces,
   windingErrors, MeshBuilder, shade, SPRITE_DEPTH, SPRITE_SIZE, FACE_SHADE,
 } from '../src/held-geometry.js';
 import {
@@ -62,7 +62,7 @@ function meshFor(id) {
   const spec = modelSpec(id);
   if (!spec) return null;
   if (spec.kind === 'bucket') return buildBucketModel(spec.full);
-  if (spec.kind === 'tool') return buildToolModel(spec);
+  if (spec.kind === 'solid') return buildSolidModel(spec.parts);
   return buildExtrudedSprite(spec.rows, spec.palette, spec);
 }
 
@@ -365,60 +365,106 @@ function meshFor(id) {
   }
 }
 
-// ----------------------------------------------------- the dimensional tools
+// ----------------------------------------------------------- the solid tools
 {
-  // The profile is the whole of the new tool look: a sword's crossguard
-  // stands proud of its blade, a pickaxe's head is chunky over a slim
-  // haft. Each is checked by the widest z the model reaches.
-  const maxZ = (mesh) => {
-    let z = 0;
-    for (let i = 2; i < mesh.positions.length; i += 3) {
-      z = Math.max(z, Math.abs(mesh.positions[i]));
-    }
-    return z;
-  };
+  // The tools are built from cuboids and hexahedra now, not extruded from
+  // their icons, and the shape facts are three-dimensional: a sword blade
+  // tapers to a point, an axe head ends in a cutting edge, a pickaxe head
+  // curves down over its haft, a shovel flares toward the ground. Each is
+  // pinned from the vertex data directly.
 
   const sword = meshFor(IRON_SWORD);
   const pick = meshFor(PICKAXE);
   const axe = meshFor(IRON_AXE);
+  const shovel = meshFor(SHOVEL);
+  const pos = (m) => m.positions;
 
-  // The sword guard is 3.6 texels thick, the blade 1.4: the guard is the
-  // thickest thing on the model and the blade is not.
-  assert('a sword has a crossguard thicker than its blade',
-    Math.abs(maxZ(sword) - 3.6 / 32) < 1e-9, maxZ(sword).toFixed(4));
-  // The pickaxe head (3.2 texels) is thicker than the haft (2.0) and the
-  // head sets the bound.
-  assert('a pickaxe head is chunky over a slim haft',
-    Math.abs(maxZ(pick) - 3.2 / 32) < 1e-9, maxZ(pick).toFixed(4));
-  assert('an axe head is a thick wedge on a thin handle',
-    Math.abs(maxZ(axe) - 3.4 / 32) < 1e-9, maxZ(axe).toFixed(4));
-
-  // The step ledges the profile creates are real faces: a profiled sword
-  // has more triangles than the same sprite extruded at one flat depth.
-  const flat = buildExtrudedSprite(SWORD_PX, { ...HAFT, ...HEAD_IRON }, { depth: 1.5 / 16 });
-  assert('the profile adds the step faces a flat extrusion lacks',
-    sword.triangles > flat.triangles + 8,
-    `${sword.triangles} vs ${flat.triangles}`);
-  assert('...still wound outward', windingErrors(sword) === 0);
-  assert('...with nothing doubled', coincidentFaces(sword) === 0);
-
-  // The fuller is inside the blade: it reaches no further out than the
-  // blade's own front face, or it would be a ridge instead of a groove.
-  // The blade is the upper half of the model (rows 0-7, y in 0..0.5), so
-  // look at triangles whose vertices all live up there — that keeps the
-  // guard (the thickest part) out of the measurement.
-  let bladeZ = 0;
-  const pos = sword.positions;
-  for (let t = 0; t < pos.length; t += 9) {
-    let inBlade = true;
-    for (let v = 0; v < 9; v += 3) {
-      if (pos[t + v + 1] < 0.001) inBlade = false;
+  /** The x-span of vertices above `y` (model units). */
+  const spanAbove = (mesh, y) => {
+    const p = pos(mesh);
+    let min = Infinity;
+    let max = -Infinity;
+    for (let i = 0; i < p.length; i += 3) {
+      if (p[i + 1] < y) continue;
+      min = Math.min(min, p[i]);
+      max = Math.max(max, p[i]);
     }
-    if (!inBlade) continue;
-    for (let v = 0; v < 9; v += 3) bladeZ = Math.max(bladeZ, Math.abs(pos[t + v + 2]));
+    return max - min;
+  };
+
+  /** Whether some vertex sits inside the given |x| / y window. */
+  const hasVertex = (mesh, test) => {
+    const p = pos(mesh);
+    for (let i = 0; i < p.length; i += 3) {
+      if (test(p[i], p[i + 1], p[i + 2])) return true;
+    }
+    return false;
+  };
+
+  const extremes = (mesh) => {
+    const p = pos(mesh);
+    let minZ = Infinity;
+    let maxZ = -Infinity;
+    let minX = Infinity;
+    let maxX = -Infinity;
+    for (let i = 0; i < p.length; i += 3) {
+      minZ = Math.min(minZ, p[i + 2]);
+      maxZ = Math.max(maxZ, p[i + 2]);
+      minX = Math.min(minX, p[i]);
+      maxX = Math.max(maxX, p[i]);
+    }
+    return { minZ, maxZ, minX, maxX };
+  };
+
+  // The sword blade narrows to nearly nothing at the tip and is broad at
+  // the guard.
+  assert('a sword blade tapers to a point',
+    spanAbove(sword, 0.35) < 0.04 && spanAbove(sword, -0.2) > 0.3,
+    `${spanAbove(sword, 0.35).toFixed(3)} at tip vs ${spanAbove(sword, -0.2).toFixed(3)} at guard`);
+
+  // The axe's cutting edge: in front of the poll (z), and hanging below
+  // the poll's own bottom so the blade visibly slopes down to it.
+  const axeExt = extremes(axe);
+  assert('an axe head ends in a cutting edge in front of its poll',
+    axeExt.maxZ > 0.08 && axeExt.minZ < -0.1,
+    `z ${axeExt.minZ.toFixed(3)}..${axeExt.maxZ.toFixed(3)}`);
+  assert('...and the edge hangs below the poll',
+    hasVertex(axe, (x, y, z) => z > 0.08 && y < 0.1),
+    'no low front vertex');
+
+  // The pickaxe head curves down past the haft's top and out past its
+  // sides — the arch is the whole of a pickaxe.
+  assert('a pickaxe head reaches below the top of the haft',
+    hasVertex(pick, (x, y, z) => Math.abs(x) > 0.35 && y < 0.21),
+    'no low tip vertex');
+  const pickExt = extremes(pick);
+  assert('...and out past the haft on both sides',
+    pickExt.maxX - pickExt.minX > 0.5, (pickExt.maxX - pickExt.minX).toFixed(3));
+
+  // The shovel flares toward the digging edge: wider at the bottom than at
+  // the neck.
+  const widthNear = (mesh, y, tol) => {
+    const p = pos(mesh);
+    let min = Infinity;
+    let max = -Infinity;
+    for (let i = 0; i < p.length; i += 3) {
+      if (Math.abs(p[i + 1] - y) > tol) continue;
+      min = Math.min(min, p[i]);
+      max = Math.max(max, p[i]);
+    }
+    return max - min;
+  };
+  assert('a shovel blade flares toward the ground',
+    widthNear(shovel, -0.48, 0.01) > widthNear(shovel, 0.19, 0.01) + 0.15,
+    `${widthNear(shovel, -0.48, 0.01).toFixed(3)} vs ${widthNear(shovel, 0.19, 0.01).toFixed(3)}`);
+
+  // The whole point of building from parts: every face is solid, nothing
+  // is doubled, nothing is wound backwards — even the blade points where
+  // two faces meet at a single vertex.
+  for (const [name, mesh] of [['sword', sword], ['pickaxe', pick], ['axe', axe], ['shovel', shovel]]) {
+    assert(`the ${name} is wound correctly`, windingErrors(mesh) === 0, windingErrors(mesh));
+    assert(`...with nothing doubled`, coincidentFaces(mesh) === 0, coincidentFaces(mesh));
   }
-  assert('the fuller stays inside the blade',
-    Math.abs(bladeZ - 1.4 / 32) < 1e-9, bladeZ.toFixed(4));
 }
 
 // ---------------------------------------------------------- the item registry

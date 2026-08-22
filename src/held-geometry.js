@@ -29,15 +29,17 @@
 // the model and the icon can never drift apart, and every rule in here is
 // unit-tested in Node.
 //
-// Two builders come out of it:
+// The builders that come out of it:
 //
 //   buildExtrudedSprite  — the general case: any 16x16 map becomes a solid.
-//   buildBoxModel        — a list of cuboids, for the handful of things that
-//                          are genuinely three-dimensional objects rather
-//                          than pictures of one. The bucket is the reason
-//                          this exists: it is a container, it is open at the
-//                          top, and you should be able to see the water
-//                          sitting in it.
+//   buildBoxModel        — a list of cuboids, for things that are genuinely
+//                          three-dimensional objects rather than pictures
+//                          of one. The bucket is the reason this exists: it
+//                          is a container, it is open at the top, and you
+//                          should be able to see the water sitting in it.
+//   buildSolidModel      — cuboids *and* hexahedra, for the tools: a blade
+//                          that tapers to a point, an axe head that ends in
+//                          an edge, a pickaxe arch, a shovel flare.
 
 /**
  * How deep an extruded item is, as a fraction of its 1x1 sprite. Minecraft's
@@ -524,28 +526,134 @@ export function boxInto(builder, box, scale = 1) {
 
 // --------------------------------------------------------------- tool models
 //
-// A tool is an extruded sprite with a depth *profile* — a per-row thickness
-// that turns the icon into a thing: a pickaxe's head is chunky while its
-// haft is a slim stick, a sword's blade is thin while its crossguard is a
-// slab standing proud of it. The profile lives with the shape (see
-// TOOL_PROFILES in item-models.js); this is the mesher that applies it,
-// plus any extra boxes the shape calls for (the fuller down a sword blade,
-// say). Sprite and boxes land in one mesh, so the tool is a single solid
-// and not two objects bolted together.
+// A tool is built the way a 3D-resource-pack builds one: out of real
+// cuboids and hexahedra, not extruded from its icon. The first version of
+// the 3D tools extruded the 16×16 sprite — the *icon* — into a slab with a
+// depth profile, which left every tool looking like the icon cut out of
+// cardboard: the same diagonal composition, the same flat picture, just
+// with thickness. A real pickaxe is a haft with a head curving down over
+// it; a real sword tapers to a point; a real axe head is a wedge that
+// ends in an edge. Those are three-dimensional facts, and they are what
+// these parts say:
+//
+//   * a box — { from, to, color } — the straight parts (hafts, guards,
+//     grips, pommels);
+//   * a hexahedron — { corners, color } — eight corners in the canonical
+//     box order, which lets a face collapse into an edge: the point of a
+//     blade, the cutting edge of an axe, the flare of a shovel.
+//
+// Every face is shaded by the direction it points (the same ambient
+// occlusion ratios FACE_SHADE uses), so the models read as lit from the
+// upper-left-front without any per-face colour bookkeeping.
+//
+// The parts live with the shapes (TOOL_SOLIDS in item-models.js); this is
+// the mesher that turns them into one solid mesh.
+
+/** The six faces of a hexahedron, in the canonical corner order
+ *  0 = (-x,-y,-z) 1 = (+x,-y,-z) 2 = (-x,+y,-z) 3 = (+x,+y,-z)
+ *  4 = (-x,-y,+z) 5 = (+x,-y,+z) 6 = (-x,+y,+z) 7 = (+x,+y,+z). */
+const HEXA_FACES = [
+  { corners: [4, 5, 7, 6] }, // +z
+  { corners: [1, 0, 2, 3] }, // -z
+  { corners: [2, 3, 7, 6] }, // +y
+  { corners: [0, 1, 5, 4] }, // -y
+  { corners: [0, 4, 6, 2] }, // -x
+  { corners: [1, 5, 7, 3] }, // +x
+];
 
 /**
- * Build a tool model from a modelSpec (kind 'tool'): the sprite extruded
- * under the spec's depth profile, then the spec's boxes.
- *
- * @param {{rows:string[], palette:Record<string,string>,
- *   depth:number|function, mirrorX?:boolean, scale?:number,
- *   boxes?:Array}} spec
+ * A hexahedron into an existing builder: eight corners in texel space, in
+ * the canonical order above. A face whose four corners collapse (zero
+ * area) is skipped, which is how a blade gets a point and an axe gets an
+ * edge; every surviving face's winding is pointed outward from the body,
+ * so slanted and collapsed shapes come out solid instead of inside-out.
  */
-export function buildToolModel(spec) {
-  const { rows, palette } = spec;
+export function hexahedronInto(builder, corners, color, scale = 1) {
+  const p = (t) => (t / SPRITE_SIZE - 0.5) * scale;
+  const P = corners.map((c) => [p(c[0]), p(c[1]), p(c[2])]);
+  const rgb = parseHex(color);
+  const centroid = [0, 0, 0];
+  for (const c of P) {
+    centroid[0] += c[0] / 8;
+    centroid[1] += c[1] / 8;
+    centroid[2] += c[2] / 8;
+  }
+  for (const face of HEXA_FACES) {
+    const [a, b, c, d] = face.corners.map((i) => P[i]);
+    const u = [b[0] - a[0], b[1] - a[1], b[2] - a[2]];
+    const v = [c[0] - a[0], c[1] - a[1], c[2] - a[2]];
+    let n = [
+      u[1] * v[2] - u[2] * v[1],
+      u[2] * v[0] - u[0] * v[2],
+      u[0] * v[1] - u[1] * v[0],
+    ];
+    const len = Math.hypot(n[0], n[1], n[2]);
+    if (len < 1e-12) continue; // collapsed into an edge: the blade's point
+    n = [n[0] / len, n[1] / len, n[2] / len];
+    const center = [
+      (a[0] + b[0] + c[0] + d[0]) / 4,
+      (a[1] + b[1] + c[1] + d[1]) / 4,
+      (a[2] + b[2] + c[2] + d[2]) / 4,
+    ];
+    const outward = [center[0] - centroid[0], center[1] - centroid[1], center[2] - centroid[2]];
+    let quad = [a, b, c, d];
+    if (n[0] * outward[0] + n[1] * outward[1] + n[2] * outward[2] < 0) {
+      n = [-n[0], -n[1], -n[2]];
+      quad = [a, d, c, b];
+    }
+    // A face can collapse at a corner (a blade's point) without collapsing
+    // entirely: drop the doubled corner, and emit one triangle where three
+    // corners remain — a degenerate triangle would fail the winding checks
+    // and, worse, leave a sliver the light hits differently from its
+    // neighbours.
+    const pts = [];
+    for (const q of quad) {
+      const last = pts[pts.length - 1];
+      if (!last || Math.abs(q[0] - last[0]) + Math.abs(q[1] - last[1]) + Math.abs(q[2] - last[2]) > 1e-12) {
+        pts.push(q);
+      }
+    }
+    if (pts.length === 3) {
+      builder._tri(pts[0], pts[1], pts[2], n, shade(rgb, directionShade(n)));
+    } else if (pts.length === 4) {
+      builder.quad(pts, n, shade(rgb, directionShade(n)));
+    }
+  }
+  return builder;
+}
+
+/**
+ * The face shading for a solid part: how much light a face catches given
+ * the direction it points, weighted by how much of the normal lies along
+ * each axis. Axis-aligned faces get exactly FACE_SHADE's values; slanted
+ * faces (a wedge's top) blend smoothly between them.
+ */
+function directionShade(n) {
+  const l1 = Math.abs(n[0]) + Math.abs(n[1]) + Math.abs(n[2]);
+  if (l1 < 1e-12) return 1;
+  return (
+    Math.abs(n[0]) * (n[0] < 0 ? FACE_SHADE.left : FACE_SHADE.right)
+    + Math.abs(n[1]) * (n[1] < 0 ? FACE_SHADE.bottom : FACE_SHADE.top)
+    + Math.abs(n[2]) * (n[2] < 0 ? FACE_SHADE.back : FACE_SHADE.front)
+  ) / l1;
+}
+
+/**
+ * Build a solid item model from its parts: each part is a box
+ * ({ from, to, color }) or a hexahedron ({ corners, color }), all in
+ * texel space, all shaded by the direction of their faces. Everything
+ * lands in one mesh.
+ *
+ * @param {Array} parts
+ * @param {object} [opts] { scale }
+ */
+export function buildSolidModel(parts, opts = {}) {
+  const { scale = 1 } = opts;
   const builder = new MeshBuilder();
-  extrudeInto(builder, rows, palette, spec);
-  for (const box of spec.boxes ?? []) boxInto(builder, box, spec.scale ?? 1);
+  for (const part of parts) {
+    if (part.corners) hexahedronInto(builder, part.corners, part.color, scale);
+    else boxInto(builder, part, scale);
+  }
   return builder.build();
 }
 
