@@ -14,12 +14,14 @@
 // says how to put it on a canvas, and it deliberately knows nothing about
 // any particular block, item or mob.
 //
-//   paintMap(canvas, rows, palette, opts)   — draw a map onto a canvas
+//   paintMap(ctx, rows, palette, opts)       — draw a map into a context
 //   paintedCanvas(size, rows, palette, opts) — build a canvas holding a map
-//   shade / shadeHex                          — colour helpers
-//   wobbleRng                                  — a seeded per-pixel wobble
-//   stamp(map, x, y)                          — composite one map over another
-//   outline(rows)                             — derive a dark outline map
+//   resolveMap(rows, palette)                — a map flattened to colours
+//   paintCells(ctx, cells, ...)              — draw an already-resolved map
+//   stamp(target, ..., stampCells, ..., ox, oy) — composite one over another
+//   outline(rows) / paintWithOutline(...)    — the one-texel icon rim
+//   shade / hexOf / parseHexColor / mix      — colour helpers
+//   wobbleRng                                — a seeded per-pixel wobble
 //
 // Nothing here touches THREE or the DOM's window; it is pure 2D canvas code
 // so Node's canvas stub in the test suite can run it.
@@ -232,7 +234,10 @@ export function gradientCanvas(size, stops) {
   const ctx = cv.getContext('2d');
   for (let y = 0; y < size; y++) {
     const t = y / (size - 1);
-    let c = stops[0][1];
+    // Outside the stops, hold the nearest end rather than snapping back to
+    // the first one — a stop list that does not reach 1 would otherwise
+    // paint its bottom row with its top colour.
+    let c = t <= stops[0][0] ? stops[0][1] : stops[stops.length - 1][1];
     for (let i = 0; i < stops.length - 1; i++) {
       const [t0, c0] = stops[i];
       const [t1, c1] = stops[i + 1];

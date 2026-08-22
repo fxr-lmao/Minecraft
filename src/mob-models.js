@@ -672,9 +672,13 @@ export function createCreeperModel() {
     { name: 'body', at: [0, 12, 0], size: [8, 12, 4], tex: 'hide' },
     {
       name: 'headPivot', at: [0, 18, 0], pivot: true, children: [
-        // a collar of darker hide the head stands on, so the head reads as
-        // a head and not as the body simply stopping
-        { name: 'collar', at: [0, 0.5, 0], size: [8, 2, 4], tex: 'hideDark' },
+        // A collar of darker hide the head stands on, so the head reads as
+        // a head and not as the body simply stopping. It has to be *wider*
+        // than the body it sits on and narrower than the head above it: at
+        // the body's own 8x4 footprint its sides were exactly coplanar
+        // with the body's below and the head's above, which is not a
+        // collar, it is a z-fight on all four shoulders.
+        { name: 'collar', at: [0, 0.5, 0], size: [9, 2, 5], tex: 'hideDark' },
         { name: 'head', at: [0, 4, 0], size: [8, 8, 8], tex: 'hide', faces: { front: 'face' } },
       ],
     },
@@ -776,7 +780,11 @@ export function createSkeletonModel() {
     // The bow: a stave and a string, held out in front of the right arm so
     // the silhouette says "archer" at range.
     { name: 'bow', at: [6.5, 20, -7], size: [1, 10, 1], tex: 'dark' },
-    { name: 'string', at: [6.5, 20, -7], size: [1, 10, 0.5], tex: 'bone' },
+    // The string runs parallel to the stave, on the archer's side of it.
+    // It used to share the stave's centre and four of its six face planes,
+    // which made it invisible (it was inside the stave) apart from the
+    // z-fighting shimmer it put down both flat sides of the bow.
+    { name: 'string', at: [6.5, 20, -5.75], size: [0.5, 10, 0.5], tex: 'bone' },
   ];
 
   const { group, handles: h, allMats } = buildFromSpec(SKELETON, spec, PX, T);
@@ -907,11 +915,28 @@ function buildQuadruped(kind, opts) {
 
   // The neck: a box running from the body's front shoulder to the head
   // pivot, so the head is visibly *attached* rather than floating.
-  const ny = opts.leg[1] + opts.body[1] - 2;
+  //
+  // The -3 matters. The neck is 4 tall, so at -2 its top face landed
+  // exactly on the body's top face, and two coincident faces pointing the
+  // same way z-fight — a band of flicker across the shoulders of all three
+  // animals. At -3 the neck's top sits a pixel inside the back it grows
+  // out of, which is also where a neck belongs.
+  const ny = opts.leg[1] + opts.body[1] - 3;
+  //
+  // Its depth is measured rather than guessed. Scaling the head's offset by
+  // a constant works only while the head sits about as far forward as the
+  // body is long, and the sheep breaks that: its head is pushed out to
+  // clear the fleece, so a scaled neck stopped short and left the head
+  // floating in front of a bridge that went nowhere. So: span from the
+  // body's own shoulder to the head's back face, and bite a pixel into
+  // each so it is joined at both ends rather than merely touching.
+  const shoulderZ = -opts.body[2] / 2;
+  const napeZ = opts.headAt[2] + opts.head[2] / 2;
+  const neckD = Math.max(3, Math.abs(shoulderZ - napeZ) + 2);
   spec.push({
     name: 'neck',
-    at: [opts.headAt[0] * 0.55, ny, opts.headAt[2] * 0.55],
-    size: [Math.max(3, opts.head[0] - 2), 4, Math.max(3, opts.head[2] - 2)],
+    at: [opts.headAt[0] * 0.55, ny, (shoulderZ + napeZ) / 2],
+    size: [Math.max(3, opts.head[0] - 2), 4, neckD],
     tex: opts.neckTex ?? opts.bodyTex,
   });
 
@@ -1011,7 +1036,10 @@ export function createSheepModel() {
     extras: [
       // the fleece: a second, larger body box, so the whole silhouette is
       // the white wool and only the face and legs are dark
-      { name: 'wool', at: [0, 12, 0], size: [16, 12, 22], tex: 'sheep' },
+      // Lifted half a pixel: at y = 12 the fleece's underside was exactly
+      // coplanar with the body's, which flickers when you look up at a
+      // sheep. A fleece does not reach the belly floor anyway.
+      { name: 'wool', at: [0, 12.5, 0], size: [16, 12, 22], tex: 'sheep' },
     ],
   });
 }

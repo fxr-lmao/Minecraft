@@ -243,6 +243,16 @@ body.nocursor #game { cursor: none; }
 }
 #health.low { animation: low-pulse 1.15s ease-in-out infinite; }
 
+/* Both at once. `animation` is one shorthand property, so two rules of equal
+   specificity do not add up — the later one simply wins, and .low is the
+   later one. Without this, getting hit below four hearts played no flash at
+   all: the one moment the flash is actually telling you something. The two
+   animate different properties (filter and opacity), so listing them
+   together composes rather than conflicts. */
+#health.hurt.low {
+  animation: hurt-flash 0.45s ease-out, low-pulse 1.15s ease-in-out infinite;
+}
+
 /* Starving: the drumsticks jiggle — Minecraft's hunger bar does exactly
    this, and the bar itself is the warning. */
 @keyframes hunger-wiggle {

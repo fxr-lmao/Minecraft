@@ -29,14 +29,15 @@
 // the model and the icon can never drift apart, and every rule in here is
 // unit-tested in Node.
 //
-// The builders that come out of it:
+// Two builders come out of it:
 //
 //   buildExtrudedSprite  — the general case: any 16x16 map becomes a solid.
-//   buildBoxModel        — a list of cuboids, for things that are genuinely
-//                          three-dimensional objects rather than pictures
-//                          of one. The bucket is the reason this exists: it
-//                          is a container, it is open at the top, and you
-//                          should be able to see the water sitting in it.
+//   buildBoxModel        — a list of cuboids, for the handful of things that
+//                          are genuinely three-dimensional objects rather
+//                          than pictures of one. The bucket is the reason
+//                          this exists: it is a container, it is open at the
+//                          top, and you should be able to see the water
+//                          sitting in it.
 //   buildSolidModel      — cuboids *and* hexahedra, for the tools: a blade
 //                          that tapers to a point, an axe head that ends in
 //                          an edge, a pickaxe arch, a shovel flare.
@@ -227,8 +228,11 @@ function sameColor(a, b) {
  * @param {string[]} rows 16 strings of 16 characters
  * @param {Record<string,string>} palette letter -> '#rrggbb'
  * @param {object} [opts]
- * @param {number|function} [opts.depth]   total thickness in texels, or a
- *                                          per-row function (default 1)
+ * @param {number|function} [opts.depth]   total thickness as a fraction of
+ *                                          the 1x1 sprite (default
+ *                                          SPRITE_DEPTH, one texel), or a
+ *                                          function (row) => that same
+ *                                          fraction, for a per-row profile
  * @param {boolean} [opts.mirrorX]
  * @param {number} [opts.scale]   uniform scale applied to the finished model
  * @param {MeshBuilder} [opts.out] build into this builder (for composite
@@ -243,7 +247,7 @@ export function buildExtrudedSprite(rows, palette, opts = {}) {
 
 /**
  * The working half of buildExtrudedSprite: write the extrusion into an
- * existing builder. Shared by the plain path and the tool models, which
+ * existing builder. Shared by the plain path and any model that needs
  * extrude the sprite and then bolt extra parts onto the same mesh.
  */
 export function extrudeInto(builder, rows, palette, opts = {}) {
@@ -395,36 +399,55 @@ export function extrudeInto(builder, rows, palette, opts = {}) {
   //
   // Two adjacent opaque rows of different thickness leave the thicker one
   // sticking out of the thinner one's front and back faces. These ledges
-  // are the faces that show it. One per pixel column — a profile changes
-  // at whole-row boundaries, and a row's worth of 1px ledges is nothing.
+  // are the faces that close that step. One per pixel column — a profile
+  // changes at whole-row boundaries, and a row's worth of 1px ledges is
+  // nothing.
+  //
+  // Two things about a step are easy to get wrong and invisible until you
+  // walk round the model:
+  //
+  //   * The extrusion is symmetric about z = 0, so a step sticks out at
+  //     the *back* exactly as it does at the front. Closing only the front
+  //     leaves a hole you can see straight into from behind — which is
+  //     what a sword's crossguard did.
+  //   * A step faces one way, not both. The thicker row owns the ledge: a
+  //     thicker row *below* leaves its own top surface exposed (+y), a
+  //     thicker row *above* leaves its underside exposed (-y). Emitting
+  //     both buries a face inside solid material, where it catches light
+  //     that should never have reached it.
   for (let y = 0; y < size - 1; y++) {
     const hUp = half(y);
     const hDn = half(y + 1);
     if (hUp === hDn) continue;
+    const upThicker = hUp > hDn;
+    const fy = py(y + 1);
+    const zLo = pz(Math.min(hUp, hDn));
+    const zHi = pz(Math.max(hUp, hDn));
+    // The two strips the step leaves open: one in front of the thin row,
+    // one behind it.
+    const strips = [[zLo, zHi], [-zHi, -zLo]];
     for (let x = 0; x < size; x++) {
       const cu = at(x, y);
       const cd = at(x, y + 1);
       if (!cu || !cd) continue;
-      const c = cu;
+      // The ledge is part of the thicker row, so it takes that row's colour.
+      const c = upThicker ? cu : cd;
+      const col = shade(c, FACE_SHADE[upThicker ? 'bottom' : 'top']);
       const x0 = px(x);
       const x1 = px(x + 1);
-      const fy = py(y + 1);
-      // The ledge is a vertical strip in the x-z plane at the row
-      // boundary: the part of the thicker row's front face that the
-      // thinner row does not cover. Seen from the front it is the step the
-      // profile makes, so its normals point +y (upward face) and -y.
-      const zLo = pz(Math.min(hUp, hDn));
-      const zHi = pz(Math.max(hUp, hDn));
-      // upward-facing ledge (+y)
-      builder.quad(
-        [[x0, fy, zHi], [x1, fy, zHi], [x1, fy, zLo], [x0, fy, zLo]],
-        [0, 1, 0], shade(c, FACE_SHADE.top)
-      );
-      // downward-facing ledge (-y)
-      builder.quad(
-        [[x0, fy, zLo], [x1, fy, zLo], [x1, fy, zHi], [x0, fy, zHi]],
-        [0, -1, 0], shade(c, FACE_SHADE.bottom)
-      );
+      for (const [zA, zB] of strips) {
+        if (upThicker) {
+          builder.quad(
+            [[x0, fy, zA], [x1, fy, zA], [x1, fy, zB], [x0, fy, zB]],
+            [0, -1, 0], col
+          );
+        } else {
+          builder.quad(
+            [[x0, fy, zB], [x1, fy, zB], [x1, fy, zA], [x0, fy, zA]],
+            [0, 1, 0], col
+          );
+        }
+      }
     }
   }
 
