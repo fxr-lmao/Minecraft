@@ -1,7 +1,9 @@
 // Inventory model: 9 hotbar slots + a 9 x 3 main grid.
 // Covers stacking, the pick-up/drop cursor, right-click halves and shift-move.
 import { Inventory, HOTBAR_SIZE, MAIN_SIZE, TOTAL_SLOTS, STACK_MAX } from '../src/inventory.js';
-import { BUCKET, PICKAXE, SHOVEL } from '../src/items.js';
+import { BUCKET, PICKAXE, SHOVEL, BOW, IRON_HELMET, IRON_CHESTPLATE, COAL } from '../src/items.js';
+import { maxDurability } from '../src/durability.js';
+import { ARMOUR_SLOTS } from '../src/armour.js';
 
 const results = [];
 const assert = (name, cond, detail) =>
@@ -163,6 +165,77 @@ for (const [name, ok, detail] of results) {
     picks.some((s) => s.durability === 40) && picks.some((s) => s.durability === 200));
   assert('the healthiest tool sorts first', inv.slots[0].durability === 200, inv.slots[0].durability);
   assert('nothing is lost', inv.countOf(PICKAXE) === 2 && inv.countOf(SHOVEL) === 1);
+}
+
+// ------------------------------------------ picking up things that wear out
+//
+// `sort` has always refused to merge two tools, for the reason above: each
+// carries its own number of uses left, and folding them together keeps one
+// and throws the other away. `add` is where they *arrive*, and it has to
+// refuse the same merge for the same reason — otherwise picking a second
+// pickaxe off the floor quietly repairs or ruins the one in your bag. The
+// bow and the sixteen pieces of armour wear out too, so this covers them.
+{
+  const inv = new Inventory();
+  inv.add(PICKAXE, 1);
+  inv.add(PICKAXE, 1);
+  assert('two picked-up tools take two slots',
+    inv.slots[0]?.count === 1 && inv.slots[1]?.id === PICKAXE && inv.slots[1]?.count === 1,
+    JSON.stringify(inv.slots.slice(0, 2)));
+  assert('...each with its own full durability',
+    inv.slots[0].durability === maxDurability(PICKAXE)
+    && inv.slots[1].durability === maxDurability(PICKAXE));
+
+  const worn = new Inventory();
+  worn.slots[0] = { id: BOW, count: 1, durability: 12 };
+  worn.add(BOW, 1);
+  assert('a fresh bow does not stack onto a nearly-spent one',
+    worn.slots[0].durability === 12 && worn.slots[0].count === 1
+    && worn.slots[1]?.id === BOW && worn.slots[1].durability === maxDurability(BOW),
+    JSON.stringify(worn.slots.slice(0, 2)));
+
+  const kit = new Inventory();
+  kit.add(IRON_HELMET, 3);
+  assert('three helmets are three slots, not a stack of three',
+    kit.countOf(IRON_HELMET) === 3
+    && kit.slots.slice(0, 3).every((s) => s?.count === 1),
+    JSON.stringify(kit.slots.slice(0, 3)));
+
+  // Everything else still stacks exactly as it did.
+  const bag = new Inventory();
+  bag.add(COAL, 40);
+  bag.add(COAL, 24);
+  assert('ordinary items still merge into one stack',
+    bag.slots[0]?.count === 64 && bag.slots[1] === null, JSON.stringify(bag.slots[0]));
+}
+
+// ---------------------------------------------------------- the armour slots
+{
+  const inv = new Inventory();
+  assert('a new inventory has four empty armour slots',
+    inv.armour.length === ARMOUR_SLOTS && inv.armour.every((s) => s === null));
+
+  inv.set(0, { id: IRON_HELMET, count: 1 });
+  assert('shift-clicking a helmet puts it on', inv.equipArmour(0) === true
+    && inv.armour[0]?.id === IRON_HELMET && inv.slots[0] === null);
+  assert('...with durability stamped on the way',
+    inv.armour[0].durability === maxDurability(IRON_HELMET));
+
+  inv.set(1, { id: IRON_CHESTPLATE, count: 1 });
+  inv.set(2, { id: IRON_HELMET, count: 1 });
+  assert('a second helmet finds the slot taken', inv.equipArmour(2) === false
+    && inv.slots[2]?.id === IRON_HELMET);
+  assert('the chestplate goes to its own slot', inv.equipArmour(1) === true
+    && inv.armour[1]?.id === IRON_CHESTPLATE);
+
+  inv.set(3, { id: COAL, count: 1 });
+  assert('coal is not armour', inv.equipArmour(3) === false && inv.slots[3]?.id === COAL);
+
+  // A piece can only be dropped into the slot it belongs to.
+  inv.cursor = { id: IRON_HELMET, count: 1, durability: 40 };
+  inv.clickArmourSlot(1);
+  assert('a helmet is refused by the chestplate slot',
+    inv.cursor?.id === IRON_HELMET && inv.armour[1]?.id === IRON_CHESTPLATE);
 }
 
 const passed = results.filter((r) => r[1]).length;

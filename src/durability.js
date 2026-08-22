@@ -11,8 +11,10 @@ import {
   WOOD_AXE, STONE_AXE, IRON_AXE, DIAMOND_AXE,
   WOOD_SWORD, STONE_SWORD, IRON_SWORD, DIAMOND_SWORD,
   DIAMOND_PICKAXE, DIAMOND_SHOVEL,
+  BOW,
   TOOL_KINDS, TIER_WOOD, TIER_STONE, TIER_IRON, TIER_DIAMOND,
 } from './items.js';
+import { ARMOUR } from './armour.js';
 
 /**
  * Minecraft's durability per *tier*, which is the honest way to say it: every
@@ -38,13 +40,41 @@ export const MAX_DURABILITY = Object.fromEntries(
   Object.entries(TOOL_KINDS).map(([id, kind]) => [id, TIER_DURABILITY[kind.tier]])
 );
 
+/**
+ * The bow wears too, on Minecraft's own number: 384 shots. It is not a tool
+ * (the tool table is shapes of pickaxe, shovel, axe and sword), so it earns
+ * its one entry here rather than a tier — a bow is a bow, there is no wooden
+ * bow against a diamond bow, only the one you made and the string it is
+ * strung with.
+ */
+export const BOW_DURABILITY = 384;
+MAX_DURABILITY[BOW] = BOW_DURABILITY;
+
+// Armour wears as well; its durability lives in armour.js, next to the
+// points it grants, and is merged here so every stack in the game that can
+// wear out wears out through the same ensure/spend pair.
+for (const [id, info] of Object.entries(ARMOUR)) {
+  MAX_DURABILITY[id] = info.durability;
+}
+
 /** The full durability of a stack's item, or undefined for non-tools. */
 export function maxDurability(id) {
   return MAX_DURABILITY[id];
 }
 
-/** Is this id something with durability at all? */
-export const isTool = (id) => id in MAX_DURABILITY;
+/**
+ * Is this id a *tool* — a pickaxe, shovel, axe or sword? Tools are the only
+ * things that wear while digging or swinging; the bow and armour wear too,
+ * but through their own paths, so they are "durable" without being "tools".
+ */
+export const isTool = (id) => id in TOOL_KINDS;
+
+/**
+ * Is this id something with durability at all — a tool, the bow, or a piece
+ * of armour? This is the set that must never merge in a sort or a pile,
+ * because each one carries its own number of uses left.
+ */
+export const isDurable = (id) => id in MAX_DURABILITY;
 
 /**
  * The durability a freshly obtained tool should start with. New stacks get

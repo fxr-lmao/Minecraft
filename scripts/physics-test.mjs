@@ -4,6 +4,9 @@
 import { Player } from '../src/player.js';
 import { World, GRASS, AIR, WATER, ICE } from '../src/world.js';
 import {
+  IRON_HELMET, IRON_CHESTPLATE, IRON_LEGGINGS, IRON_BOOTS,
+} from '../src/items.js';
+import {
   PHYSICS_DT, WORLD_MIN_Y, SPEED_WALK, JUMP_VELOCITY, SWIM_UP_SPEED, GRAVITY,
   PLAYER_HEIGHT, MAX_HEALTH, MAX_AIR, FALL_SAFE, DROWN_DAMAGE, REGEN_DELAY,
 } from '../src/constants.js';
@@ -757,21 +760,105 @@ const assert = (name, cond, detail) => {
   for (let i = 0; i < 6 * 120; i++) p.update(PHYSICS_DT, up);
   assert('a gulp at the surface is a gulp', p.air === MAX_AIR, p.air.toFixed(2));
 
-  // And with nothing hurting you, health comes back on its own.
+  // Health comes back from being well fed now, not from a timer that starts
+  // when the wound does. A player spawns full of food with a little
+  // saturation, so a hurt player heals — one hit point every four seconds,
+  // and only while that saturation lasts.
   const hurt = new Player(new World(6, { flat: 3 }));
   hurt.hurt(6, 'a test');
   assert('damage is remembered', hurt.health === MAX_HEALTH - 6 && hurt.sinceHurt === 0);
-  // A step either side of the delay: nothing has healed by the time it is up,
-  // and the tolerance is there because the healing starts on the very step
-  // that crosses it.
-  for (let i = 0; i < REGEN_DELAY * 120; i++) hurt.update(PHYSICS_DT, still);
-  assert('...and nothing heals while the wound is fresh',
-    Math.abs(hurt.health - (MAX_HEALTH - 6)) < 0.01, hurt.health.toFixed(4));
-  for (let i = 0; i < 8 * 120; i++) hurt.update(PHYSICS_DT, still);
-  assert('...but it comes back slowly once it is not',
+  assert('taking a hit costs a little hunger',
+    hurt.hunger.food === 20 && Math.abs(hurt.hunger.saturation - 5) < 1e-9);
+
+  for (let i = 0; i < 4 * 120 + 1; i++) hurt.update(PHYSICS_DT, still);
+  assert('a well-fed player heals one every four seconds',
     hurt.health > MAX_HEALTH - 6 && hurt.health < MAX_HEALTH, hurt.health.toFixed(2));
-  for (let i = 0; i < 120 * 120; i++) hurt.update(PHYSICS_DT, still);
-  assert('...all the way, and no further', hurt.health === MAX_HEALTH, hurt.health);
+
+  // Healing spends saturation, and once it is gone the bar stops — five
+  // saturation is not enough to heal six wounds, which is why a real meal
+  // matters and a snack is only a snack.
+  for (let i = 0; i < 120 * 120 + 1; i++) hurt.update(PHYSICS_DT, still);
+  assert('...and only while the saturation lasts',
+    hurt.health > MAX_HEALTH - 6 && hurt.health < MAX_HEALTH, hurt.health.toFixed(2));
+
+  // The counterweight: a starving player heals nothing, and hunger itself
+  // takes a hit point every four seconds.
+  const starve = new Player(new World(7, { flat: 3 }));
+  starve.hunger.food = 0;
+  starve.hunger.saturation = 0;
+  starve.hurt(6, 'a test');
+  for (let i = 0; i < 4 * 120 + 1; i++) starve.update(PHYSICS_DT, still);
+  assert('a starving player takes damage from hunger',
+    starve.health < MAX_HEALTH - 6, starve.health.toFixed(2));
+}
+
+// ------------------------------------------- armour, and what it is not for
+//
+// A suit of armour softens blows. It does not hold your breath for you and
+// it does not feed you — and here that is not only Minecraft's rule, it is
+// load-bearing. Drowning and starving arrive as a *rate*: drowning calls
+// hurt() once per physics step, 120 times a second, with a sixtieth of a hit
+// point each time. Armour spends at least one use of durability on every hit
+// it softens, so routing those through it would grind a full suit of iron to
+// scrap in under a second and a half of swimming. Both of these guard that.
+{
+  const still = { forward: 0, strafe: 0, jump: false, sprint: false, sneak: false };
+  const suit = () => [
+    { id: IRON_HELMET, count: 1, durability: 165 },
+    { id: IRON_CHESTPLATE, count: 1, durability: 165 },
+    { id: IRON_LEGGINGS, count: 1, durability: 165 },
+    { id: IRON_BOOTS, count: 1, durability: 165 },
+  ];
+
+  // A blow: the suit is 15 points, so sixty percent comes off, and every
+  // piece pays for it. This is the case armour *is* for.
+  const struck = new Player(new World(8, { flat: 3 }));
+  struck.armour = suit();
+  struck.hurt(10, 'a test');
+  assert('armour takes sixty percent off a blow',
+    Math.abs(struck.health - (MAX_HEALTH - 4)) < 1e-9, struck.health.toFixed(2));
+  assert('...and every worn piece pays for it',
+    struck.armour.every((s) => s.durability === 162),
+    struck.armour.map((s) => s.durability).join(','));
+
+  // Drowning: full damage, and not one use of durability spent. Two players
+  // in identical seas, one in iron and one bare, must come up with exactly
+  // the same health — the comparison rather than a fixed number, so the
+  // regeneration clock ticking in the background cannot make it a coin flip.
+  const drown = (armour) => {
+    const sea = new World(9, { flat: 3 });
+    for (let x = -4; x <= 4; x++) {
+      for (let z = -4; z <= 4; z++) for (let y = 4; y <= 9; y++) sea.setBlock(x, y, z, WATER);
+    }
+    const p2 = new Player(sea);
+    p2.armour = armour;
+    p2.pos.set(0.5, 8, 0.5);
+    p2.vel.set(0, 0, 0);
+    for (let i = 0; i < 240 && !p2.submerged; i++) p2.update(PHYSICS_DT, still);
+    for (let i = 0; i < (MAX_AIR + 3) * 120; i++) p2.update(PHYSICS_DT, still);
+    return p2;
+  };
+  const ironed = drown(suit());
+  const bare = drown(null);
+  assert('armour does not hold your breath: drowning hurts the same either way',
+    Math.abs(ironed.health - bare.health) < 1e-9,
+    `${ironed.health.toFixed(2)} vs ${bare.health.toFixed(2)}`);
+  assert('...and three seconds of it costs the suit nothing',
+    ironed.armour.every((s) => s && s.durability === 165),
+    ironed.armour.map((s) => (s ? s.durability : 'BROKEN')).join(','));
+
+  // Starving: the same deal, on the same reasoning.
+  const hungry = new Player(new World(10, { flat: 3 }));
+  hungry.armour = suit();
+  hungry.hunger.food = 0;
+  hungry.hunger.saturation = 0;
+  const starveFrom = hungry.health;
+  for (let i = 0; i < 12 * 120 + 1; i++) hungry.update(PHYSICS_DT, still);
+  assert('armour does not feed you either', hungry.health < starveFrom,
+    hungry.health.toFixed(2));
+  assert('...and starving costs the suit nothing',
+    hungry.armour.every((s) => s && s.durability === 165),
+    hungry.armour.map((s) => (s ? s.durability : 'BROKEN')).join(','));
 }
 
 console.log(results.join('\n'));
