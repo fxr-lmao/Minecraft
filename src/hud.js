@@ -3,10 +3,14 @@
 // live in inventory-ui.js; key bindings live in input.js — this file draws
 // and reports, it doesn't decide anything.
 
-import { blockName, heartUrl, heartEmptyUrl, bubbleUrl } from './textures.js';
+import {
+  blockName, heartUrl, heartEmptyUrl, bubbleUrl,
+  drumstickUrl, drumstickEmptyUrl, armourUrl, armourEmptyUrl,
+} from './textures.js';
 import {
   CHUNK_SIZE, WORLD_MIN_Y, WORLD_MAX_Y, MAX_HEALTH, MAX_AIR,
 } from './constants.js';
+import { MAX_FOOD } from './hunger.js';
 import { LOOK_FREE, LOOK_TOUCH } from './input.js';
 
 const CARDINALS = ['South (+Z)', 'West (-X)', 'North (-Z)', 'East (+X)'];
@@ -34,11 +38,15 @@ export class Hud {
     this.vitalsEl = document.getElementById('vitals');
     this.healthEl = document.getElementById('health');
     this.airEl = document.getElementById('air');
+    this.hungerEl = document.getElementById('hunger');
+    this.armourEl = document.getElementById('armour');
     this.modeEl = document.getElementById('mode-badge');
     this.clockEl = document.getElementById('clock');
     this.xpWrap = document.getElementById('xp-wrap');
     this.xpBar = document.getElementById('xp-bar');
     this.xpLevel = document.getElementById('xp-level');
+    this.eatingEl = document.getElementById('eating');
+    this.eatingBarEl = document.getElementById('eating-bar');
 
     this.pickupEl = document.getElementById('pickups');
 
@@ -62,8 +70,25 @@ export class Hud {
     const empty = heartEmptyUrl();
     const full = heartUrl();
     const bubble = bubbleUrl();
+    const drumEmpty = drumstickEmptyUrl();
+    const drumFull = drumstickUrl();
+    const armourEmpty = armourEmptyUrl();
+    const armourFull = armourUrl();
     this.hearts = [];
     this.bubbles = [];
+    this.drumsticks = [];
+    this.armours = [];
+    // Armour pips sit above the hearts and only appear while some is worn —
+    // a hidden bar when bare, exactly as Minecraft hides it.
+    for (let i = 0; i < 10; i++) {
+      const socket = document.createElement('i');
+      socket.style.backgroundImage = `url(${armourEmpty})`;
+      const fill = document.createElement('b');
+      fill.style.backgroundImage = `url(${armourFull})`;
+      socket.appendChild(fill);
+      this.armourEl.appendChild(socket);
+      this.armours.push(fill);
+    }
     for (let i = 0; i < MAX_HEALTH / 2; i++) {
       const socket = document.createElement('i');
       socket.style.backgroundImage = `url(${empty})`;
@@ -81,16 +106,29 @@ export class Hud {
       this.airEl.appendChild(pip);
       this.bubbles.push(fill);
     }
+    // Ten drumsticks, same socket-and-fill construction as the hearts, so
+    // half a drumstick is a clipped sprite rather than a second drawing.
+    for (let i = 0; i < MAX_FOOD / 2; i++) {
+      const socket = document.createElement('i');
+      socket.style.backgroundImage = `url(${drumEmpty})`;
+      const fill = document.createElement('b');
+      fill.style.backgroundImage = `url(${drumFull})`;
+      socket.appendChild(fill);
+      this.hungerEl.appendChild(socket);
+      this.drumsticks.push(fill);
+    }
   }
 
   /**
-   * Draw the health and the breath.
+   * Draw the health, the breath and the hunger.
    *
    * The air row is only there when it is telling you something — Minecraft
    * hides a full bar too, and a row of bubbles over the hotbar while you are
-   * walking across a field is just furniture.
+   * walking across a field is just furniture. The drumsticks are the same
+   * socket-and-fill construction as the hearts, and round up exactly the same
+   * way: a sliver of food still shows as half a drumstick.
    */
-  setVitals(health, air, visible = true) {
+  setVitals(health, air, food, armour, visible = true) {
     if (!this.hearts) return;
     this.vitalsEl.classList.toggle('hidden', !visible);
     if (!visible) return;
@@ -110,6 +148,21 @@ export class Hud {
       this.bubbles[i].style.width = i < bubbles ? '100%' : '0';
     }
     this.airEl.style.visibility = air >= MAX_AIR ? 'hidden' : 'visible';
+    // Two shanks a drumstick, same rounding-up as the hearts.
+    for (let i = 0; i < this.drumsticks.length; i++) {
+      const points = Math.max(0, Math.min(2, food - i * 2));
+      this.drumsticks[i].style.width = `${Math.ceil(points) * 50}%`;
+    }
+    // Armour: ten pips for twenty points, so two points to a pip and the
+    // same half-icon rounding as the hearts. One pip per *point* would peg
+    // the bar at ten and make a full iron suit (15) and a full diamond one
+    // (20) draw identically — which is exactly the comparison the bar exists
+    // to make. Hidden entirely while none is worn, as Minecraft hides it.
+    for (let i = 0; i < this.armours.length; i++) {
+      const points = Math.max(0, Math.min(2, armour - i * 2));
+      this.armours[i].style.width = `${Math.ceil(points) * 50}%`;
+    }
+    this.armourEl.style.visibility = armour > 0 ? 'visible' : 'hidden';
   }
 
   /** The screen that says what got you, and offers to put you back. */
@@ -152,6 +205,21 @@ export class Hud {
     this.xpLevel.textContent = String(level);
     this.xpBar.firstElementChild.style.width = `${Math.round(fraction * 100)}%`;
     this.xpWrap.classList.toggle('hidden', level === 0 && fraction === 0);
+  }
+
+  /**
+   * The eating meter. `fraction` is 0..1 of the mouthful already eaten, or
+   * 0 to hide the bar entirely. It appears only while a meal is in progress,
+   * because a bar that reads "you are eating" when you are not is furniture.
+   */
+  setEating(fraction) {
+    if (!this.eatingEl) return;
+    if (fraction > 0) {
+      this.eatingEl.classList.remove('hidden');
+      this.eatingBarEl.firstElementChild.style.width = `${Math.round(fraction * 100)}%`;
+    } else {
+      this.eatingEl.classList.add('hidden');
+    }
   }
 
   /** In-game clock, top-right, only drawn once it has something to say. */

@@ -308,6 +308,327 @@ export const ROTTEN_FLESH_PX = [
   '................',
 ];
 
+// ------------------------------------------------------------------- food
+//
+// The things you eat. Meat is one slab, raw or cooked, whatever animal it
+// came off — Minecraft's own raw porkchop and raw beef are near-identical
+// pictures of the same pink slab, and so are these. Chicken is the one meat
+// with a shape of its own, because a drumstick is not a steak and the
+// difference is the whole reason a cooked chicken looks like a meal. An apple
+// is a round fruit with a stem, the only food the trees give for free.
+
+export const RAW_MEAT_PALETTE = { o: '#6a1410', d: '#96221a', m: '#c03a24', h: '#e87850' };
+export const COOKED_MEAT_PALETTE = { o: '#4a2610', d: '#7a4420', m: '#b06a30', h: '#e0a058' };
+export const CHICKEN_RAW_PALETTE = { o: '#7a2e20', d: '#aa5240', m: '#d6845c', h: '#f2bc9a' };
+export const CHICKEN_COOKED_PALETTE = { o: '#5c3c1c', d: '#8a5a28', m: '#c0803e', h: '#eeb864' };
+export const APPLE_PALETTE = {
+  o: '#5c1006', d: '#a01e0c', m: '#d83a18', h: '#ff7a48', S: '#5a3818',
+};
+
+export const STEAK_PX = [
+  '................',
+  '................',
+  '................',
+  '....oooooooo....',
+  '...ohmmmmmmho...',
+  '..ohmmmmmmmmho..',
+  '..ohmmmmmmmmho..',
+  '.ohmmmmmmmmmmho.',
+  '.odmmddmmmmmmdo.',
+  '.odmmmmddmmmmdo.',
+  '.odmmmmmmmmmmdo.',
+  '.odmmmmmmmmmmdo.',
+  '..odmmmmmmmmdo..',
+  '...oddddddddo...',
+  '....oooooooo....',
+  '................',
+];
+
+export const CHICKEN_PX = [
+  '................',
+  '................',
+  '................',
+  '.....oooo.......',
+  '....ohhhho......',
+  '...ohmmmmho.....',
+  '..ohmmmmmmho....',
+  '..ohmmmmmmho....',
+  '..ohmmmmmmdo....',
+  '...odmmmmdo.....',
+  '....odmmdo......',
+  '.....oddo.......',
+  '......oo........',
+  '................',
+  '................',
+  '................',
+];
+
+export const APPLE_PX = [
+  '................',
+  '................',
+  '................',
+  '......SS........',
+  '.....SS.........',
+  '.....oooo.......',
+  '....ohhhho......',
+  '...ohmmmmho.....',
+  '..ohmmmmmmho....',
+  '..ohmmmmmmho....',
+  '..ohmmmmmmho....',
+  '...odmmmmdo.....',
+  '....oddddo......',
+  '.....oooo.......',
+  '................',
+  '................',
+];
+
+// -------------------------------------------------------------- ranged gear
+//
+// The skeleton's leftovers and the spider's, and the things you make from
+// them. A bone is white and knobbed at both ends. An arrow is a grey head, a
+// straight shaft and a red fletching. A bow is a bent arc. String is a wavy
+// line. A spider eye is the one bit of the spider worth keeping — a pale orb
+// with a red pupil, which is most of why it reads as an eye at hotbar size.
+
+export const BONE_PALETTE = { o: '#4a4a4a', d: '#7a7a7a', m: '#b0b0b0', h: '#e8e8e8' };
+export const BONE_PX = [
+  '................',
+  '................',
+  '................',
+  '..oooo...oooo...',
+  '.ohhmo...omho...',
+  '.ohmmo...omho...',
+  '.odmmo...omdo...',
+  '.oddooooooodo...',
+  '..oooooooooo....',
+  '.ohmmo...omho...',
+  '.ohmmo...omho...',
+  '.odmmo...omdo...',
+  '..oooo...oooo...',
+  '................',
+  '................',
+  '................',
+];
+
+export const ARROW_PALETTE = {
+  o: '#2a2a2a', d: '#4a4a4a', m: '#8a8a8a', h: '#d8d8d8',
+  F: '#c01818', W: '#f0d0d0',
+};
+export const ARROW_PX = [
+  '..............mm',
+  '.............mhh',
+  '............mHdo',
+  '...........mMdo.',
+  '..........mMdo..',
+  '.........mMdo...',
+  '........mMdo....',
+  '.......mMdo.....',
+  '......mMdo......',
+  '.....mMdo.......',
+  '....mMdo........',
+  '...mMdo.........',
+  '..mMdo..........',
+  '.WFdo...........',
+  'Fo..............',
+  '................',
+];
+
+export const STRING_PALETTE = { o: '#5a4a34', d: '#8a7450', m: '#b8a070', h: '#e8d8b0' };
+export const STRING_PX = [
+  '................',
+  '................',
+  '................',
+  '................',
+  '................',
+  '................',
+  '..mm..mm..mm....',
+  '.m..mm..mm..mm..',
+  '................',
+  '.mm..mm..mm.....',
+  'm..mm..mm..mm...',
+  '................',
+  '................',
+  '................',
+  '................',
+  '................',
+];
+
+export const SPIDER_EYE_PALETTE = { o: '#8a2020', d: '#c0a0a0', m: '#e8d0d0', h: '#f8f0f0', R: '#c01010' };
+export const SPIDER_EYE_PX = [
+  '................',
+  '................',
+  '................',
+  '................',
+  '................',
+  '......oooo......',
+  '.....ohhhho.....',
+  '....ohhRRhho....',
+  '...ohhRRRRhho...',
+  '....ohhRRhho....',
+  '.....ohhhho.....',
+  '......oooo......',
+  '................',
+  '................',
+  '................',
+  '................',
+];
+
+export const BOW_PALETTE = { o: '#3a2410', d: '#5a3818', m: '#8a5728', h: '#c48642' };
+export const BOW_PX = [
+  '................',
+  '................',
+  '...hh...........',
+  '..h.h...........',
+  '..h..h..........',
+  '.h...h..........',
+  '.h...h..........',
+  '.h...h..........',
+  '.h...h..........',
+  '.h...h..........',
+  '..h..h..........',
+  '..h.h...........',
+  '...hh...........',
+  '................',
+  '................',
+  '................',
+];
+
+export const FEATHER_PALETTE = { o: '#c8c8c8', d: '#e0e0e0', m: '#f2f2f2', h: '#ffffff', Q: '#8a8a8a' };
+export const FEATHER_PX = [
+  '................',
+  '................',
+  '................',
+  '.....oooo.......',
+  '....ohhhhh......',
+  '...ohhhhhho.....',
+  '..ohhhhhhhhh....',
+  '.ohhhhhhhhhhh...',
+  '..ohhhhhhhhh....',
+  '...ohhhhhho.....',
+  '....ohhhhhh.....',
+  '.....oooo.......',
+  '......Q.........',
+  '......Q.........',
+  '................',
+  '................',
+];
+
+// ------------------------------------------------------------------ armour
+//
+// Four shapes, one per slot, drawn once and tinted per material the way the
+// tools are: the palette letters o/d/m/h mean the same thing everywhere —
+// outline, dark, mid, highlight — so a helmet is a helmet whether it is
+// leather or diamond, and only the colour changes.
+
+export const ARMOUR_LEATHER = { o: '#4a2c14', d: '#7a4a24', m: '#a86c38', h: '#d8a060' };
+
+export const HELMET_PX = [
+  '................',
+  '....oooooooo....',
+  '...ohhhhhhhho...',
+  '..ohhhhhhhhhho..',
+  '..ohhmmmmmmhho..',
+  '..ohhmmmmmmhho..',
+  '..ohhmmmmmmhho..',
+  '..ohhhhhhhhhho..',
+  '..oddddddddddo..',
+  '................',
+  '................',
+  '................',
+  '................',
+  '................',
+  '................',
+  '................',
+];
+
+export const CHESTPLATE_PX = [
+  '...oo......oo...',
+  '..ohho....ohho..',
+  '..ohhho..ohhho..',
+  '..ohhhhoohhhho..',
+  '..ohhhhhhhhhho..',
+  '..ohhhhhhhhhho..',
+  '..ohhmmmmmmhho..',
+  '..ohhmmmmmmhho..',
+  '..ohhmmmmmmhho..',
+  '..oddddddddddo..',
+  '................',
+  '................',
+  '................',
+  '................',
+  '................',
+  '................',
+];
+
+export const LEGGINGS_PX = [
+  '................',
+  '..oo......oo....',
+  '..ohho...ohho...',
+  '..ohho...ohho...',
+  '..ohho...ohho...',
+  '..ohho...ohho...',
+  '..ohho...ohho...',
+  '..oddo...oddo...',
+  '..oooo...oooo...',
+  '................',
+  '................',
+  '................',
+  '................',
+  '................',
+  '................',
+  '................',
+];
+
+export const BOOTS_PX = [
+  '................',
+  '................',
+  '...oooooo.......',
+  '..ohhhhhho......',
+  '..ohhhhhhhho....',
+  '..ohhhhhhhhhho..',
+  '..ohhhhhhhhhhho.',
+  '...odddddddddo..',
+  '.....oooooooo...',
+  '................',
+  '................',
+  '................',
+  '................',
+  '................',
+  '................',
+  '................',
+];
+
+// ------------------------------------------------------- the last few foods
+//
+// A carrot is orange with a green top, a potato is a brown lump (reusing the
+// raw-iron blob shape, the same way gold reuses it), a baked potato the same
+// lump in a cooked palette, and a golden apple is the apple sprite in gold.
+
+export const CARROT_PALETTE = { o: '#7a2c08', d: '#b04a10', m: '#e06a18', h: '#ff9a40', g: '#3a7a20' };
+export const CARROT_PX = [
+  '................',
+  '......gg........',
+  '.....ggg........',
+  '......gg........',
+  '.....oooo.......',
+  '....ohhhho......',
+  '...ohmmmmho.....',
+  '...ohmmmmho.....',
+  '...ohmmmmho.....',
+  '....odmmdo......',
+  '.....oddo.......',
+  '......oo........',
+  '................',
+  '................',
+  '................',
+  '................',
+];
+
+export const LEATHER_PALETTE = ARMOUR_LEATHER;
+export const POTATO_PALETTE = { o: '#5a3a1c', d: '#8a5a2c', m: '#b08040', h: '#d8b060' };
+export const BAKED_POTATO_PALETTE = { o: '#6a4420', d: '#9a6430', m: '#c08048', h: '#e8b878' };
+export const GOLDEN_APPLE_PALETTE = { o: '#6a5a08', d: '#b8931c', m: '#e8c030', h: '#fff0a0', S: '#5a3818' };
+
 /**
  * Every 16x16 map in this file, by name, so a test can walk the lot and check
  * that each one really is sixteen rows of sixteen characters. A map one
@@ -320,4 +641,8 @@ export const ALL_SPRITES = {
   BUCKET_PX, WATER_BUCKET_PX,
   COAL_PX, RAW_IRON_PX, IRON_INGOT_PX, DIAMOND_PX,
   ROTTEN_FLESH_PX,
+  STEAK_PX, CHICKEN_PX, APPLE_PX,
+  BONE_PX, ARROW_PX, STRING_PX, SPIDER_EYE_PX, BOW_PX, FEATHER_PX,
+  HELMET_PX, CHESTPLATE_PX, LEGGINGS_PX, BOOTS_PX,
+  CARROT_PX,
 };

@@ -114,6 +114,11 @@ export function buildSnapshot({ world, inventory, player, viewMode, furnaces, xp
       // Two more numbers, and they are the difference between closing a tab
       // to escape a drowning and having to swim out of it.
       health: player.health, air: player.air,
+      // ...and the hunger bar, so a meal survives a refresh too.
+      hunger: player.hunger?.toJSON() ?? null,
+      // The four worn armour slots, so a chestplate on your back is still on
+      // your back after Safari drops the tab.
+      armour: inventory?.armour?.map((s) => (s ? [s.id, s.durability ?? 0] : 0)) ?? null,
     },
     view: viewMode,
     furnaces: furnaces ?? [],

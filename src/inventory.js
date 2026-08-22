@@ -9,7 +9,8 @@
 // This file is pure data — no DOM, no THREE — so it is unit-tested in Node.
 
 import { isItem } from './items.js';
-import { ensureDurability, isTool } from './durability.js';
+import { ensureDurability, isDurable } from './durability.js';
+import { isArmour, armourSlot, ARMOUR_SLOTS } from './armour.js';
 import { CraftingGrid, GRID_2X2 } from './crafting.js';
 
 export const HOTBAR_SIZE = 9;
@@ -24,6 +25,11 @@ const clampIndex = (i) => Number.isInteger(i) && i >= 0 && i < TOTAL_SLOTS;
 export class Inventory {
   constructor() {
     this.slots = new Array(TOTAL_SLOTS).fill(null);
+    /**
+     * The four armour slots, helmet first. Not part of the 36 hand slots —
+     * they are worn, not carried — and saved with the rest of the player.
+     */
+    this.armour = new Array(ARMOUR_SLOTS).fill(null);
     /** Selected hotbar slot (0..8). */
     this.selected = 0;
     /** Stack picked up while rearranging (follows the cursor/finger). */
@@ -80,7 +86,15 @@ export class Inventory {
    */
   add(id, count = 1) {
     let left = count;
-    for (let i = 0; i < TOTAL_SLOTS && left > 0; i++) {
+    // Anything with durability takes a slot of its own. Two half-worn
+    // pickaxes — or a battered helmet and a fresh one — are not two of the
+    // same thing: merging them keeps one durability number and throws the
+    // other away, and the item that comes back out of the stack is a lie
+    // about how much use is left in it. Drops already refuse this merge on
+    // the floor (see drops.js); this is the same rule at the moment they
+    // reach your hand.
+    const stacks = !isDurable(id);
+    for (let i = 0; stacks && i < TOTAL_SLOTS && left > 0; i++) {
       const s = this.slots[i];
       if (s && s.id === id && s.count < STACK_MAX) {
         const move = Math.min(STACK_MAX - s.count, left);
@@ -90,7 +104,7 @@ export class Inventory {
     }
     for (let i = 0; i < TOTAL_SLOTS && left > 0; i++) {
       if (!this.slots[i]) {
-        const move = Math.min(STACK_MAX, left);
+        const move = stacks ? Math.min(STACK_MAX, left) : 1;
         this.slots[i] = ensureDurability({ id, count: move });
         left -= move;
       }
@@ -105,6 +119,25 @@ export class Inventory {
     s.count -= n;
     if (s.count <= 0) this.slots[this.selected] = null;
     return true;
+  }
+
+  /**
+   * Consume n of an item from anywhere in the inventory — the bow's arrows
+   * live in any slot, not just the one in hand, which is Minecraft's rule
+   * and the reason a quiver is a slot you never look at.
+   */
+  consume(id, n = 1) {
+    let left = n;
+    for (let i = 0; i < TOTAL_SLOTS && left > 0; i++) {
+      const s = this.slots[i];
+      if (s && s.id === id) {
+        const take = Math.min(s.count, left);
+        s.count -= take;
+        left -= take;
+        if (s.count <= 0) this.slots[i] = null;
+      }
+    }
+    return left === 0;
   }
 
   /**
@@ -154,6 +187,62 @@ export class Inventory {
   }
 
   /**
+   * Click an armour slot. Only armour may enter, and only into the slot it
+   * belongs to — a helmet into the helmet slot, nowhere else. Otherwise the
+   * same pick-up / drop / swap dance as any other slot.
+   */
+  clickArmourSlot(i, half = false) {
+    if (!Number.isInteger(i) || i < 0 || i >= ARMOUR_SLOTS) return;
+    const slot = this.armour[i];
+
+    if (!this.cursor) {
+      if (!slot) return;
+      if (half) {
+        const take = Math.ceil(slot.count / 2);
+        this.cursor = { id: slot.id, count: take, durability: slot.durability };
+        slot.count -= take;
+        if (slot.count <= 0) this.armour[i] = null;
+      } else {
+        this.cursor = slot;
+        this.armour[i] = null;
+      }
+      return;
+    }
+
+    // A piece can only go where it belongs; anything else is simply refused,
+    // so a chestplate dropped on the helmet slot stays in your hand.
+    if (armourSlot(this.cursor.id) !== i) return;
+
+    if (!slot) {
+      const move = half ? 1 : this.cursor.count;
+      this.armour[i] = ensureDurability({ id: this.cursor.id, count: move, durability: this.cursor.durability });
+      this.cursor.count -= move;
+      if (this.cursor.count <= 0) this.cursor = null;
+      return;
+    }
+    // Both hold armour: swap, unless a right-click wants to place one.
+    if (!half) {
+      this.armour[i] = this.cursor;
+      this.cursor = slot;
+    }
+  }
+
+  /**
+   * Shift-click an armour item in a hand slot: put it on, if its slot is
+   * free. Returns true when it was equipped. Wearing a piece keeps its
+   * durability — a battered helmet is still a battered helmet on your head.
+   */
+  equipArmour(index) {
+    const stack = this.get(index);
+    if (!stack || !isArmour(stack.id)) return false;
+    const slot = armourSlot(stack.id);
+    if (slot < 0 || this.armour[slot]) return false;
+    this.armour[slot] = ensureDurability(stack);
+    this.slots[index] = null;
+    return true;
+  }
+
+  /**
    * Shift-click: move a stack between the hotbar and the main grid, merging
    * into matching stacks first. If the other section is full the stack is
    * partially moved and what is left stays put. Returns true when the whole
@@ -187,26 +276,27 @@ export class Inventory {
 
   /**
    * Sort: group stacks by id, largest first, then merge any that fit, and
-   * pack everything to the front. Crafting grid and cursor are untouched.
-   * Returns true if anything moved.
+   * pack everything to the front. Crafting grid, cursor and armour are
+   * untouched. Returns true if anything moved.
    */
   sort() {
     const stacks = this.slots.filter(Boolean).map((s) => ({ ...s }));
-    // Tools never merge: each one carries its own durability, and folding
-    // three part-used pickaxes into one stack would throw two of those
-    // numbers away. They pass through as they are.
-    const tools = stacks.filter((s) => isTool(s.id)).map(ensureDurability);
+    // Durable items never merge: each one carries its own durability, and
+    // folding three part-used pickaxes (or a part-used chestplate into a
+    // fresh one) into one stack would throw two of those numbers away.
+    // They pass through as they are.
+    const durable = stacks.filter((s) => isDurable(s.id)).map(ensureDurability);
     // Merge everything else by id (a full sort of 36 slots is trivial here).
     const byId = new Map();
     for (const s of stacks) {
-      if (isTool(s.id)) continue;
+      if (isDurable(s.id)) continue;
       const cur = byId.get(s.id);
       if (cur) cur.count += s.count;
       else byId.set(s.id, s);
     }
-    // Collapse overflow into multiple stacks, then order: tools first
+    // Collapse overflow into multiple stacks, then order: durable first
     // (durability descending), then blocks by id, count descending.
-    const merged = [...tools];
+    const merged = [...durable];
     for (const [id, s] of byId) {
       let left = s.count;
       while (left > 0) {
@@ -216,11 +306,11 @@ export class Inventory {
       }
     }
     merged.sort((a, b) => {
-      const aTool = isTool(a.id) ? 1 : 0;
-      const bTool = isTool(b.id) ? 1 : 0;
-      if (aTool !== bTool) return bTool - aTool;
+      const aDur = isDurable(a.id) ? 1 : 0;
+      const bDur = isDurable(b.id) ? 1 : 0;
+      if (aDur !== bDur) return bDur - aDur;
       if (a.id !== b.id) return a.id - b.id;
-      if (aTool) return (b.durability ?? 0) - (a.durability ?? 0);
+      if (aDur) return (b.durability ?? 0) - (a.durability ?? 0);
       return b.count - a.count;
     });
     // Write back, padded with nulls.
