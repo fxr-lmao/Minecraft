@@ -999,7 +999,10 @@ export function createSheepModel() {
     body: [14, 9, 20],
     head: [7, 7, 7],
     leg: [4, 6, 4],
-    headAt: [0, 13, -13],
+    // The head sits further out than on the other animals because the wool
+    // reaches further forward than the body it covers — a sheep's face must
+    // clear the fleece or the fleece wears it.
+    headAt: [0, 13, -15],
     bodyTex: 'sheep',
     headTex: 'sheepDark',
     legTex: 'sheepDark',
