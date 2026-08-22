@@ -22,8 +22,8 @@
 
 import {
   buildExtrudedSprite, buildBoxModel, buildBucketModel, bucketBoxes,
-  spriteCells, parseHex, meshBounds, coincidentFaces, windingErrors,
-  MeshBuilder, shade, SPRITE_DEPTH, SPRITE_SIZE, FACE_SHADE,
+  buildToolModel, spriteCells, parseHex, meshBounds, coincidentFaces,
+  windingErrors, MeshBuilder, shade, SPRITE_DEPTH, SPRITE_SIZE, FACE_SHADE,
 } from '../src/held-geometry.js';
 import {
   modelSpec, poseKind, firstPersonPose, thirdPersonPose,
@@ -61,9 +61,9 @@ const near = (a, b, eps = 1e-9) => Math.abs(a - b) < eps;
 function meshFor(id) {
   const spec = modelSpec(id);
   if (!spec) return null;
-  return spec.kind === 'bucket'
-    ? buildBucketModel(spec.full)
-    : buildExtrudedSprite(spec.rows, spec.palette, spec);
+  if (spec.kind === 'bucket') return buildBucketModel(spec.full);
+  if (spec.kind === 'tool') return buildToolModel(spec);
+  return buildExtrudedSprite(spec.rows, spec.palette, spec);
 }
 
 // --------------------------------------------------------------- primitives
@@ -362,6 +362,116 @@ function meshFor(id) {
     assert(`${name} has a third-person pose`, Boolean(thirdPersonPose(id)));
     const shape = itemShape(id);
     assert(`${name} has a grip height`, GRIP_HEIGHT[shape] !== undefined, shape);
+  }
+}
+
+// ----------------------------------------------------- the dimensional tools
+{
+  // The profile is the whole of the new tool look: a sword's crossguard
+  // stands proud of its blade, a pickaxe's head is chunky over a slim
+  // haft. Each is checked by the widest z the model reaches.
+  const maxZ = (mesh) => {
+    let z = 0;
+    for (let i = 2; i < mesh.positions.length; i += 3) {
+      z = Math.max(z, Math.abs(mesh.positions[i]));
+    }
+    return z;
+  };
+
+  const sword = meshFor(IRON_SWORD);
+  const pick = meshFor(PICKAXE);
+  const axe = meshFor(IRON_AXE);
+
+  // The sword guard is 3.6 texels thick, the blade 1.4: the guard is the
+  // thickest thing on the model and the blade is not.
+  assert('a sword has a crossguard thicker than its blade',
+    Math.abs(maxZ(sword) - 3.6 / 32) < 1e-9, maxZ(sword).toFixed(4));
+  // The pickaxe head (3.2 texels) is thicker than the haft (2.0) and the
+  // head sets the bound.
+  assert('a pickaxe head is chunky over a slim haft',
+    Math.abs(maxZ(pick) - 3.2 / 32) < 1e-9, maxZ(pick).toFixed(4));
+  assert('an axe head is a thick wedge on a thin handle',
+    Math.abs(maxZ(axe) - 3.4 / 32) < 1e-9, maxZ(axe).toFixed(4));
+
+  // The step ledges the profile creates are real faces: a profiled sword
+  // has more triangles than the same sprite extruded at one flat depth.
+  const flat = buildExtrudedSprite(SWORD_PX, { ...HAFT, ...HEAD_IRON }, { depth: 1.5 / 16 });
+  assert('the profile adds the step faces a flat extrusion lacks',
+    sword.triangles > flat.triangles + 8,
+    `${sword.triangles} vs ${flat.triangles}`);
+  assert('...still wound outward', windingErrors(sword) === 0);
+  assert('...with nothing doubled', coincidentFaces(sword) === 0);
+
+  // Nothing sticks out of the blade. The blade is the upper half of the
+  // model (rows 0-7, y in 0..0.5), so look at triangles whose vertices all
+  // live up there — that keeps the guard (the thickest part) out of the
+  // measurement — and assert the blade is exactly its profile thickness
+  // and no more. This is the assertion that failed a sword fuller: any
+  // bolted-on box that reached past the blade's own face would be a ridge
+  // down it rather than a groove in it.
+  let bladeZ = 0;
+  const pos = sword.positions;
+  for (let t = 0; t < pos.length; t += 9) {
+    let inBlade = true;
+    for (let v = 0; v < 9; v += 3) {
+      if (pos[t + v + 1] < 0.001) inBlade = false;
+    }
+    if (!inBlade) continue;
+    for (let v = 0; v < 9; v += 3) bladeZ = Math.max(bladeZ, Math.abs(pos[t + v + 2]));
+  }
+  assert('nothing stands proud of the blade',
+    Math.abs(bladeZ - 1.4 / 32) < 1e-9, bladeZ.toFixed(4));
+
+  // Every step in a profile is closed on *both* sides. The extrusion is
+  // symmetric about z = 0, so a crossguard standing proud of a blade
+  // leaves a gap in front of the blade and an identical one behind it;
+  // closing only the front left a hole you could see straight into from
+  // behind. For each row boundary where the thickness changes, the ledge
+  // quads must come in mirrored pairs, and they must all face the same
+  // way — the thicker row owns the step, so a face pointing the other way
+  // is buried inside solid material.
+  for (const [name, id, boundaries] of [
+    ['sword', IRON_SWORD, [[7, 1.4, 3.6], [9, 3.6, 1.9], [13, 1.9, 2.6]]],
+    ['pickaxe', PICKAXE, [[6, 3.2, 2.0]]],
+    ['axe', IRON_AXE, [[9, 3.4, 2.0]]],
+  ]) {
+    const mesh = meshFor(id);
+    for (const [row, above, below] of boundaries) {
+      const y = 0.5 - (row + 1) / 16;
+      const front = new Set();
+      const back = new Set();
+      let wrongWay = 0;
+      // The thicker row owns the ledge: thicker below => the ledge is that
+      // row's top surface (+y); thicker above => its underside (-y).
+      const want = above > below ? -1 : 1;
+      for (let t = 0; t < mesh.positions.length; t += 9) {
+        if (Math.abs(mesh.normals[t + 1]) < 0.5) continue;
+        let flat = true;
+        for (let v = 0; v < 9; v += 3) {
+          if (Math.abs(mesh.positions[t + v + 1] - y) > 1e-9) flat = false;
+        }
+        if (!flat) continue;
+        const zs = [mesh.positions[t + 2], mesh.positions[t + 5], mesh.positions[t + 8]];
+        const lo = Math.min(...zs);
+        const hi = Math.max(...zs);
+        // The full-depth silhouette faces span the whole slab; the ledges
+        // are the strips that do not straddle the centre line.
+        if (lo < -1e-9 && hi > 1e-9) continue;
+        // Key by distance from the centre line, nearest edge first, so a
+        // front strip and its mirror image behind hash the same.
+        const near = Math.min(Math.abs(lo), Math.abs(hi));
+        const far = Math.max(Math.abs(lo), Math.abs(hi));
+        const key = `${near.toFixed(6)},${far.toFixed(6)}`;
+        (hi > 0 ? front : back).add(key);
+        if (Math.sign(mesh.normals[t + 1]) !== want) wrongWay++;
+      }
+      const paired = front.size > 0 && front.size === back.size
+        && [...front].every((k) => back.has(k));
+      assert(`the ${name} closes its step at row ${row} on both sides`,
+        paired, `front ${[...front].join(' ')} | back ${[...back].join(' ')}`);
+      assert(`...and every ${name} ledge at row ${row} faces out of the solid`,
+        wrongWay === 0, `${wrongWay} inward-facing`);
+    }
   }
 }
 

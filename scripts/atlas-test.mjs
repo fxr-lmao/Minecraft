@@ -241,6 +241,56 @@ const assert = (name, cond, detail) =>
   assert('the painter actually drew something', canvas.getContext('2d').ops >= 0);
 }
 
+// ------------------------------------------------------- the pixel maps
+// The art is data now: a block face or an item sprite is sixteen strings of
+// sixteen letters plus a palette that turns letters into colours. Which means
+// it can be read, and the two ways it goes wrong are both silent.
+//
+// A ragged row throws at import (mapSize checks it), so that one announces
+// itself. A letter with no entry in its palette does not: resolveMap and
+// spriteCells both treat an unpainted letter as transparent, deliberately —
+// that is how a sprite leaves a hole — so a typo'd letter is not an error,
+// it is a one-pixel puncture in the middle of a texture that nobody notices
+// until they are looking straight at it.
+{
+  const maps = await import('../src/block-pixels.js');
+  const sprites = await import('../src/item-sprites.js');
+
+  const ragged = [];
+  const unpainted = [];
+  const wrongSize = [];
+  for (const [modName, mod] of [['block-pixels', maps], ['item-sprites', sprites]]) {
+    for (const [name, value] of Object.entries(mod)) {
+      if (!Array.isArray(value)) continue;
+      if (!value.every((r) => typeof r === 'string')) continue;
+      const n = value.length;
+      if (!value.every((r) => r.length === n)) {
+        ragged.push(`${modName}.${name}`);
+        continue;
+      }
+      // Block faces and item sprites are 16x16. The ore lumps are stamps
+      // rather than faces and come in their own sizes, so they are exempt.
+      if (name.endsWith('_PX') && !name.startsWith('LUMP_') && n !== T.TEX_SIZE) {
+        wrongSize.push(`${modName}.${name} is ${n}`);
+      }
+      if (!name.endsWith('_PX')) continue;
+      const palette = mod[`${name.slice(0, -3)}_PALETTE`];
+      if (!palette) continue;
+      const letters = new Set(value.join('').split(''));
+      for (const ch of letters) {
+        if (ch === '.' || ch === ' ') continue;
+        if (!palette[ch]) unpainted.push(`${modName}.${name}:'${ch}'`);
+      }
+    }
+  }
+
+  assert('every pixel map is square', ragged.length === 0, ragged.join(' '));
+  assert('...and every face and sprite is sixteen rows',
+    wrongSize.length === 0, wrongSize.join(' '));
+  assert('every letter in a map has a colour in its palette',
+    unpainted.length === 0, unpainted.slice(0, 5).join(' '));
+}
+
 for (const [name, ok, detail] of results) {
   console.log(`${ok ? 'PASS' : 'FAIL'}  ${name}${detail ? '  (' + detail + ')' : ''}`);
 }
