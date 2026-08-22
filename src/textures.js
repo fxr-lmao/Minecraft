@@ -1,6 +1,17 @@
-// Procedural 16x16 Minecraft-style block textures, generated on canvas.
-// Each block gets a 48x16 atlas: [side | top | bottom] columns.
-// Textures are generated with a seeded RNG so they look identical every load.
+// Block and item textures: the atlas, the icons, the water tiles, the
+// destroy cracks and the HUD sprites.
+//
+// The previous version generated every block face as a noise field on a
+// canvas — fast, and it looked fast. This version paints from hand-authored
+// pixel maps (block-pixels.js) and hand-drawn item maps (item-sprites.js),
+// because a texture is a picture of a thing and a picture is made of
+// decisions, not distributions. The painting machinery is pixelart.js; this
+// file is the catalogue: which map goes on which face of which id, how the
+// atlas tiles are laid out, and how the icons are drawn.
+//
+// The layout the world depends on is unchanged: three tiles per definition
+// — [side | top | bottom] — in ATLAS_DEFS order, with the water flow levels
+// sharing the source's three tiles.
 
 import * as THREE from '../vendor/three.module.min.js';
 import { mulberry32, clamp } from './utils.js';
@@ -28,19 +39,39 @@ import {
   BUCKET_PX, WATER_BUCKET_PX,
   COAL_PX, RAW_IRON_PX, IRON_INGOT_PX, DIAMOND_PX,
   COAL_PALETTE, RAW_IRON_PALETTE, IRON_INGOT_PALETTE, DIAMOND_PALETTE,
-  RAW_GOLD_PALETTE, GOLD_INGOT_PALETTE, REDSTONE_PALETTE,
-  GUNPOWDER_PALETTE, ROTTEN_FLESH_PALETTE, ROTTEN_FLESH_PX,
+  RAW_GOLD_PALETTE, GOLD_INGOT_PALETTE, REDSTONE_PALETTE, REDSTONE_PX,
+  GUNPOWDER_PALETTE, GUNPOWDER_PX, ROTTEN_FLESH_PALETTE, ROTTEN_FLESH_PX,
   RAW_MEAT_PALETTE, COOKED_MEAT_PALETTE,
   CHICKEN_RAW_PALETTE, CHICKEN_COOKED_PALETTE, APPLE_PALETTE,
-  STEAK_PX, CHICKEN_PX, APPLE_PX,
+  STEAK_PX, PORKCHOP_PX, MUTTON_PX, CHICKEN_PX, APPLE_PX,
   BONE_PALETTE, BONE_PX, ARROW_PALETTE, ARROW_PX,
   STRING_PALETTE, STRING_PX, SPIDER_EYE_PALETTE, SPIDER_EYE_PX,
   BOW_PALETTE, BOW_PX, FEATHER_PALETTE, FEATHER_PX,
   ARMOUR_LEATHER, HELMET_PX, CHESTPLATE_PX, LEGGINGS_PX, BOOTS_PX,
-  CARROT_PALETTE, CARROT_PX, LEATHER_PALETTE,
-  POTATO_PALETTE, BAKED_POTATO_PALETTE, GOLDEN_APPLE_PALETTE,
+  CARROT_PALETTE, CARROT_PX, LEATHER_PALETTE, LEATHER_PX,
+  POTATO_PALETTE, BAKED_POTATO_PALETTE, POTATO_PX,
+  GOLDEN_APPLE_PALETTE,
 } from './item-sprites.js';
+import {
+  DIRT_PX, DIRT_PALETTE, GRASS_TOP_PX, GRASS_TOP_PALETTE,
+  GRASS_SIDE_PX, GRASS_SIDE_PALETTE, STONE_PX, STONE_PALETTE,
+  COBBLE_PX, COBBLE_PALETTE, PLANKS_PX, PLANKS_PALETTE,
+  SAND_PX, SAND_PALETTE, BRICK_PX, BRICK_PALETTE,
+  BEDROCK_PX, BEDROCK_PALETTE, SNOW_PX, SNOW_PALETTE,
+  LOG_SIDE_PX, LOG_SIDE_PALETTE, LOG_TOP_PX, LOG_TOP_PALETTE,
+  LEAVES_PX, LEAVES_PALETTE, DEEPSLATE_PX, DEEPSLATE_PALETTE,
+  WATER_ICON_PX, WATER_ICON_PALETTE, ICE_PX, ICE_PALETTE,
+  CRAFT_TOP_PX, CRAFT_TOP_PALETTE, CRAFT_SIDE_PX, CRAFT_SIDE_PALETTE,
+  FURNACE_FRONT_PX, FURNACE_FRONT_PALETTE, FURNACE_SIDE_PX, FURNACE_SIDE_PALETTE,
+  GLASS_PX, GLASS_PALETTE, TNT_SIDE_PX, TNT_SIDE_PALETTE, TNT_TOP_PX, TNT_TOP_PALETTE,
+  ORE_PALETTES, LUMP_COAL_PX, LUMP_IRON_PX, LUMP_REDSTONE_PX, LUMP_DIAMOND_PX,
+} from './block-pixels.js';
+import {
+  paintedCanvas, paintWithOutline, paintMap, resolveMap, stamp, paintCells,
+} from './pixelart.js';
 
+// The item-sprites exports are part of this module's public surface too —
+// the tests and the old callers import them from here.
 export {
   HAFT, HEAD_WOOD, HEAD_STONE, HEAD_IRON, HEAD_DIAMOND, BUCKET_PALETTE,
   STICK_PX, PICKAXE_PX, SHOVEL_PX, AXE_PX, SWORD_PX,
@@ -49,900 +80,238 @@ export {
 
 export const TEX_SIZE = 16;
 
-// ---------- value noise helper ----------
-function makeNoise(rand, base) {
-  // 2-octave value noise on a 16x16 grid
-  const grid = [];
-  for (let i = 0; i < 18 * 18; i++) grid.push(rand());
-  const sample = (x, y) => {
-    const xi = Math.floor(x);
-    const yi = Math.floor(y);
-    const xf = x - xi;
-    const yf = y - yi;
-    const s = (t) => t * t * (3 - 2 * t);
-    const a = grid[yi * 18 + xi];
-    const b = grid[yi * 18 + xi + 1];
-    const c = grid[(yi + 1) * 18 + xi];
-    const d = grid[(yi + 1) * 18 + xi + 1];
-    return a + (b - a) * s(xf) + (c - a) * s(yf) + (a - b - c + d) * s(xf) * s(yf);
-  };
-  const range = (x, y) => {
-    const n = sample(x / 4, y / 4) * 0.6 + sample(x / 2, y / 2) * 0.4;
-    return base + (n - 0.5) * 0.28;
-  };
-  return range;
-}
+// --------------------------------------------------------------- face recipes
+//
+// Every face is a function `(rand) => canvas`, where `rand` is the block's
+// seeded RNG — same convention as before, so BLOCK_DEFS stays data and the
+// painter stays dumb. The wobble seed is drawn from `rand` so each block of
+// a kind paints an identical tile every load and every test.
 
-function shadeHex(hex, f) {
-  const r = clamp(Math.round(((hex >> 16) & 255) * f), 0, 255);
-  const g = clamp(Math.round(((hex >> 8) & 255) * f), 0, 255);
-  const b = clamp(Math.round((hex & 255) * f), 0, 255);
-  return (r << 16) | (g << 8) | b;
-}
+const seedOf = (rand) => Math.floor(rand() * 0x7fffffff) || 1;
 
-/** A colour number as the CSS the 2D context wants. */
-const hex = (c) => `#${c.toString(16).padStart(6, '0')}`;
+/** A face painted straight from a map. */
+const mapFace = (rows, palette, wobble = 0.05) => (rand) =>
+  paintedCanvas(TEX_SIZE, rows, palette, { seed: seedOf(rand), wobble });
 
-function noiseCanvas(rand, base, opts = {}) {
-  const { speckles = 0, blotches = 0, blotchColor = 0x000000 } = opts;
-  const cv = document.createElement('canvas');
-  cv.width = cv.height = TEX_SIZE;
-  const ctx = cv.getContext('2d');
-  const img = ctx.createImageData(TEX_SIZE, TEX_SIZE);
-  const range = makeNoise(rand, 1);
-  for (let y = 0; y < TEX_SIZE; y++) {
-    for (let x = 0; x < TEX_SIZE; x++) {
-      let c = shadeHex(base, range(x, y));
-      img.data[(y * TEX_SIZE + x) * 4] = (c >> 16) & 255;
-      img.data[(y * TEX_SIZE + x) * 4 + 1] = (c >> 8) & 255;
-      img.data[(y * TEX_SIZE + x) * 4 + 2] = c & 255;
-      img.data[(y * TEX_SIZE + x) * 4 + 3] = 255;
-    }
-  }
-  // darker/lighter speckles
-  for (let i = 0; i < speckles; i++) {
-    const x = Math.floor(rand() * TEX_SIZE);
-    const y = Math.floor(rand() * TEX_SIZE);
-    const f = 0.72 + rand() * 0.5;
-    const c = shadeHex(base, f);
-    const o = (y * TEX_SIZE + x) * 4;
-    img.data[o] = (c >> 16) & 255;
-    img.data[o + 1] = (c >> 8) & 255;
-    img.data[o + 2] = c & 255;
-  }
-  // random darker blotches (cobblestone etc.)
-  for (let i = 0; i < blotches; i++) {
-    const cx = rand() * TEX_SIZE;
-    const cy = rand() * TEX_SIZE;
-    const r = 1.5 + rand() * 2.5;
-    for (let y = 0; y < TEX_SIZE; y++) {
-      for (let x = 0; x < TEX_SIZE; x++) {
-        const dx = x + 0.5 - cx;
-        const dy = y + 0.5 - cy;
-        if (dx * dx + dy * dy < r * r * (0.6 + rand() * 0.4)) {
-          const o = (y * TEX_SIZE + x) * 4;
-          const f = 0.55 + rand() * 0.35;
-          img.data[o] = clamp(Math.round(img.data[o] * f), 0, 255);
-          img.data[o + 1] = clamp(Math.round(img.data[o + 1] * f), 0, 255);
-          img.data[o + 2] = clamp(Math.round(img.data[o + 2] * f), 0, 255);
-        }
-      }
-    }
-  }
-  ctx.putImageData(img, 0, 0);
-  return cv;
-}
-
-// ---------- face recipes ----------
-
-function dirtFace(rand) {
-  return noiseCanvas(rand, 0x866043, { speckles: 30, blotches: 3 });
-}
-
-function grassTopFace(rand) {
-  const cv = noiseCanvas(rand, 0x6aac3c, { speckles: 36, blotches: 2 });
-  // A scatter of individual blade-green pixels so the top reads as turf
-  // rather than as a flat green plane.
-  const img = cv.getContext('2d').getImageData(0, 0, TEX_SIZE, TEX_SIZE);
-  for (let i = 0; i < 22; i++) {
-    const x = Math.floor(rand() * TEX_SIZE);
-    const y = Math.floor(rand() * TEX_SIZE);
-    const c = shadeHex(0x8fd04e, 0.75 + rand() * 0.5);
-    const o = (y * TEX_SIZE + x) * 4;
-    img.data[o] = (c >> 16) & 255;
-    img.data[o + 1] = (c >> 8) & 255;
-    img.data[o + 2] = c & 255;
-  }
-  cv.getContext('2d').putImageData(img, 0, 0);
-  return cv;
-}
-
-function grassSideFace(rand) {
-  const cv = document.createElement('canvas');
-  cv.width = cv.height = TEX_SIZE;
-  const ctx = cv.getContext('2d');
-  ctx.drawImage(dirtFace(rand), 0, 0);
-  // The classic grass-block side: a clean green cap sitting on the dirt,
-  // with a ragged bottom edge where the two meet. The cap is 3-4 px deep,
-  // like Minecraft's, and the join is a couple of pixel teeth rather than
-  // a smooth blend.
-  const img = ctx.getImageData(0, 0, TEX_SIZE, TEX_SIZE);
-  for (let x = 0; x < TEX_SIZE; x++) {
-    const cap = 3 + Math.floor(rand() * 1.5); // 3..4
-    const teeth = rand() < 0.5 ? 1 : 0; // ragged lip
-    const depth = cap + teeth;
-    const grass = shadeHex(0x6aac3c, 0.88 + rand() * 0.24);
-    const gr = (grass >> 16) & 255;
-    const gg = (grass >> 8) & 255;
-    const gb = grass & 255;
-    for (let y = 0; y < depth; y++) {
-      const o = (y * TEX_SIZE + x) * 4;
-      img.data[o] = gr;
-      img.data[o + 1] = gg;
-      img.data[o + 2] = gb;
-    }
-  }
-  ctx.putImageData(img, 0, 0);
-  return cv;
-}
-
-function stoneFace(rand) {
-  // Minecraft's stone: a mid grey with soft patches of lighter and darker
-  // rock, speckled across the tile. The blotches give it depth, the
-  // speckles give it grit.
-  return noiseCanvas(rand, 0x7f7f7f, { speckles: 52, blotches: 6 });
-}
+/** A face with a darker tint applied to the whole map (furnace side, say). */
+const tintFace = (rows, palette, tint, wobble = 0.05) => (rand) =>
+  paintedCanvas(TEX_SIZE, rows, palette, { seed: seedOf(rand), wobble, tint });
 
 /**
- * An ore: rock with something in it.
- *
- * Minecraft's ores are the same rock with a handful of coloured lumps, and
- * the lumps are what you learn to spot from across a cavern — so they are
- * drawn as a few blobs with a darker rim and a bright facet on the
- * upper-left, which is the whole of "this is a crystal and not a stain".
- *
- * The rock is a parameter because there are two of them: below the deepslate
- * line the same vein is drawn on deepslate, or it would be a bright grey
- * patch hanging in a near-black wall.
+ * An ore face: the base rock painted from its map, then `count` lumps of
+ * the mineral stamped onto it at seeded positions. The lumps are the
+ * hand-drawn stamps from block-pixels.js, so a diamond lump is a diamond
+ * whether it sits in stone or in deepslate.
  */
-function oreFace(base, colour, shine, lumps = 5) {
+function oreFace(baseRows, basePalette, lumpRows, lumpPalette, count) {
   return (rand) => {
-    const cv = base(rand);
-    const ctx = cv.getContext('2d');
-    for (let i = 0; i < lumps; i++) {
-      const x = 1 + Math.floor(rand() * (TEX_SIZE - 4));
-      const y = 1 + Math.floor(rand() * (TEX_SIZE - 4));
-      const w = 2 + Math.floor(rand() * 2);
-      const h = 2 + Math.floor(rand() * 2);
-      // The rim is the lump's own colour turned down, not its bits masked
-      // off: masking drops each channel to whatever is left under 0x80,
-      // which is a different hue rather than a darker one — it turned
-      // iron's warm tan into magenta.
-      ctx.fillStyle = hex(shadeHex(colour, 0.45));
-      ctx.fillRect(x, y, w + 1, h + 1);
-      ctx.fillStyle = hex(colour);
-      ctx.fillRect(x, y, w, h);
-      ctx.fillStyle = hex(shine);
-      ctx.fillRect(x, y, 1, 1);
+    let cells = resolveMap(baseRows, basePalette);
+    const lump = resolveMap(lumpRows, lumpPalette);
+    const lw = lumpRows[0].length;
+    const lh = lumpRows.length;
+    for (let i = 0; i < count; i++) {
+      const x = 1 + Math.floor(rand() * (TEX_SIZE - lw - 1));
+      const y = 1 + Math.floor(rand() * (TEX_SIZE - lh - 1));
+      cells = stamp(cells, TEX_SIZE, TEX_SIZE, lump, lw, lh, x, y);
     }
+    const cv = document.createElement('canvas');
+    cv.width = cv.height = TEX_SIZE;
+    const ctx = cv.getContext('2d');
+    ctx.imageSmoothingEnabled = false;
+    paintCells(ctx, cells, TEX_SIZE, 0, 0, 1, seedOf(rand), 0.05);
     return cv;
   };
 }
 
+// The five minerals, on each of the two rocks.
+const coalLump = (deep) => oreFace(
+  deep ? DEEPSLATE_PX : STONE_PX,
+  deep ? DEEPSLATE_PALETTE : STONE_PALETTE,
+  LUMP_COAL_PX, deep ? ORE_PALETTES.coalDeep : ORE_PALETTES.coal, 5);
+const ironLump = (deep) => oreFace(
+  deep ? DEEPSLATE_PX : STONE_PX,
+  deep ? DEEPSLATE_PALETTE : STONE_PALETTE,
+  LUMP_IRON_PX, ORE_PALETTES.iron, 4);
+const goldLump = (deep) => oreFace(
+  deep ? DEEPSLATE_PX : STONE_PX,
+  deep ? DEEPSLATE_PALETTE : STONE_PALETTE,
+  LUMP_IRON_PX, ORE_PALETTES.gold, 4);
+const redstoneLump = (deep) => oreFace(
+  deep ? DEEPSLATE_PX : STONE_PX,
+  deep ? DEEPSLATE_PALETTE : STONE_PALETTE,
+  LUMP_REDSTONE_PX, ORE_PALETTES.redstone, 4);
+const diamondLump = (deep) => oreFace(
+  deep ? DEEPSLATE_PX : STONE_PX,
+  deep ? DEEPSLATE_PALETTE : STONE_PALETTE,
+  LUMP_DIAMOND_PX, ORE_PALETTES.diamond, 3);
 
-// Deepslate: darker and cooler than stone, with the fine dark streaks that
-// make the switch obvious the moment you dig past it. Minecraft's deepslate
-// reads as near-black rock with subtle lighter inclusions, not as grey with
-// black lines — so the speckles are the light parts here.
-function deepslateFace(rand) {
-  const cv = noiseCanvas(rand, 0x35373c, { speckles: 60, blotches: 6, blotchColor: 0x24262b });
-  const ctx = cv.getContext('2d');
-  const img = ctx.getImageData(0, 0, TEX_SIZE, TEX_SIZE);
-  // A few faint light inclusions, like the quartz flecks in real deepslate.
-  for (let i = 0; i < 14; i++) {
-    const x = Math.floor(rand() * TEX_SIZE);
-    const y = Math.floor(rand() * TEX_SIZE);
-    const o = (y * TEX_SIZE + x) * 4;
-    const v = 96 + Math.floor(rand() * 46);
-    img.data[o] = v;
-    img.data[o + 1] = v;
-    img.data[o + 2] = v + 6;
-  }
-  ctx.putImageData(img, 0, 0);
-  return cv;
-}
+// ------------------------------------------------------------------- blocks
 
-// The ten ore tiles: five lumps, on each of the two rocks. Most of the
-// colours carry over unchanged; the ones that move are the two that would
-// otherwise disappear into the darker rock. Coal goes *down* rather than up —
-// its lumps read on deepslate as holes in it, which is what they look like in
-// Minecraft too — while diamond and redstone are brightened, because a
-// gemstone that is dimmer than the wall around it is not a gemstone.
-const ORE_LUMPS = [
-  { name: 'coal', colour: 0x24242a, deep: 0x101014, shine: 0x53535c, deepShine: 0x6c6c78, lumps: 6 },
-  { name: 'iron', colour: 0xc4906a, deep: 0xc4906a, shine: 0xe8c2a2, deepShine: 0xf0d0b4, lumps: 5 },
-  { name: 'gold', colour: 0xf0c23a, deep: 0xf0c23a, shine: 0xfff0a8, deepShine: 0xfff0a8, lumps: 5 },
-  { name: 'redstone', colour: 0xd0202a, deep: 0xe0303a, shine: 0xff6a6a, deepShine: 0xff8080, lumps: 6 },
-  { name: 'diamond', colour: 0x39d9d2, deep: 0x4ee8e0, shine: 0xbdfffb, deepShine: 0xd6fffd, lumps: 4 },
+/** Each entry: { id, name, side, top, bottom } — faces are (rand) => canvas. */
+export const BLOCK_DEFS = [
+  { id: 1, name: 'Grass Block', side: mapFace(GRASS_SIDE_PX, GRASS_SIDE_PALETTE), top: mapFace(GRASS_TOP_PX, GRASS_TOP_PALETTE), bottom: mapFace(DIRT_PX, DIRT_PALETTE) },
+  { id: 2, name: 'Dirt', side: mapFace(DIRT_PX, DIRT_PALETTE), top: mapFace(DIRT_PX, DIRT_PALETTE), bottom: mapFace(DIRT_PX, DIRT_PALETTE) },
+  { id: 3, name: 'Stone', side: mapFace(STONE_PX, STONE_PALETTE), top: mapFace(STONE_PX, STONE_PALETTE), bottom: mapFace(STONE_PX, STONE_PALETTE) },
+  { id: 4, name: 'Cobblestone', side: mapFace(COBBLE_PX, COBBLE_PALETTE), top: mapFace(COBBLE_PX, COBBLE_PALETTE), bottom: mapFace(COBBLE_PX, COBBLE_PALETTE) },
+  { id: 5, name: 'Oak Planks', side: mapFace(PLANKS_PX, PLANKS_PALETTE), top: mapFace(PLANKS_PX, PLANKS_PALETTE), bottom: mapFace(PLANKS_PX, PLANKS_PALETTE) },
+  { id: 6, name: 'Sand', side: mapFace(SAND_PX, SAND_PALETTE), top: mapFace(SAND_PX, SAND_PALETTE), bottom: mapFace(SAND_PX, SAND_PALETTE) },
+  { id: 7, name: 'Bricks', side: mapFace(BRICK_PX, BRICK_PALETTE), top: mapFace(BRICK_PX, BRICK_PALETTE), bottom: mapFace(BRICK_PX, BRICK_PALETTE) },
+  { id: 8, name: 'Bedrock', side: mapFace(BEDROCK_PX, BEDROCK_PALETTE), top: mapFace(BEDROCK_PX, BEDROCK_PALETTE), bottom: mapFace(BEDROCK_PX, BEDROCK_PALETTE) },
+  { id: 9, name: 'Snow Block', side: mapFace(SNOW_PX, SNOW_PALETTE), top: mapFace(SNOW_PX, SNOW_PALETTE), bottom: mapFace(SNOW_PX, SNOW_PALETTE) },
+  { id: 10, name: 'Oak Log', side: mapFace(LOG_SIDE_PX, LOG_SIDE_PALETTE), top: mapFace(LOG_TOP_PX, LOG_TOP_PALETTE), bottom: mapFace(LOG_TOP_PX, LOG_TOP_PALETTE) },
+  { id: 11, name: 'Leaves', side: mapFace(LEAVES_PX, LEAVES_PALETTE), top: mapFace(LEAVES_PX, LEAVES_PALETTE), bottom: mapFace(LEAVES_PX, LEAVES_PALETTE) },
+  { id: 12, name: 'Deepslate', side: mapFace(DEEPSLATE_PX, DEEPSLATE_PALETTE), top: mapFace(DEEPSLATE_PX, DEEPSLATE_PALETTE), bottom: mapFace(DEEPSLATE_PX, DEEPSLATE_PALETTE) },
+  { id: 13, name: 'Water', side: mapFace(WATER_ICON_PX, WATER_ICON_PALETTE), top: mapFace(WATER_ICON_PX, WATER_ICON_PALETTE), bottom: mapFace(WATER_ICON_PX, WATER_ICON_PALETTE) },
+  // 14..21 are the flowing water levels, which share the source's tile.
+  { id: 22, name: 'Ice', side: mapFace(ICE_PX, ICE_PALETTE), top: mapFace(ICE_PX, ICE_PALETTE), bottom: mapFace(ICE_PX, ICE_PALETTE) },
+  { id: 23, name: 'Coal Ore', side: coalLump(false), top: coalLump(false), bottom: coalLump(false) },
+  { id: 24, name: 'Iron Ore', side: ironLump(false), top: ironLump(false), bottom: ironLump(false) },
+  { id: 25, name: 'Gold Ore', side: goldLump(false), top: goldLump(false), bottom: goldLump(false) },
+  { id: 26, name: 'Redstone Ore', side: redstoneLump(false), top: redstoneLump(false), bottom: redstoneLump(false) },
+  { id: 27, name: 'Diamond Ore', side: diamondLump(false), top: diamondLump(false), bottom: diamondLump(false) },
+  { id: 28, name: 'Deepslate Coal Ore', side: coalLump(true), top: coalLump(true), bottom: coalLump(true) },
+  { id: 29, name: 'Deepslate Iron Ore', side: ironLump(true), top: ironLump(true), bottom: ironLump(true) },
+  { id: 30, name: 'Deepslate Gold Ore', side: goldLump(true), top: goldLump(true), bottom: goldLump(true) },
+  { id: 31, name: 'Deepslate Redstone Ore', side: redstoneLump(true), top: redstoneLump(true), bottom: redstoneLump(true) },
+  { id: 32, name: 'Deepslate Diamond Ore', side: diamondLump(true), top: diamondLump(true), bottom: diamondLump(true) },
+  // Crafting-era blocks: player-placed only, ids 33+ (see blocks-extra.js).
+  { id: CRAFTING_TABLE, name: 'Crafting Table', side: mapFace(CRAFT_SIDE_PX, CRAFT_SIDE_PALETTE), top: mapFace(CRAFT_TOP_PX, CRAFT_TOP_PALETTE), bottom: mapFace(PLANKS_PX, PLANKS_PALETTE) },
+  { id: FURNACE, name: 'Furnace', side: mapFace(FURNACE_FRONT_PX, FURNACE_FRONT_PALETTE), top: mapFace(FURNACE_SIDE_PX, FURNACE_SIDE_PALETTE), bottom: mapFace(FURNACE_SIDE_PX, FURNACE_SIDE_PALETTE) },
+  { id: GLASS, name: 'Glass', side: mapFace(GLASS_PX, GLASS_PALETTE), top: mapFace(GLASS_PX, GLASS_PALETTE), bottom: mapFace(GLASS_PX, GLASS_PALETTE) },
+  { id: TNT, name: 'TNT', side: mapFace(TNT_SIDE_PX, TNT_SIDE_PALETTE), top: mapFace(TNT_TOP_PX, TNT_TOP_PALETTE), bottom: mapFace(TNT_TOP_PX, TNT_TOP_PALETTE) },
 ];
-const [coalFace, ironFace, goldFace, redstoneFace, diamondFace] =
-  ORE_LUMPS.map((o) => oreFace(stoneFace, o.colour, o.shine, o.lumps));
-const [deepCoalFace, deepIronFace, deepGoldFace, deepRedstoneFace, deepDiamondFace] =
-  ORE_LUMPS.map((o) => oreFace(deepslateFace, o.deep, o.deepShine, o.lumps));
 
-// Water. Drawn opaque here and made translucent by the material — the atlas
-// is a single texture shared with every solid block, so the alpha has to
-// come from somewhere else.
-//
-// This one is only the inventory icon and the block held in the hand. The
-// water you see in the world is drawn from its own pair of textures below,
-// because it has to scroll and the atlas cannot.
-function waterFace(rand) {
-  return noiseCanvas(rand, 0x3552d4, { speckles: 18, blotches: 4, blotchColor: 0x2c46bd });
-}
-
-function cobbleFace(rand) {
-  // Cobblestone in Minecraft is a mosaic of rounded stones with dark mortar
-  // between them. Build it from a handful of irregular blobs on a dark
-  // background, each one shaded like a little boulder.
-  const cv = document.createElement('canvas');
-  cv.width = cv.height = TEX_SIZE;
-  const ctx = cv.getContext('2d');
-  const img = ctx.createImageData(TEX_SIZE, TEX_SIZE);
-  // mortar base
-  for (let i = 0; i < TEX_SIZE * TEX_SIZE; i++) {
-    const f = 0.42 + rand() * 0.16;
-    const v = Math.round(96 * f);
-    img.data[i * 4] = v;
-    img.data[i * 4 + 1] = v;
-    img.data[i * 4 + 2] = v + 4;
-    img.data[i * 4 + 3] = 255;
-  }
-  // stones: ~7 irregular ellipses
-  const stones = 7;
-  for (let s = 0; s < stones; s++) {
-    const cx = 2 + rand() * (TEX_SIZE - 4);
-    const cy = 2 + rand() * (TEX_SIZE - 4);
-    const rx = 2.2 + rand() * 2.2;
-    const ry = 2.0 + rand() * 2.0;
-    const base = Math.round(110 + rand() * 80);
-    for (let y = 0; y < TEX_SIZE; y++) {
-      for (let x = 0; x < TEX_SIZE; x++) {
-        const dx = (x + 0.5 - cx) / rx;
-        const dy = (y + 0.5 - cy) / ry;
-        const d = dx * dx + dy * dy;
-        if (d > 1) continue;
-        // noise inside the stone
-        const f = 0.82 + rand() * 0.36;
-        let v = Math.round(base * f);
-        if (rand() < 0.25) v *= 0.85; // fleck
-        // simple top-light: brighter on the upper-left
-        v *= 0.9 + 0.22 * (1 - (dy + 1) / 2);
-        const o = (y * TEX_SIZE + x) * 4;
-        img.data[o] = v;
-        img.data[o + 1] = v;
-        img.data[o + 2] = v;
-      }
-    }
-  }
-  ctx.putImageData(img, 0, 0);
-  return cv;
-}
-
-function bedrockFace(rand) {
-  const cv = noiseCanvas(rand, 0x4a4a4a, { speckles: 80, blotches: 14 });
-  const ctx = cv.getContext('2d');
-  // some near-black patches
-  ctx.fillStyle = 'rgba(20,20,20,0.75)';
-  for (let i = 0; i < 8; i++) {
-    const x = Math.floor(rand() * TEX_SIZE);
-    const y = Math.floor(rand() * TEX_SIZE);
-    ctx.fillRect(x, y, 1 + Math.floor(rand() * 3), 1 + Math.floor(rand() * 3));
-  }
-  // a few light flecks
-  const img = ctx.getImageData(0, 0, TEX_SIZE, TEX_SIZE);
-  for (let i = 0; i < 10; i++) {
-    const x = Math.floor(rand() * TEX_SIZE);
-    const y = Math.floor(rand() * TEX_SIZE);
-    const o = (y * TEX_SIZE + x) * 4;
-    img.data[o] = img.data[o + 1] = img.data[o + 2] = 130 + Math.floor(rand() * 90);
-  }
-  ctx.putImageData(img, 0, 0);
-  return cv;
-}
-
-function planksFace(rand) {
-  // Oak planks: four horizontal boards with staggered end joints, a warm
-  // honey tone, and the little darker dots Minecraft gives each plank.
-  const cv = document.createElement('canvas');
-  cv.width = cv.height = TEX_SIZE;
-  const ctx = cv.getContext('2d');
-  const img = ctx.createImageData(TEX_SIZE, TEX_SIZE);
-  const range = makeNoise(rand, 1);
-  const seam = 0x4a3418;
-  for (let y = 0; y < TEX_SIZE; y++) {
-    const row = Math.floor(y / 4);
-    for (let x = 0; x < TEX_SIZE; x++) {
-      let c = shadeHex(0xb8945f, range(x, y));
-      // horizontal plank seams every 4 rows
-      if (y % 4 === 0) c = shadeHex(seam, 0.9 + range(x, y) * 0.2);
-      // vertical seam: staggered per plank row
-      const seamX = row % 2 === 0 ? 3 : 11;
-      if (x === seamX) c = shadeHex(seam, 0.9 + range(x, y) * 0.2);
-      // subtle grain streaks
-      if (range(x * 2, y * 2) > 0.72) c = shadeHex(c, 0.94);
-      const o = (y * TEX_SIZE + x) * 4;
-      img.data[o] = (c >> 16) & 255;
-      img.data[o + 1] = (c >> 8) & 255;
-      img.data[o + 2] = c & 255;
-      img.data[o + 3] = 255;
-    }
-  }
-  ctx.putImageData(img, 0, 0);
-  // the two little plank nail dots per board, like Minecraft's planks
-  for (let row = 0; row < 4; row++) {
-    const y = row * 4 + 2;
-    for (const x of [row % 2 === 0 ? 1 : 9, row % 2 === 0 ? 13 : 5]) {
-      const o = (y * TEX_SIZE + x) * 4;
-      img.data[o] = 62;
-      img.data[o + 1] = 46;
-      img.data[o + 2] = 28;
-    }
-  }
-  ctx.putImageData(img, 0, 0);
-  return cv;
-}
-
-function sandFace(rand) {
-  // Minecraft's sand is a warm pale yellow with a fine grain of darker
-  // specks — enough to read as sand rather than as a flat cream tile.
-  return noiseCanvas(rand, 0xdbd4a2, { speckles: 64 });
-}
-
-function bricksFace(rand) {
-  // Brick: four courses of two bricks each, red-orange with a pale mortar
-  // grid — the same layout Minecraft uses, right down to the offset joints.
-  const cv = document.createElement('canvas');
-  cv.width = cv.height = TEX_SIZE;
-  const ctx = cv.getContext('2d');
-  const img = ctx.createImageData(TEX_SIZE, TEX_SIZE);
-  const mortar = 0xd9d4cc;
-  for (let y = 0; y < TEX_SIZE; y++) {
-    const row = Math.floor(y / 4);
-    for (let x = 0; x < TEX_SIZE; x++) {
-      let c;
-      const isMortarY = y % 4 === 3;
-      const seamX = row % 2 === 0 ? 7 : 3;
-      const isMortarX = x === seamX || x === seamX + 8;
-      if (isMortarY || isMortarX) {
-        c = shadeHex(mortar, 0.85 + rand() * 0.3);
-      } else {
-        // per-brick shade with a warmer, more saturated body
-        const brickShade = 0.86 + rand() * 0.34;
-        c = shadeHex(0xa0522d, brickShade * (0.92 + rand() * 0.16));
-      }
-      const o = (y * TEX_SIZE + x) * 4;
-      img.data[o] = (c >> 16) & 255;
-      img.data[o + 1] = (c >> 8) & 255;
-      img.data[o + 2] = c & 255;
-      img.data[o + 3] = 255;
-    }
-  }
-  ctx.putImageData(img, 0, 0);
-  return cv;
-}
-
-function snowFace(rand) {
-  return noiseCanvas(rand, 0xf4f4f4, { speckles: 20 });
-}
+// -------------------------------------------------------------------- items
 
 /**
- * Ice: pale blue, and cracked. The cracks are the whole tile, really — a flat
- * blue square reads as painted glass, and three or four pale fractures
- * running across it read as something frozen. They are drawn light rather
- * than dark because a crack in ice scatters the light back at you instead of
- * swallowing it, which is also why they show up from above on a dull day.
+ * An item face: the sprite painted with its one-texel outline rim, which is
+ * what separates an icon from the world behind it at any scale. All six
+ * faces of an item def are the same sprite — a flat thing has no sides.
  */
-function iceFace(rand) {
-  const cv = noiseCanvas(rand, 0x76a6d8, { speckles: 8 });
-  const ctx = cv.getContext('2d');
-  const half = TEX_SIZE / 2;
-  ctx.lineWidth = 1;
-  for (let i = 0; i < 5; i++) {
-    // Each crack starts somewhere on an edge, sets off roughly across the
-    // tile rather than straight back out of it, and wanders in short
-    // segments — so it breaks rather than curves.
-    let x = rand() * TEX_SIZE;
-    let y = rand() < 0.5 ? 0 : TEX_SIZE;
-    if (rand() < 0.5) { const t = x; x = y; y = t; }
-    let angle = Math.atan2(half - y, half - x) + (rand() - 0.5) * 1.2;
-    ctx.strokeStyle = `rgba(232,246,255,${0.5 + rand() * 0.4})`;
-    ctx.beginPath();
-    ctx.moveTo(x, y);
-    for (let seg = 0; seg < 3; seg++) {
-      angle += (rand() - 0.5) * 1.3;
-      x += Math.cos(angle) * (2 + rand() * 4);
-      y += Math.sin(angle) * (2 + rand() * 4);
-      ctx.lineTo(x, y);
-    }
-    ctx.stroke();
-  }
-  return cv;
-}
-
-/** Oak log: vertical bark grooves, like Minecraft's oak log sides. */
-function logSideFace(rand) {
+const spriteFace = (rows, palette) => (rand) => {
   const cv = document.createElement('canvas');
   cv.width = cv.height = TEX_SIZE;
   const ctx = cv.getContext('2d');
-  const img = ctx.createImageData(TEX_SIZE, TEX_SIZE);
-  const range = makeNoise(rand, 1);
-  for (let y = 0; y < TEX_SIZE; y++) {
-    for (let x = 0; x < TEX_SIZE; x++) {
-      // vertical grain: darker in irregular columns, with the dark grooves
-      // a couple of pixels wide like real bark rather than single lines
-      const g1 = Math.sin(x * 1.3 + range(x, y) * 2.2);
-      const g2 = Math.sin(x * 2.6 + range(x, y) * 3.1);
-      const groove = (g1 > 0.72 || g2 > 0.8) ? 0.68 : 1;
-      const c = shadeHex(0x6b4f2a, range(x, y * 0.4) * groove * (0.92 + range(x, y) * 0.16));
-      const o = (y * TEX_SIZE + x) * 4;
-      img.data[o] = (c >> 16) & 255;
-      img.data[o + 1] = (c >> 8) & 255;
-      img.data[o + 2] = c & 255;
-      img.data[o + 3] = 255;
-    }
-  }
-  ctx.putImageData(img, 0, 0);
-  return cv;
-}
-
-/** Cut end of a log: rings around a centre, like Minecraft's oak top. */
-function logTopFace(rand) {
-  const cv = noiseCanvas(rand, 0x9c7e4c, { speckles: 26 });
-  const ctx = cv.getContext('2d');
-  // A slightly darker centre, then the rings stepping out — each one a full
-  // circle rather than a path, so the ends meet cleanly.
-  ctx.fillStyle = 'rgba(70,50,25,0.25)';
-  ctx.beginPath();
-  ctx.arc(8, 8, 1.8, 0, Math.PI * 2);
-  ctx.fill();
-  ctx.strokeStyle = 'rgba(70,50,25,0.5)';
-  ctx.lineWidth = 1;
-  for (const r of [3, 4.8, 6.4]) {
-    ctx.beginPath();
-    ctx.arc(8, 8, r, 0, Math.PI * 2);
-    ctx.stroke();
-  }
-  return cv;
-}
-
-/** Leaves: dense mottled green. Opaque, like Minecraft's "fast" graphics. */
-function leavesFace(rand) {
-  const cv = noiseCanvas(rand, 0x3c7a24, { speckles: 100, blotches: 8 });
-  const ctx = cv.getContext('2d');
-  const img = ctx.getImageData(0, 0, TEX_SIZE, TEX_SIZE);
-  // Scatter bright and dark leaf pixels so it reads as foliage. Minecraft's
-  // leaves are a deep green with a lot of small-scale variation — nearly
-  // every pixel differs slightly from its neighbour.
-  for (let i = 0; i < 46; i++) {
-    const x = Math.floor(rand() * TEX_SIZE);
-    const y = Math.floor(rand() * TEX_SIZE);
-    const c = shadeHex(0x549c33, 0.6 + rand() * 0.8);
-    const o = (y * TEX_SIZE + x) * 4;
-    img.data[o] = (c >> 16) & 255;
-    img.data[o + 1] = (c >> 8) & 255;
-    img.data[o + 2] = c & 255;
-  }
-  ctx.putImageData(img, 0, 0);
-  return cv;
-}
-
-// ---------- crafting-era blocks ----------
-
-/** Crafting table top: a 2x2 grid of planks with dark borders. */
-function craftingTopFace(rand) {
-  const cv = planksFace(rand);
-  const ctx = cv.getContext('2d');
-  ctx.strokeStyle = 'rgba(60,40,18,0.85)';
-  ctx.lineWidth = 1;
-  ctx.strokeRect(0.5, 0.5, 7.5, 7.5);
-  ctx.strokeRect(8.5, 0.5, 7.5, 7.5);
-  ctx.strokeRect(0.5, 8.5, 7.5, 7.5);
-  ctx.strokeRect(8.5, 8.5, 7.5, 7.5);
-  return cv;
-}
-
-/** Crafting table side: a plank face with two handles and a tool under it. */
-function craftingSideFace(rand) {
-  const cv = planksFace(rand);
-  const ctx = cv.getContext('2d');
-  // Two small dark handles.
-  ctx.fillStyle = '#5a3d1c';
-  ctx.fillRect(4, 7, 2, 2);
-  ctx.fillRect(10, 7, 2, 2);
-  ctx.fillStyle = '#3a2712';
-  ctx.fillRect(4, 7, 1, 2);
-  ctx.fillRect(10, 7, 1, 2);
-  // A pencil/saw hint: a diagonal pale line.
-  ctx.strokeStyle = 'rgba(150,110,60,0.5)';
-  ctx.lineWidth = 1;
-  ctx.beginPath();
-  ctx.moveTo(2, 12);
-  ctx.lineTo(13, 3);
-  ctx.stroke();
-  return cv;
-}
-
-/** Furnace side: rough stone with a pale outline band. */
-function furnaceSideFace(rand) {
-  const cv = stoneFace(rand);
-  const ctx = cv.getContext('2d');
-  ctx.fillStyle = 'rgba(20,20,20,0.35)';
-  ctx.fillRect(0, 0, 16, 1);
-  ctx.fillRect(0, 15, 16, 1);
-  ctx.fillRect(0, 0, 1, 16);
-  ctx.fillRect(15, 0, 1, 16);
-  return cv;
-}
-
-/** Furnace front: the dark mouth with a fire glow, like Minecraft's. */
-function furnaceFrontFace(rand) {
-  const cv = furnaceSideFace(rand);
-  const ctx = cv.getContext('2d');
-  // Dark mouth
-  ctx.fillStyle = '#1a1715';
-  ctx.fillRect(5, 4, 6, 8);
-  ctx.fillStyle = '#0d0b0a';
-  ctx.fillRect(5, 4, 6, 1);
-  // Fire: orange core with yellow heart
-  ctx.fillStyle = '#8a4a1a';
-  ctx.fillRect(7, 8, 2, 4);
-  ctx.fillStyle = '#d4762a';
-  ctx.fillRect(7, 8, 2, 3);
-  ctx.fillStyle = '#f5c04a';
-  ctx.fillRect(8, 9, 1, 1);
-  // Grey trim around the mouth
-  ctx.fillStyle = '#4a4a4a';
-  ctx.fillRect(5, 4, 6, 1);
-  ctx.fillRect(5, 12, 6, 1);
-  ctx.fillRect(5, 4, 1, 8);
-  ctx.fillRect(10, 4, 1, 8);
-  return cv;
-}
-
-/** Furnace top: flat stone. */
-function furnaceTopFace(rand) {
-  return stoneFace(rand);
-}
-
-/**
- * Glass: mostly transparent, with a pale frame and a diagonal shine — the
- * fast-graphics look. Most pixels have alpha 0; the world material uses
- * alphaTest to cut them out.
- */
-function glassFace(rand) {
-  const cv = document.createElement('canvas');
-  cv.width = cv.height = TEX_SIZE;
-  const ctx = cv.getContext('2d');
-  ctx.clearRect(0, 0, TEX_SIZE, TEX_SIZE);
-  // Frame
-  ctx.fillStyle = 'rgba(210,235,255,0.9)';
-  ctx.fillRect(0, 0, TEX_SIZE, 1);
-  ctx.fillRect(0, 15, TEX_SIZE, 1);
-  ctx.fillRect(0, 0, 1, TEX_SIZE);
-  ctx.fillRect(15, 0, 1, TEX_SIZE);
-  // Inner frame highlight (bottom-right thickens like a real pane)
-  ctx.fillStyle = 'rgba(235,248,255,0.75)';
-  ctx.fillRect(14, 1, 1, 14);
-  ctx.fillRect(1, 14, 13, 1);
-  ctx.fillStyle = 'rgba(160,195,225,0.7)';
-  ctx.fillRect(0, 0, 1, 1);
-  ctx.fillRect(15, 15, 1, 1);
-  // Diagonal shine
-  ctx.fillStyle = 'rgba(255,255,255,0.35)';
-  ctx.fillRect(3, 5, 1, 1);
-  ctx.fillRect(4, 4, 1, 1);
-  ctx.fillRect(5, 3, 1, 1);
-  ctx.fillRect(6, 2, 1, 1);
-  ctx.fillRect(5, 5, 1, 1);
-  ctx.fillRect(6, 4, 1, 1);
-  return cv;
-}
-
-/** TNT: red with a pale band and "TNT" hinted by three dark marks. */
-function tntSideFace(rand) {
-  const cv = document.createElement('canvas');
-  cv.width = cv.height = TEX_SIZE;
-  const ctx = cv.getContext('2d');
-  const img = ctx.createImageData(TEX_SIZE, TEX_SIZE);
-  // Red body with subtle noise.
-  for (let y = 0; y < TEX_SIZE; y++) {
-    for (let x = 0; x < TEX_SIZE; x++) {
-      const f = 0.85 + rand() * 0.3;
-      const r = Math.round(0xd03020 * f);
-      const g = Math.round(0x1c1c1c * f);
-      const b = Math.round(0x1c1c1c * f);
-      const o = (y * TEX_SIZE + x) * 4;
-      img.data[o] = Math.min(255, r + 30);
-      img.data[o + 1] = Math.min(255, g + 22);
-      img.data[o + 2] = Math.min(255, b + 22);
-      img.data[o + 3] = 255;
-    }
-  }
-  // The pale band and the three dark "TNT" dashes, like Minecraft's.
-  for (let x = 0; x < TEX_SIZE; x++) {
-    for (let y = 6; y <= 9; y++) {
-      const o = (y * TEX_SIZE + x) * 4;
-      img.data[o] = 232; img.data[o + 1] = 226; img.data[o + 2] = 214;
-    }
-  }
-  for (let i = 0; i < 3; i++) {
-    const x0 = 2 + i * 4;
-    for (let x = x0; x < x0 + 3; x++) {
-      for (let y = 7; y <= 8; y++) {
-        const o = (y * TEX_SIZE + x) * 4;
-        img.data[o] = 40; img.data[o + 1] = 30; img.data[o + 2] = 30;
-      }
-    }
-  }
-  ctx.putImageData(img, 0, 0);
-  return cv;
-}
-
-/** TNT top/bottom: red with lighter speckles. */
-function tntTopFace(rand) {
-  return noiseCanvas(rand, 0xb02018, { speckles: 24, blotches: 2, blotchColor: 0x6a100c });
-}
-
-// ---------- items ----------
-// Items are drawn flat rather than as cubes, but their textures still live in
-// the world atlas: the block in your hand is a mesh with atlas UVs and one
-// shared material, and giving items a texture of their own would mean a
-// second material and a second draw call for the sake of two sprites. Three
-// identical tiles each is a rounding error against thirty-nine.
-//
-// Every item sprite is 16×16 pixel art: one colour per cell, no strokes.
-// Canvas paths anti-alias at fractional coordinates, and a 16×16 tile
-// magnified by nearest-neighbour turns that into a grey smudge. Same lesson
-// as the crack overlay. `.` in a map is transparent.
-
-/** Paint a 16×16 sprite from a character map. Missing keys (and `.`) skip. */
-function paintSprite(rows, palette) {
-  const cv = document.createElement('canvas');
-  cv.width = cv.height = TEX_SIZE;
-  const ctx = cv.getContext('2d');
-  ctx.clearRect(0, 0, TEX_SIZE, TEX_SIZE);
   ctx.imageSmoothingEnabled = false;
-  for (let y = 0; y < TEX_SIZE; y++) {
-    const row = rows[y];
-    for (let x = 0; x < TEX_SIZE; x++) {
-      const colour = palette[row[x]];
-      if (!colour) continue;
-      ctx.fillStyle = colour;
-      ctx.fillRect(x, y, 1, 1);
-    }
-  }
+  paintWithOutline(ctx, rows, palette, { seed: seedOf(rand), wobble: 0.03 });
   return cv;
-}
-
-function sticksFace() {
-  return paintSprite(STICK_PX, HAFT);
-}
-
-function pickaxeFace() {
-  return paintSprite(PICKAXE_PX, { ...HAFT, ...HEAD_IRON });
-}
-
-function shovelFace() {
-  return paintSprite(SHOVEL_PX, { ...HAFT, ...HEAD_IRON });
-}
-
-function woodPickaxeFace() {
-  return paintSprite(PICKAXE_PX, { ...HAFT, ...HEAD_WOOD });
-}
-
-function woodShovelFace() {
-  return paintSprite(SHOVEL_PX, { ...HAFT, ...HEAD_WOOD });
-}
-
-function stonePickaxeFace() {
-  return paintSprite(PICKAXE_PX, { ...HAFT, ...HEAD_STONE });
-}
-
-function stoneShovelFace() {
-  return paintSprite(SHOVEL_PX, { ...HAFT, ...HEAD_STONE });
-}
-
-/**
- * The tool sprites, one function per (shape, tier) pair.
- *
- * Sixteen near-identical one-liners would be sixteen chances to hand a stone
- * axe the iron palette, so they are generated from the two tables instead.
- * The result is still a plain function per item, which is what the atlas
- * builder wants.
- */
-const HEADS = {
-  wood: HEAD_WOOD, stone: HEAD_STONE, iron: HEAD_IRON, diamond: HEAD_DIAMOND,
 };
 
-const toolFace = (rows, tier) => () => paintSprite(rows, { ...HAFT, ...HEADS[tier] });
-
-const axeFace = (tier) => toolFace(AXE_PX, tier);
-const swordFace = (tier) => toolFace(SWORD_PX, tier);
-const pickFace = (tier) => toolFace(PICKAXE_PX, tier);
-const spadeFace = (tier) => toolFace(SHOVEL_PX, tier);
-
-/** A raw material: one sprite, one palette, no tiering. */
-const lumpFace = (rows, palette) => () => paintSprite(rows, palette);
-
-function bucketFace() {
-  return paintSprite(BUCKET_PX, BUCKET_PALETTE);
-}
-
-function waterBucketFace() {
-  return paintSprite(WATER_BUCKET_PX, BUCKET_PALETTE);
-}
-
-// ---------- block registry ----------
-
-// Each entry: { id, name, side, top, bottom } where side/top/bottom are
-// face-recipe functions returning a 16x16 canvas.
-export const BLOCK_DEFS = [
-  { id: 1, name: 'Grass Block', side: grassSideFace, top: grassTopFace, bottom: dirtFace },
-  { id: 2, name: 'Dirt', side: dirtFace, top: dirtFace, bottom: dirtFace },
-  { id: 3, name: 'Stone', side: stoneFace, top: stoneFace, bottom: stoneFace },
-  { id: 4, name: 'Cobblestone', side: cobbleFace, top: cobbleFace, bottom: cobbleFace },
-  { id: 5, name: 'Oak Planks', side: planksFace, top: planksFace, bottom: planksFace },
-  { id: 6, name: 'Sand', side: sandFace, top: sandFace, bottom: sandFace },
-  { id: 7, name: 'Bricks', side: bricksFace, top: bricksFace, bottom: bricksFace },
-  { id: 8, name: 'Bedrock', side: bedrockFace, top: bedrockFace, bottom: bedrockFace },
-  { id: 9, name: 'Snow Block', side: snowFace, top: snowFace, bottom: snowFace },
-  { id: 10, name: 'Oak Log', side: logSideFace, top: logTopFace, bottom: logTopFace },
-  { id: 11, name: 'Leaves', side: leavesFace, top: leavesFace, bottom: leavesFace },
-  { id: 12, name: 'Deepslate', side: deepslateFace, top: deepslateFace, bottom: deepslateFace },
-  { id: 13, name: 'Water', side: waterFace, top: waterFace, bottom: waterFace },
-  // 14..21 are the flowing water levels, which share the source's tile.
-  { id: 22, name: 'Ice', side: iceFace, top: iceFace, bottom: iceFace },
-  { id: 23, name: 'Coal Ore', side: coalFace, top: coalFace, bottom: coalFace },
-  { id: 24, name: 'Iron Ore', side: ironFace, top: ironFace, bottom: ironFace },
-  { id: 25, name: 'Gold Ore', side: goldFace, top: goldFace, bottom: goldFace },
-  { id: 26, name: 'Redstone Ore', side: redstoneFace, top: redstoneFace, bottom: redstoneFace },
-  { id: 27, name: 'Diamond Ore', side: diamondFace, top: diamondFace, bottom: diamondFace },
-  { id: 28, name: 'Deepslate Coal Ore', side: deepCoalFace, top: deepCoalFace, bottom: deepCoalFace },
-  { id: 29, name: 'Deepslate Iron Ore', side: deepIronFace, top: deepIronFace, bottom: deepIronFace },
-  { id: 30, name: 'Deepslate Gold Ore', side: deepGoldFace, top: deepGoldFace, bottom: deepGoldFace },
-  { id: 31, name: 'Deepslate Redstone Ore', side: deepRedstoneFace, top: deepRedstoneFace, bottom: deepRedstoneFace },
-  { id: 32, name: 'Deepslate Diamond Ore', side: deepDiamondFace, top: deepDiamondFace, bottom: deepDiamondFace },
-  // Crafting-era blocks: player-placed only, ids 33+ (see blocks-extra.js).
-  // The furnace has no rotation state, so every side carries the fire mouth.
-  { id: CRAFTING_TABLE, name: 'Crafting Table', side: craftingSideFace, top: craftingTopFace, bottom: planksFace },
-  { id: FURNACE, name: 'Furnace', side: furnaceFrontFace, top: furnaceTopFace, bottom: furnaceTopFace },
-  { id: GLASS, name: 'Glass', side: glassFace, top: glassFace, bottom: glassFace },
-  { id: TNT, name: 'TNT', side: tntSideFace, top: tntTopFace, bottom: tntTopFace },
-];
-
-/**
- * Items. Same shape as a block def so one registry, one icon path and one
- * name lookup serve both; the three faces are simply the same sprite, because
- * a flat thing has no sides.
- */
 /**
  * One item def, as a single-element array so it can be spread into the list.
- *
- * The three faces are the same sprite, because a flat thing has no sides —
- * the same reason the original nine entries repeat their face function three
- * times. Doing it here rather than at every call site is one fewer place for
- * a top face to end up holding a different picture from its side.
+ * The three faces are the same sprite — the same reason the original nine
+ * entries repeat their face function three times, done here rather than at
+ * every call site so a top face cannot end up holding a different picture
+ * from its side.
  */
-const itemDef = (id, name, face) => [{ id, name, item: true, side: face, top: face, bottom: face }];
+const itemDef = (id, name, rows, palette) => {
+  const face = spriteFace(rows, palette);
+  return [{ id, name, item: true, side: face, top: face, bottom: face }];
+};
+
+/** Tools: same shape map, tier palette. */
+const toolDef = (id, name, rows, tier) => {
+  const face = (rand) => {
+    const cv = document.createElement('canvas');
+    cv.width = cv.height = TEX_SIZE;
+    const ctx = cv.getContext('2d');
+    ctx.imageSmoothingEnabled = false;
+    paintWithOutline(ctx, rows, { ...HAFT, ...tier }, { seed: seedOf(rand), wobble: 0.03 });
+    return cv;
+  };
+  return [{ id, name, item: true, side: face, top: face, bottom: face }];
+};
 
 export const ITEM_DEFS = [
-  { id: BUCKET, name: 'Bucket', item: true, side: bucketFace, top: bucketFace, bottom: bucketFace },
-  { id: WATER_BUCKET, name: 'Water Bucket', item: true, side: waterBucketFace, top: waterBucketFace, bottom: waterBucketFace },
-  { id: PICKAXE, name: 'Iron Pickaxe', item: true, side: pickaxeFace, top: pickaxeFace, bottom: pickaxeFace },
-  { id: SHOVEL, name: 'Iron Shovel', item: true, side: shovelFace, top: shovelFace, bottom: shovelFace },
-  { id: STICKS, name: 'Sticks', item: true, side: sticksFace, top: sticksFace, bottom: sticksFace },
-  { id: WOOD_PICKAXE, name: 'Wooden Pickaxe', item: true, side: woodPickaxeFace, top: woodPickaxeFace, bottom: woodPickaxeFace },
-  { id: WOOD_SHOVEL, name: 'Wooden Shovel', item: true, side: woodShovelFace, top: woodShovelFace, bottom: woodShovelFace },
-  { id: STONE_PICKAXE, name: 'Stone Pickaxe', item: true, side: stonePickaxeFace, top: stonePickaxeFace, bottom: stonePickaxeFace },
-  { id: STONE_SHOVEL, name: 'Stone Shovel', item: true, side: stoneShovelFace, top: stoneShovelFace, bottom: stoneShovelFace },
+  ...toolDef(PICKAXE, 'Iron Pickaxe', PICKAXE_PX, HEAD_IRON),
+  ...toolDef(SHOVEL, 'Iron Shovel', SHOVEL_PX, HEAD_IRON),
+  ...toolDef(STICKS, 'Sticks', STICK_PX, HAFT),
+  ...toolDef(WOOD_PICKAXE, 'Wooden Pickaxe', PICKAXE_PX, HEAD_WOOD),
+  ...toolDef(WOOD_SHOVEL, 'Wooden Shovel', SHOVEL_PX, HEAD_WOOD),
+  ...toolDef(STONE_PICKAXE, 'Stone Pickaxe', PICKAXE_PX, HEAD_STONE),
+  ...toolDef(STONE_SHOVEL, 'Stone Shovel', SHOVEL_PX, HEAD_STONE),
   // Axes: the answer to everything the forest is made of.
-  ...itemDef(WOOD_AXE, 'Wooden Axe', axeFace('wood')),
-  ...itemDef(STONE_AXE, 'Stone Axe', axeFace('stone')),
-  ...itemDef(IRON_AXE, 'Iron Axe', axeFace('iron')),
-  ...itemDef(DIAMOND_AXE, 'Diamond Axe', axeFace('diamond')),
+  ...toolDef(WOOD_AXE, 'Wooden Axe', AXE_PX, HEAD_WOOD),
+  ...toolDef(STONE_AXE, 'Stone Axe', AXE_PX, HEAD_STONE),
+  ...toolDef(IRON_AXE, 'Iron Axe', AXE_PX, HEAD_IRON),
+  ...toolDef(DIAMOND_AXE, 'Diamond Axe', AXE_PX, HEAD_DIAMOND),
   // Swords: not a digging tool, except against leaves.
-  ...itemDef(WOOD_SWORD, 'Wooden Sword', swordFace('wood')),
-  ...itemDef(STONE_SWORD, 'Stone Sword', swordFace('stone')),
-  ...itemDef(IRON_SWORD, 'Iron Sword', swordFace('iron')),
-  ...itemDef(DIAMOND_SWORD, 'Diamond Sword', swordFace('diamond')),
+  ...toolDef(WOOD_SWORD, 'Wooden Sword', SWORD_PX, HEAD_WOOD),
+  ...toolDef(STONE_SWORD, 'Stone Sword', SWORD_PX, HEAD_STONE),
+  ...toolDef(IRON_SWORD, 'Iron Sword', SWORD_PX, HEAD_IRON),
+  ...toolDef(DIAMOND_SWORD, 'Diamond Sword', SWORD_PX, HEAD_DIAMOND),
   // The diamond tier of the two original shapes.
-  ...itemDef(DIAMOND_PICKAXE, 'Diamond Pickaxe', pickFace('diamond')),
-  ...itemDef(DIAMOND_SHOVEL, 'Diamond Shovel', spadeFace('diamond')),
+  ...toolDef(DIAMOND_PICKAXE, 'Diamond Pickaxe', PICKAXE_PX, HEAD_DIAMOND),
+  ...toolDef(DIAMOND_SHOVEL, 'Diamond Shovel', SHOVEL_PX, HEAD_DIAMOND),
+  // Containers.
+  ...itemDef(BUCKET, 'Bucket', BUCKET_PX, BUCKET_PALETTE),
+  ...itemDef(WATER_BUCKET, 'Water Bucket', WATER_BUCKET_PX, BUCKET_PALETTE),
   // What the mine pays you in.
-  ...itemDef(COAL, 'Coal', lumpFace(COAL_PX, COAL_PALETTE)),
-  ...itemDef(RAW_IRON, 'Raw Iron', lumpFace(RAW_IRON_PX, RAW_IRON_PALETTE)),
-  ...itemDef(IRON_INGOT, 'Iron Ingot', lumpFace(IRON_INGOT_PX, IRON_INGOT_PALETTE)),
-  ...itemDef(DIAMOND, 'Diamond', lumpFace(DIAMOND_PX, DIAMOND_PALETTE)),
-  ...itemDef(RAW_GOLD, 'Raw Gold', lumpFace(RAW_IRON_PX, RAW_GOLD_PALETTE)),
-  ...itemDef(GOLD_INGOT, 'Gold Ingot', lumpFace(IRON_INGOT_PX, GOLD_INGOT_PALETTE)),
-  ...itemDef(REDSTONE, 'Redstone Dust', lumpFace(COAL_PX, REDSTONE_PALETTE)),
+  ...itemDef(COAL, 'Coal', COAL_PX, COAL_PALETTE),
+  ...itemDef(RAW_IRON, 'Raw Iron', RAW_IRON_PX, RAW_IRON_PALETTE),
+  ...itemDef(IRON_INGOT, 'Iron Ingot', IRON_INGOT_PX, IRON_INGOT_PALETTE),
+  ...itemDef(DIAMOND, 'Diamond', DIAMOND_PX, DIAMOND_PALETTE),
+  ...itemDef(RAW_GOLD, 'Raw Gold', RAW_IRON_PX, RAW_GOLD_PALETTE),
+  ...itemDef(GOLD_INGOT, 'Gold Ingot', IRON_INGOT_PX, GOLD_INGOT_PALETTE),
+  ...itemDef(REDSTONE, 'Redstone Dust', REDSTONE_PX, REDSTONE_PALETTE),
   // What the night pays: a creeper's grey dust and a zombie's slab of
   // not-quite-meat. See mobs.js for where they come from.
-  ...itemDef(GUNPOWDER, 'Gunpowder', lumpFace(COAL_PX, GUNPOWDER_PALETTE)),
-  ...itemDef(ROTTEN_FLESH, 'Rotten Flesh', lumpFace(ROTTEN_FLESH_PX, ROTTEN_FLESH_PALETTE)),
-  // Food. The four meats are one slab with a raw or a cooked palette; chicken
-  // is its own drumstick. The apple is the one food the trees hand over.
-  ...itemDef(RAW_BEEF, 'Raw Beef', lumpFace(STEAK_PX, RAW_MEAT_PALETTE)),
-  ...itemDef(STEAK, 'Steak', lumpFace(STEAK_PX, COOKED_MEAT_PALETTE)),
-  ...itemDef(RAW_PORKCHOP, 'Raw Porkchop', lumpFace(STEAK_PX, RAW_MEAT_PALETTE)),
-  ...itemDef(COOKED_PORKCHOP, 'Cooked Porkchop', lumpFace(STEAK_PX, COOKED_MEAT_PALETTE)),
-  ...itemDef(RAW_CHICKEN, 'Raw Chicken', lumpFace(CHICKEN_PX, CHICKEN_RAW_PALETTE)),
-  ...itemDef(COOKED_CHICKEN, 'Cooked Chicken', lumpFace(CHICKEN_PX, CHICKEN_COOKED_PALETTE)),
-  ...itemDef(RAW_MUTTON, 'Raw Mutton', lumpFace(STEAK_PX, RAW_MEAT_PALETTE)),
-  ...itemDef(COOKED_MUTTON, 'Cooked Mutton', lumpFace(STEAK_PX, COOKED_MEAT_PALETTE)),
-  ...itemDef(APPLE, 'Apple', lumpFace(APPLE_PX, APPLE_PALETTE)),
+  ...itemDef(GUNPOWDER, 'Gunpowder', GUNPOWDER_PX, GUNPOWDER_PALETTE),
+  ...itemDef(ROTTEN_FLESH, 'Rotten Flesh', ROTTEN_FLESH_PX, ROTTEN_FLESH_PALETTE),
+  // Food. Beef and mutton are one slab with a raw or a cooked palette;
+  // porkchop has its own cut. Chicken is its own drumstick. The apple is
+  // the one food the trees hand over.
+  ...itemDef(RAW_BEEF, 'Raw Beef', STEAK_PX, RAW_MEAT_PALETTE),
+  ...itemDef(STEAK, 'Steak', STEAK_PX, COOKED_MEAT_PALETTE),
+  ...itemDef(RAW_PORKCHOP, 'Raw Porkchop', PORKCHOP_PX, RAW_MEAT_PALETTE),
+  ...itemDef(COOKED_PORKCHOP, 'Cooked Porkchop', PORKCHOP_PX, COOKED_MEAT_PALETTE),
+  ...itemDef(RAW_CHICKEN, 'Raw Chicken', CHICKEN_PX, CHICKEN_RAW_PALETTE),
+  ...itemDef(COOKED_CHICKEN, 'Cooked Chicken', CHICKEN_PX, CHICKEN_COOKED_PALETTE),
+  ...itemDef(RAW_MUTTON, 'Raw Mutton', MUTTON_PX, RAW_MEAT_PALETTE),
+  ...itemDef(COOKED_MUTTON, 'Cooked Mutton', MUTTON_PX, COOKED_MEAT_PALETTE),
+  ...itemDef(APPLE, 'Apple', APPLE_PX, APPLE_PALETTE),
+  ...itemDef(GOLDEN_APPLE, 'Golden Apple', APPLE_PX, GOLDEN_APPLE_PALETTE),
   // Ranged combat: the skeleton's, the spider's, and the ones you build.
-  ...itemDef(BONE, 'Bone', lumpFace(BONE_PX, BONE_PALETTE)),
-  ...itemDef(ARROW, 'Arrow', lumpFace(ARROW_PX, ARROW_PALETTE)),
-  ...itemDef(STRING, 'String', lumpFace(STRING_PX, STRING_PALETTE)),
-  ...itemDef(SPIDER_EYE, 'Spider Eye', lumpFace(SPIDER_EYE_PX, SPIDER_EYE_PALETTE)),
-  ...itemDef(BOW, 'Bow', lumpFace(BOW_PX, BOW_PALETTE)),
-  ...itemDef(FEATHER, 'Feather', lumpFace(FEATHER_PX, FEATHER_PALETTE)),
-  // The last few foods.
-  ...itemDef(LEATHER, 'Leather', lumpFace(ROTTEN_FLESH_PX, LEATHER_PALETTE)),
-  ...itemDef(CARROT, 'Carrot', lumpFace(CARROT_PX, CARROT_PALETTE)),
-  ...itemDef(POTATO, 'Potato', lumpFace(RAW_IRON_PX, POTATO_PALETTE)),
-  ...itemDef(BAKED_POTATO, 'Baked Potato', lumpFace(RAW_IRON_PX, BAKED_POTATO_PALETTE)),
-  ...itemDef(GOLDEN_APPLE, 'Golden Apple', lumpFace(APPLE_PX, GOLDEN_APPLE_PALETTE)),
+  ...itemDef(BONE, 'Bone', BONE_PX, BONE_PALETTE),
+  ...itemDef(ARROW, 'Arrow', ARROW_PX, ARROW_PALETTE),
+  ...itemDef(STRING, 'String', STRING_PX, STRING_PALETTE),
+  ...itemDef(SPIDER_EYE, 'Spider Eye', SPIDER_EYE_PX, SPIDER_EYE_PALETTE),
+  ...itemDef(BOW, 'Bow', BOW_PX, BOW_PALETTE),
+  ...itemDef(FEATHER, 'Feather', FEATHER_PX, FEATHER_PALETTE),
+  // The last few foods and the one hide.
+  ...itemDef(LEATHER, 'Leather', LEATHER_PX, LEATHER_PALETTE),
+  ...itemDef(CARROT, 'Carrot', CARROT_PX, CARROT_PALETTE),
+  ...itemDef(POTATO, 'Potato', POTATO_PX, POTATO_PALETTE),
+  ...itemDef(BAKED_POTATO, 'Baked Potato', POTATO_PX, BAKED_POTATO_PALETTE),
   // Armour, four shapes across four materials: leather is brown, iron and
-  // gold and diamond borrow the tool palettes so a helmet's tier matches the
-  // pickaxe of the same tier on the hotbar.
-  ...itemDef(LEATHER_HELMET, 'Leather Cap', () => paintSprite(HELMET_PX, ARMOUR_LEATHER)),
-  ...itemDef(LEATHER_CHESTPLATE, 'Leather Tunic', () => paintSprite(CHESTPLATE_PX, ARMOUR_LEATHER)),
-  ...itemDef(LEATHER_LEGGINGS, 'Leather Pants', () => paintSprite(LEGGINGS_PX, ARMOUR_LEATHER)),
-  ...itemDef(LEATHER_BOOTS, 'Leather Boots', () => paintSprite(BOOTS_PX, ARMOUR_LEATHER)),
-  ...itemDef(IRON_HELMET, 'Iron Helmet', () => paintSprite(HELMET_PX, HEAD_IRON)),
-  ...itemDef(IRON_CHESTPLATE, 'Iron Chestplate', () => paintSprite(CHESTPLATE_PX, HEAD_IRON)),
-  ...itemDef(IRON_LEGGINGS, 'Iron Leggings', () => paintSprite(LEGGINGS_PX, HEAD_IRON)),
-  ...itemDef(IRON_BOOTS, 'Iron Boots', () => paintSprite(BOOTS_PX, HEAD_IRON)),
-  ...itemDef(GOLD_HELMET, 'Golden Helmet', () => paintSprite(HELMET_PX, GOLD_INGOT_PALETTE)),
-  ...itemDef(GOLD_CHESTPLATE, 'Golden Chestplate', () => paintSprite(CHESTPLATE_PX, GOLD_INGOT_PALETTE)),
-  ...itemDef(GOLD_LEGGINGS, 'Golden Leggings', () => paintSprite(LEGGINGS_PX, GOLD_INGOT_PALETTE)),
-  ...itemDef(GOLD_BOOTS, 'Golden Boots', () => paintSprite(BOOTS_PX, GOLD_INGOT_PALETTE)),
-  ...itemDef(DIAMOND_HELMET, 'Diamond Helmet', () => paintSprite(HELMET_PX, DIAMOND_PALETTE)),
-  ...itemDef(DIAMOND_CHESTPLATE, 'Diamond Chestplate', () => paintSprite(CHESTPLATE_PX, DIAMOND_PALETTE)),
-  ...itemDef(DIAMOND_LEGGINGS, 'Diamond Leggings', () => paintSprite(LEGGINGS_PX, DIAMOND_PALETTE)),
-  ...itemDef(DIAMOND_BOOTS, 'Diamond Boots', () => paintSprite(BOOTS_PX, DIAMOND_PALETTE)),
+  // gold and diamond borrow the tool palettes so a helmet's tier matches
+  // the pickaxe of the same tier on the hotbar.
+  ...itemDef(LEATHER_HELMET, 'Leather Cap', HELMET_PX, ARMOUR_LEATHER),
+  ...itemDef(LEATHER_CHESTPLATE, 'Leather Tunic', CHESTPLATE_PX, ARMOUR_LEATHER),
+  ...itemDef(LEATHER_LEGGINGS, 'Leather Pants', LEGGINGS_PX, ARMOUR_LEATHER),
+  ...itemDef(LEATHER_BOOTS, 'Leather Boots', BOOTS_PX, ARMOUR_LEATHER),
+  ...itemDef(IRON_HELMET, 'Iron Helmet', HELMET_PX, HEAD_IRON),
+  ...itemDef(IRON_CHESTPLATE, 'Iron Chestplate', CHESTPLATE_PX, HEAD_IRON),
+  ...itemDef(IRON_LEGGINGS, 'Iron Leggings', LEGGINGS_PX, HEAD_IRON),
+  ...itemDef(IRON_BOOTS, 'Iron Boots', BOOTS_PX, HEAD_IRON),
+  ...itemDef(GOLD_HELMET, 'Golden Helmet', HELMET_PX, GOLD_INGOT_PALETTE),
+  ...itemDef(GOLD_CHESTPLATE, 'Golden Chestplate', CHESTPLATE_PX, GOLD_INGOT_PALETTE),
+  ...itemDef(GOLD_LEGGINGS, 'Golden Leggings', LEGGINGS_PX, GOLD_INGOT_PALETTE),
+  ...itemDef(GOLD_BOOTS, 'Golden Boots', BOOTS_PX, GOLD_INGOT_PALETTE),
+  ...itemDef(DIAMOND_HELMET, 'Diamond Helmet', HELMET_PX, DIAMOND_PALETTE),
+  ...itemDef(DIAMOND_CHESTPLATE, 'Diamond Chestplate', CHESTPLATE_PX, DIAMOND_PALETTE),
+  ...itemDef(DIAMOND_LEGGINGS, 'Diamond Leggings', LEGGINGS_PX, DIAMOND_PALETTE),
+  ...itemDef(DIAMOND_BOOTS, 'Diamond Boots', BOOTS_PX, DIAMOND_PALETTE),
 ];
 
 /** Everything with a texture in the atlas: blocks first, then items. */
 export const ATLAS_DEFS = [...BLOCK_DEFS, ...ITEM_DEFS];
 
 /**
- * What you start with.
- *
- * Nine slots and more than nine things worth having, so the list is a series
- * of arguments about what earns one. The two tools take theirs by force:
- * without a pickaxe stone is seven and a half seconds a block and ore gives
- * you nothing at all, so a hotbar of pretty building blocks and no pickaxe is
- * a hotbar you cannot dig your way out of. Cobblestone and sand go — both are
- * a few seconds' digging away — and the oak log stays gone, because it is the
- * one you get back by walking up to a tree.
- */
-/**
- * ...and the axe now takes one too.
- *
- * That is one argument, not two: the axe does not merely make the forest
- * quicker, it makes the *crafting table* reachable. Every recipe in the game
- * starts at a log; a log by hand is three seconds; and three seconds a log,
- * six logs to a table plus sticks plus the tool itself, is a minute of
- * standing in front of a tree before anything can be made at all. Half a
- * second a log with iron is a tree in six.
- *
- * The bricks go to make room, because bricks are the one block on the list
- * that nothing in the world produces and nothing else needs — they are
- * decoration, and decoration can wait until you have somewhere to put it.
+ * What you start with. Nine slots and more than nine things worth having,
+ * so the list is a series of arguments about what earns one: the two tools
+ * take theirs by force (without a pickaxe stone is seven and a half seconds
+ * a block), and the bricks wait until there is somewhere to put them.
  */
 export const STARTER_BLOCKS = [1, 2, 3, 5, 9, PICKAXE, SHOVEL, IRON_AXE, BUCKET];
 
@@ -965,14 +334,17 @@ function buildAtlas(block) {
   return { atlas: cv, side, top };
 }
 
-// ---------- inventory icons ----------
-// Minecraft draws item icons as an isometric cube: the top face as a rhombus
-// with the two lit/shaded side faces below it. Each face is a 2x3 affine
-// transform mapping the 16x16 texture onto its parallelogram.
+// ------------------------------------------------------------- inventory icons
+//
+// Minecraft draws block icons as an isometric cube: the top face as a
+// rhombus with the two lit/shaded side faces below it. Each face is an
+// affine transform mapping the 16x16 texture onto its parallelogram. Items
+// are the sprite itself, scaled up — a bucket drawn as a cube would be a
+// box with a picture of a bucket on three of its faces.
 
 const ICON_SCALE = 3; // canvas pixels per texel -> 96x96 icon
 
-function drawIconFace(ctx, img, m, shade) {
+function drawIconFace(ctx, img, m, shadeAmt) {
   const S = TEX_SIZE;
   ctx.save();
   ctx.setTransform(m.a, m.b, m.c, m.d, m.e, m.f);
@@ -980,7 +352,7 @@ function drawIconFace(ctx, img, m, shade) {
   // Slight overdraw hides the hairline seams between the three faces.
   ctx.drawImage(img, 0, 0, S, S, -0.03, -0.03, S + 0.06, S + 0.06);
   ctx.restore();
-  if (!shade) return;
+  if (!shadeAmt) return;
   const pt = (u, v) => [m.a * u + m.c * v + m.e, m.b * u + m.d * v + m.f];
   const corners = [pt(0, 0), pt(S, 0), pt(S, S), pt(0, S)];
   ctx.save();
@@ -988,15 +360,12 @@ function drawIconFace(ctx, img, m, shade) {
   ctx.moveTo(corners[0][0], corners[0][1]);
   for (let i = 1; i < 4; i++) ctx.lineTo(corners[i][0], corners[i][1]);
   ctx.closePath();
-  ctx.fillStyle = `rgba(0,0,0,${shade})`;
+  ctx.fillStyle = `rgba(0,0,0,${shadeAmt})`;
   ctx.fill();
   ctx.restore();
 }
 
-/**
- * An item icon is the sprite itself, scaled up. No cube: a bucket drawn as a
- * cube would be a box with a picture of a bucket on three of its faces.
- */
+/** An item icon: the sprite, scaled up, with its outline already in it. */
 function buildFlatIcon(face) {
   const q = TEX_SIZE * ICON_SCALE;
   const cv = document.createElement('canvas');
@@ -1020,28 +389,28 @@ function buildIcon(side, top) {
   const k = ICON_SCALE; // texel -> canvas px along a face edge
   // top rhombus: (0,h) (q,0) (2q,h) (q,2h)
   drawIconFace(ctx, top, { a: k, b: -k / 2, c: k, d: k / 2, e: 0, f: h }, 0);
-  // left face
-  drawIconFace(ctx, side, { a: k, b: k / 2, c: 0, d: k, e: 0, f: h }, 0.28);
+  // left face, darker: it is the side away from the light
+  drawIconFace(ctx, side, { a: k, b: k / 2, c: 0, d: k, e: 0, f: h }, 0.30);
   // right face
-  drawIconFace(ctx, side, { a: k, b: -k / 2, c: 0, d: k, e: q, f: 2 * h }, 0.12);
+  drawIconFace(ctx, side, { a: k, b: -k / 2, c: 0, d: k, e: q, f: 2 * h }, 0.14);
   return cv;
 }
 
-// ---------- world atlas ----------
+// -------------------------------------------------------------- world atlas
+//
 // Every block face lives in one texture so a whole chunk draws in a single
 // call. Tile order is [side, top, bottom] per block, in BLOCK_DEFS order.
 //
 // Mipmaps are built by hand rather than by the GPU: an automatically
 // generated mip level averages across tile boundaries, so at distance a
-// stone block bleeds into its neighbour in the atlas. Downsampling each tile
-// on its own and packing the results keeps every level clean.
+// stone block bleeds into its neighbour in the atlas. Downsampling each
+// tile on its own and packing the results keeps every level clean.
 
 export const ATLAS_TILES = ATLAS_DEFS.length * 3;
 
 /** Tile index for a block id and face column (0 side, 1 top, 2 bottom). */
 export function atlasTile(blockId, column) {
-  // Every water level shares the source's tiles: eight ids, one appearance,
-  // and no reason to widen the atlas by 21 tiles that are all the same.
+  // Every water level shares the source's tiles: eight ids, one appearance.
   const id = isWater(blockId) ? WATER : blockId;
   const i = ATLAS_DEFS.findIndex((b) => b.id === id);
   return (i < 0 ? 0 : i) * 3 + column;
@@ -1104,26 +473,15 @@ export function getAtlasTexture() {
   return tex;
 }
 
-// ---------- water ----------
-// Water gets its own two textures rather than a slot in the world atlas, for
-// one reason: it moves. An atlas cannot scroll — shifting it would drag every
-// other block's texture along with the water — but a texture of its own can
-// be offset a little further every frame, and since water is already drawn in
-// its own translucent pass, that costs nothing extra.
+// ------------------------------------------------------------------- water
 //
-// They hold no colour, only light and shade around a mid grey. The colour of
-// water is not a property of a 16x16 tile — it depends on how deep it is, how
-// you are looking at it and what is above it to reflect — so the shader works
-// it out and these supply the hand-drawn pattern moving across the top of it.
-// Keeping the pixel tile is what stops all this from reading as a lake in
-// some other engine: it is still Minecraft's water, moving over Minecraft's
-// blocks.
-//
-// Both tiles are built from a handful of sine harmonics with whole-number
-// periods across the tile, which makes them seamless in both directions by
-// construction. Seamless matters more than it sounds: the sea maps one copy
-// of the still tile to every block, and any join at all would show up as the
-// grid of squares this is here to avoid.
+// Water gets its own two textures rather than a slot in the world atlas,
+// for one reason: it moves. An atlas cannot scroll — shifting it would drag
+// every other block's texture along with the water — but a texture of its
+// own can be offset a little further every frame. They hold no colour, only
+// light and shade around a mid grey: the colour of water depends on depth
+// and view, so the shader works it out and these supply the hand-drawn
+// pattern moving across the top of it.
 
 /** Sum of sine harmonics, evaluated on a tile that wraps in both axes. */
 function harmonics(x, y, terms) {
@@ -1134,7 +492,7 @@ function harmonics(x, y, terms) {
   return v;
 }
 
-/** A grey tile: 128 is "no change", and the harmonics swing either side of it. */
+/** A grey tile: 128 is "no change", and the harmonics swing either side. */
 function waterCanvas(terms) {
   const cv = document.createElement('canvas');
   cv.width = cv.height = TEX_SIZE;
@@ -1164,12 +522,7 @@ function stillWaterCanvas() {
   ]);
 }
 
-/**
- * Moving water: streaks that run down the tile. The v axis is the direction of
- * travel — the mesher rotates the tile so that v points downhill — so the
- * pattern is mostly a function of u, with just enough variation along v to
- * keep it from looking like a barcode.
- */
+/** Moving water: streaks that run down the tile, the direction of travel. */
 function flowingWaterCanvas() {
   return waterCanvas([
     [4, 0, 0.0, 0.55],
@@ -1182,14 +535,7 @@ function flowingWaterCanvas() {
 
 let waterTextures = null;
 
-/**
- * The two world-water patterns, { still, flowing }. Both repeat in both
- * directions so the surface tiles across blocks and the scroll wraps cleanly.
- *
- * No colour space conversion: these are not pictures of anything, they are
- * numbers the shader multiplies by, and running them through an sRGB decode
- * would bend the scale so that "no change" was no longer in the middle.
- */
+/** The two world-water patterns, { still, flowing }. */
 export function getWaterTextures() {
   if (waterTextures) return waterTextures;
   const make = (canvas) => {
@@ -1210,42 +556,11 @@ export function getWaterTextures() {
   return waterTextures;
 }
 
-// ---------- breaking ----------
+// ----------------------------------------------------------------- breaking
 
-/**
- * The crack that grows over a block while you dig it.
- *
- * Ten stages, which is Minecraft's count, and every pixel of them written by
- * hand into image data rather than stroked.
- *
- * That is the whole of the rework. The first version drew each crack as a
- * canvas path, and a canvas path at fractional coordinates is anti-aliased —
- * so what landed on a 16x16 texture that is then magnified forty times by a
- * nearest-neighbour sampler was not a crack, it was a soft grey smudge with
- * blurred ends. Minecraft's destroy stages are pixel art: every cell is on or
- * off, the lines are one pixel wide and jagged because they step rather than
- * slope, and that hard edge is what reads as *broken* rather than as dirty.
- *
- * The crack is grown once, as an ordered list of cells spreading outward from
- * the middle, and stage n is the first tenth-of-the-way-through-n of it. That
- * gives Minecraft's other property for free: each stage strictly contains the
- * one before, so it reads as one thing getting worse rather than as ten
- * pictures taking turns.
- *
- * Each dark cell also lights the cell below-right of it, where nothing dark
- * is going to land. Minecraft's stages are greyscale and lean on block light
- * to be visible; this game has no torches, and a crack that is only dark is
- * invisible on the deepslate you would be mining it in.
- */
 const CRACK_STAGES = 10;
 
-/**
- * The whole crack, cell by cell, in the order it spreads.
- *
- * Branches are grown breadth-first from a queue so they advance together and
- * the crack opens outward, instead of one arm reaching the edge before the
- * next one starts.
- */
+/** The whole crack, cell by cell, in the order it spreads — grown once. */
 function crackCells() {
   const rand = mulberry32(4523);
   const cells = [];
@@ -1263,15 +578,12 @@ function crackCells() {
     return true;
   };
 
-  // Four arms out of the middle, plus a couple of shorter ones, all stepping
-  // one cell at a time and wandering a cell either side as they go.
+  // Eight arms out of the middle, stepping one cell at a time and
+  // wandering, with the occasional fork — a web, not a starburst.
   const queue = [];
   const arms = 8;
   for (let i = 0; i < arms; i++) {
     const a = (i / arms) * Math.PI * 2 + rand() * 0.6;
-    // Not all from the same cell: eight arms out of one point is a starburst,
-    // and a broken block is not a starburst. They start a little way out,
-    // scattered, so what spreads is a web.
     const r = 0.5 + rand() * 2.5;
     queue.push({ x: mid + Math.cos(a) * r, y: mid + Math.sin(a) * r, a, life: 14 });
   }
@@ -1279,12 +591,9 @@ function crackCells() {
   while (queue.length) {
     const b = queue.shift();
     if (b.life <= 0) continue;
-    // A step is a whole cell in the dominant direction and, now and then, one
-    // in the other — which is what makes the line jagged rather than smooth.
     b.a += (rand() - 0.5) * 1.1;
-    // ...and then pulled a third of the way back to straight-out-from-the-
-    // middle, or a wandering arm curls round on itself and the corners of the
-    // tile never crack at all.
+    // ...and then pulled a third of the way back toward straight-out, so a
+    // wandering arm does not curl round on itself.
     const ox = b.x - mid;
     const oy = b.y - mid;
     if (ox || oy) {
@@ -1300,7 +609,6 @@ function crackCells() {
     b.y += step[1];
     if (!put(Math.round(b.x), Math.round(b.y))) continue;
     b.life--;
-    // A fork every so often, which is what turns four lines into a web.
     if (b.life > 3 && rand() < 0.3) {
       queue.push({ x: b.x, y: b.y, a: b.a + (rand() < 0.5 ? 1.3 : -1.3), life: b.life - 3 });
     }
@@ -1328,10 +636,8 @@ function crackCanvas(stage) {
     img.data[o + 3] = a;
   };
 
-  // The lit side first, so a dark cell always wins the cell it shares. Not
-  // every cell gets one: a highlight beside every single dark pixel draws a
-  // second line parallel to the first, and what you want is a chip of light
-  // here and there along the crack.
+  // The lit side first, so a dark cell always wins a cell it shares; the
+  // highlight is a chip of light here and there, not a second line.
   for (let i = 0; i < shown; i++) {
     const [x, y] = cells[i];
     if ((i * 2654435761) % 5 < 2 && !seen.has(key(x + 1, y + 1))) set(x + 1, y + 1, 232, 128);
@@ -1357,23 +663,28 @@ export function crackStage(progress) {
   return Math.min(CRACK_STAGES - 1, Math.max(0, Math.floor(progress * CRACK_STAGES)));
 }
 
-// ---------- HUD sprites ----------
+// ------------------------------------------------------------- HUD sprites
 //
-// Hearts and bubbles, drawn the same way as everything else here: on a tiny
-// canvas, pixel by pixel, out of nothing. They are 9x9 because Minecraft's
-// are, and because at that size the shape has to be *stated* rather than
-// drawn — a heart is two arcs and a point, and at nine pixels each of those
-// is two or three cells you either fill or do not.
+// Hearts, bubbles, drumsticks and armour pips, drawn the same way as
+// everything else: a 9×9 map, a palette, one pixel at a time. The shapes
+// are Minecraft's own — a heart is two arcs and a point, and at nine pixels
+// each of those is two or three cells you either fill or do not. The palettes
+// do the new part: three reds so a heart has a lit top and a shaded bottom
+// instead of reading as a flat red sticker.
 
-/** 1 = filled, 2 = the darker outline. Nine rows of nine. */
+/**
+ * A full heart. 1 = bright red, 4 = shaded red (the lower half), 3 = the
+ * white glint that makes it read as polished rather than painted, 2 = the
+ * near-black outline that keeps it visible on snow and sky alike.
+ */
 const HEART_PIXELS = [
   '022002200',
-  '211211120',
+  '211311120',
   '211111112',
   '211111112',
   '211111112',
-  '021111120',
-  '002111200',
+  '021141120',
+  '002144200',
   '000212000',
   '000020000',
 ];
@@ -1392,38 +703,37 @@ const BUBBLE_PIXELS = [
 ];
 
 /**
- * A drumstick: meat up top, the two bone nubs poking out the bottom — the
- * shape that has meant "hunger" in every Minecraft HUD ever drawn. Ten of
- * them sit to the right of the hearts, and the bar works like the hearts do:
- * the empty socket is one sprite, the full one is laid over it and clipped
- * by width, so a half drumstick is the same picture cut in two.
+ * A drumstick: meat up top with a glint on the upper-left, the two bone
+ * nubs poking out the bottom — the shape that has meant "hunger" in every
+ * Minecraft HUD ever drawn.
  */
 const DRUMSTICK_PIXELS = [
   '..11111..',
-  '.1222221.',
-  '122222221',
-  '122222221',
+  '.1222231.',
+  '122332221',
+  '122332221',
   '.1222221.',
   '..12221..',
   '..12221..',
-  '..13331..',
-  '...333...',
+  '..14441..',
+  '...444...',
 ];
 
 /**
- * An armour pip: a rounded chestplate silhouette, one per point of defence,
- * drawn above the hearts and only while something is actually worn.
+ * An armour pip: a rounded chestplate silhouette with a shine on the
+ * shoulder — one per point of defence, drawn above the hearts and only
+ * while something is actually worn.
  */
 const ARMOUR_PIXELS = [
-  '000111000',
-  '001222100',
-  '012222210',
+  '..11111..',
+  '.1322221.',
+  '.1222221.',
   '112222211',
   '112222211',
   '112222211',
-  '012222210',
-  '001222100',
-  '000111000',
+  '112222211',
+  '112222211',
+  '.1444441.',
 ];
 
 /** Paint a 9x9 sprite map with a palette and hand back a data URL. */
@@ -1452,28 +762,39 @@ const hudSprite = (name, rows, palette) => {
 
 /** A full heart, and the empty socket that shows where one used to be. */
 export const heartUrl = () =>
-  hudSprite('heart', HEART_PIXELS, { 1: '#e6202a', 2: '#4a0a10' });
+  hudSprite('heart', HEART_PIXELS, { 1: '#f02820', 3: '#ffc8b8', 4: '#b0140c', 2: '#3a080a' });
 export const heartEmptyUrl = () =>
-  hudSprite('heart-empty', HEART_PIXELS, { 1: '#3b3b3b', 2: '#141414' });
+  hudSprite('heart-empty', HEART_PIXELS, { 1: '#2e2e2e', 3: '#3c3c3c', 4: '#262626', 2: '#101010' });
 /** Half a heart is the same sprite with its right half cut away — see hud.js. */
 export const bubbleUrl = () =>
   hudSprite('bubble', BUBBLE_PIXELS, { 1: '#ffffff', 2: '#0b1c3a', 3: '#8fd2ff' });
 /** A drumstick, and the empty socket that shows where one used to be. */
 export const drumstickUrl = () =>
-  hudSprite('drumstick', DRUMSTICK_PIXELS, { 1: '#b56a34', 2: '#e8e2d8', 3: '#4a2a10' });
+  hudSprite('drumstick', DRUMSTICK_PIXELS, {
+    1: '#5c3410', 2: '#c88648', 3: '#e8b878', 4: '#e8e0d0',
+  });
 export const drumstickEmptyUrl = () =>
-  hudSprite('drumstick-empty', DRUMSTICK_PIXELS, { 1: '#3b3b3b', 2: '#141414', 3: '#141414' });
-/** An armour pip, drawn grey like the iron it usually is. */
+  hudSprite('drumstick-empty', DRUMSTICK_PIXELS, {
+    1: '#101010', 2: '#2e2e2e', 3: '#3c3c3c', 4: '#262626',
+  });
+/** An armour pip, grey like the iron it usually is. */
 export const armourUrl = () =>
-  hudSprite('armour', ARMOUR_PIXELS, { 1: '#9aa2aa', 2: '#4a5058' });
+  hudSprite('armour', ARMOUR_PIXELS, {
+    1: '#4a545e', 2: '#a8b4c0', 3: '#e8f0f8', 4: '#6a7684',
+  });
 export const armourEmptyUrl = () =>
-  hudSprite('armour-empty', ARMOUR_PIXELS, { 1: '#3b3b3b', 2: '#141414' });
+  hudSprite('armour-empty', ARMOUR_PIXELS, {
+    1: '#101010', 2: '#2e2e2e', 3: '#3c3c3c', 4: '#262626',
+  });
+
+// ------------------------------------------------------------- block assets
 
 const cache = new Map();
 
 /**
- * Returns { texture: THREE.CanvasTexture (48x16 atlas), iconUrl } for a block
- * def. `iconUrl` is the isometric cube used by the hotbar and inventory.
+ * Returns { texture: THREE.CanvasTexture (48x16 atlas), iconUrl } for a
+ * block def. `iconUrl` is the isometric cube used by the hotbar and
+ * inventory; items get the flat sprite.
  */
 export function getBlockAssets(block) {
   if (cache.has(block.id)) return cache.get(block.id);
@@ -1501,93 +822,89 @@ export function blockName(id) {
 }
 
 /**
- * A representative [r, g, b] tint (0..1) for a block id, for the block break
- * particles. Not a pixel-perfect sample — a single colour the chips can fly
- * out as, close enough to the block's look to read as bits of it.
+ * A representative [r, g, b] tint (0..1) for a block id, for the block
+ * break particles — the colour the chips fly out as.
  */
 const TINT_BY_ID = {
-  1: [0.48, 0.74, 0.29],   // grass top green
-  2: [0.47, 0.33, 0.23],   // dirt
-  3: [0.50, 0.50, 0.50],   // stone
-  4: [0.54, 0.54, 0.54],   // cobblestone
-  5: [0.72, 0.58, 0.37],   // oak planks
-  6: [0.86, 0.83, 0.63],   // sand
-  7: [0.61, 0.31, 0.18],   // bricks
-  8: [0.29, 0.29, 0.29],   // bedrock
-  9: [0.96, 0.96, 0.96],   // snow
-  10: [0.42, 0.31, 0.16],  // oak log
-  11: [0.25, 0.50, 0.16],  // leaves
-  12: [0.24, 0.25, 0.27],  // deepslate
-  22: [0.46, 0.65, 0.85],  // ice
-  23: [0.42, 0.42, 0.45],  // coal ore
-  24: [0.58, 0.55, 0.50],  // iron ore
+  1: [0.42, 0.66, 0.22],   // grass side green
+  2: [0.44, 0.29, 0.16],   // dirt
+  3: [0.45, 0.45, 0.45],   // stone
+  4: [0.49, 0.49, 0.49],   // cobblestone
+  5: [0.66, 0.46, 0.24],   // oak planks
+  6: [0.83, 0.78, 0.60],   // sand
+  7: [0.49, 0.22, 0.12],   // bricks
+  8: [0.17, 0.17, 0.17],   // bedrock
+  9: [0.88, 0.92, 0.96],   // snow
+  10: [0.36, 0.27, 0.15],  // oak log
+  11: [0.20, 0.40, 0.13],  // leaves
+  12: [0.16, 0.16, 0.19],  // deepslate
+  22: [0.51, 0.69, 0.89],  // ice
+  23: [0.33, 0.33, 0.36],  // coal ore
+  24: [0.55, 0.49, 0.42],  // iron ore
   25: [0.62, 0.55, 0.35],  // gold ore
-  26: [0.55, 0.42, 0.42],  // redstone ore
-  27: [0.48, 0.62, 0.60],  // diamond ore
-  28: [0.30, 0.30, 0.32],  // deepslate coal ore
-  29: [0.42, 0.40, 0.38],  // deepslate iron ore
-  30: [0.46, 0.41, 0.30],  // deepslate gold ore
-  31: [0.40, 0.32, 0.32],  // deepslate redstone ore
-  32: [0.35, 0.47, 0.46],  // deepslate diamond ore
-  33: [0.72, 0.58, 0.37],  // crafting table
-  34: [0.50, 0.48, 0.46],  // furnace
-  35: [0.82, 0.92, 1.00],  // glass
-  36: [0.75, 0.18, 0.14],  // tnt
+  26: [0.55, 0.40, 0.40],  // redstone ore
+  27: [0.38, 0.62, 0.60],  // diamond ore
+  28: [0.22, 0.22, 0.25],  // deepslate coal ore
+  29: [0.38, 0.35, 0.33],  // deepslate iron ore
+  30: [0.43, 0.38, 0.27],  // deepslate gold ore
+  31: [0.35, 0.27, 0.27],  // deepslate redstone ore
+  32: [0.27, 0.42, 0.41],  // deepslate diamond ore
+  33: [0.66, 0.46, 0.24],  // crafting table
+  34: [0.45, 0.45, 0.45],  // furnace
+  35: [0.78, 0.90, 1.00],  // glass
+  36: [0.69, 0.09, 0.06],  // tnt
 };
 
-/**
- * The same thing for items, which the block table above never covered
- * because items were never broken — nothing spawns chips off a pickaxe.
- * They do get *dropped*, though, and a dropped item that has to draw a puff
- * needs a colour, so the mid tone of each sprite's palette is it.
- */
+/** The same thing for items: the mid tone of each sprite's palette. */
 const ITEM_TINT = {
-  [COAL]: [0.18, 0.18, 0.18],
-  [RAW_IRON]: [0.83, 0.68, 0.52],
-  [IRON_INGOT]: [0.81, 0.81, 0.81],
-  [DIAMOND]: [0.41, 0.94, 0.88],
-  [RAW_GOLD]: [0.91, 0.75, 0.25],
-  [GOLD_INGOT]: [0.94, 0.80, 0.28],
-  [REDSTONE]: [0.88, 0.13, 0.13],
-  [BUCKET]: [0.60, 0.64, 0.67],
-  [WATER_BUCKET]: [0.23, 0.41, 0.81],
-  [STICKS]: [0.54, 0.34, 0.16],
-  [RAW_BEEF]: [0.72, 0.20, 0.14],
-  [STEAK]: [0.55, 0.33, 0.16],
-  [RAW_PORKCHOP]: [0.75, 0.24, 0.16],
-  [COOKED_PORKCHOP]: [0.60, 0.36, 0.18],
-  [RAW_CHICKEN]: [0.78, 0.40, 0.30],
-  [COOKED_CHICKEN]: [0.62, 0.42, 0.20],
-  [RAW_MUTTON]: [0.66, 0.18, 0.12],
-  [COOKED_MUTTON]: [0.52, 0.30, 0.14],
-  [APPLE]: [0.80, 0.18, 0.10],
-  [BONE]: [0.78, 0.78, 0.74],
-  [ARROW]: [0.62, 0.60, 0.58],
-  [STRING]: [0.70, 0.62, 0.42],
-  [SPIDER_EYE]: [0.80, 0.42, 0.42],
-  [BOW]: [0.55, 0.36, 0.16],
-  [FEATHER]: [0.86, 0.86, 0.84],
-  [LEATHER]: [0.62, 0.42, 0.20],
-  [CARROT]: [0.88, 0.42, 0.10],
-  [POTATO]: [0.62, 0.46, 0.22],
-  [BAKED_POTATO]: [0.70, 0.50, 0.26],
-  [GOLDEN_APPLE]: [0.90, 0.76, 0.20],
-  [IRON_HELMET]: [0.70, 0.72, 0.76],
-  [IRON_CHESTPLATE]: [0.70, 0.72, 0.76],
-  [IRON_LEGGINGS]: [0.70, 0.72, 0.76],
-  [IRON_BOOTS]: [0.70, 0.72, 0.76],
-  [DIAMOND_HELMET]: [0.35, 0.70, 0.66],
-  [DIAMOND_CHESTPLATE]: [0.35, 0.70, 0.66],
-  [DIAMOND_LEGGINGS]: [0.35, 0.70, 0.66],
-  [DIAMOND_BOOTS]: [0.35, 0.70, 0.66],
-  [GOLD_HELMET]: [0.90, 0.78, 0.28],
-  [GOLD_CHESTPLATE]: [0.90, 0.78, 0.28],
-  [GOLD_LEGGINGS]: [0.90, 0.78, 0.28],
-  [GOLD_BOOTS]: [0.90, 0.78, 0.28],
-  [LEATHER_HELMET]: [0.62, 0.42, 0.20],
-  [LEATHER_CHESTPLATE]: [0.62, 0.42, 0.20],
-  [LEATHER_LEGGINGS]: [0.62, 0.42, 0.20],
-  [LEATHER_BOOTS]: [0.62, 0.42, 0.20],
+  [COAL]: [0.15, 0.15, 0.17],
+  [RAW_IRON]: [0.63, 0.42, 0.24],
+  [IRON_INGOT]: [0.69, 0.71, 0.74],
+  [DIAMOND]: [0.18, 0.58, 0.67],
+  [RAW_GOLD]: [0.84, 0.64, 0.13],
+  [GOLD_INGOT]: [0.80, 0.67, 0.18],
+  [REDSTONE]: [0.63, 0.08, 0.08],
+  [BUCKET]: [0.51, 0.55, 0.59],
+  [WATER_BUCKET]: [0.29, 0.53, 0.85],
+  [STICKS]: [0.48, 0.30, 0.12],
+  [RAW_BEEF]: [0.66, 0.16, 0.11],
+  [STEAK]: [0.43, 0.26, 0.13],
+  [RAW_PORKCHOP]: [0.69, 0.20, 0.13],
+  [COOKED_PORKCHOP]: [0.47, 0.29, 0.15],
+  [RAW_CHICKEN]: [0.69, 0.48, 0.39],
+  [COOKED_CHICKEN]: [0.49, 0.34, 0.15],
+  [RAW_MUTTON]: [0.60, 0.13, 0.09],
+  [COOKED_MUTTON]: [0.40, 0.23, 0.11],
+  [APPLE]: [0.69, 0.11, 0.11],
+  [BONE]: [0.69, 0.64, 0.54],
+  [ARROW]: [0.49, 0.49, 0.49],
+  [STRING]: [0.75, 0.71, 0.59],
+  [SPIDER_EYE]: [0.55, 0.44, 0.60],
+  [BOW]: [0.54, 0.36, 0.16],
+  [FEATHER]: [0.82, 0.80, 0.75],
+  [LEATHER]: [0.55, 0.36, 0.15],
+  [CARROT]: [0.69, 0.31, 0.06],
+  [POTATO]: [0.61, 0.42, 0.20],
+  [BAKED_POTATO]: [0.44, 0.33, 0.15],
+  [GOLDEN_APPLE]: [0.85, 0.64, 0.13],
+  [GUNPOWDER]: [0.25, 0.25, 0.27],
+  [ROTTEN_FLESH]: [0.58, 0.13, 0.13],
+  [IRON_HELMET]: [0.71, 0.77, 0.80],
+  [IRON_CHESTPLATE]: [0.71, 0.77, 0.80],
+  [IRON_LEGGINGS]: [0.71, 0.77, 0.80],
+  [IRON_BOOTS]: [0.71, 0.77, 0.80],
+  [DIAMOND_HELMET]: [0.18, 0.58, 0.67],
+  [DIAMOND_CHESTPLATE]: [0.18, 0.58, 0.67],
+  [DIAMOND_LEGGINGS]: [0.18, 0.58, 0.67],
+  [DIAMOND_BOOTS]: [0.18, 0.58, 0.67],
+  [GOLD_HELMET]: [0.80, 0.67, 0.18],
+  [GOLD_CHESTPLATE]: [0.80, 0.67, 0.18],
+  [GOLD_LEGGINGS]: [0.80, 0.67, 0.18],
+  [GOLD_BOOTS]: [0.80, 0.67, 0.18],
+  [LEATHER_HELMET]: [0.55, 0.36, 0.15],
+  [LEATHER_CHESTPLATE]: [0.55, 0.36, 0.15],
+  [LEATHER_LEGGINGS]: [0.55, 0.36, 0.15],
+  [LEATHER_BOOTS]: [0.55, 0.36, 0.15],
 };
 
 export function blockTint(id) {

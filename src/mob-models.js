@@ -1,209 +1,401 @@
-// The two hostile mobs, in boxes.
+// The mobs, rebuilt.
 //
-// Everything here follows the player avatar's construction (player-model.js)
-// because a Minecraft mob is the same idea with a different paint job:
-// parts sized in "skin pixels" so the proportions are Minecraft's own,
-// textures painted onto small canvases with a seeded per-pixel wobble so
-// flat colour never reads as plastic, limbs hung from pivots so they swing
-// from the right end, and a little self-illumination so a mob on the far
-// side of the sun is a figure and not a hole.
+// The previous version had two visible defects and they were the two most
+// looked-at things about a mob:
 //
-// The proportions are the real models':
+//   * Feet in the ground. The collision code parks a mob at y = floor + a
+//     hair, which is where its *feet* belong — but the models drew their
+//     legs as boxes hanging down from a hip placed at the body's underside,
+//     which put the bottoms of the legs half a leg below the body and (for
+//     the cow) nearly half a block into the dirt. Every model here is built
+//     so that standing still, the bottom of every leg is exactly at the
+//     group's origin: the origin is the ground, and the mob stands on it.
 //
-//   * A zombie is the player model with green skin and the arms out — legs
-//     12px, body 12px, head 8px = 32px over the 1.95-block hitbox. The
-//     arms pointing straight ahead is not decoration: it is how Minecraft
-//     poses every zombie that has ever existed, and the silhouette of it —
-//     a figure with two arms aimed at you — is the whole warning.
-//   * A creeper is head 8, body 12 on its side (8 wide, 4 deep), four legs
-//     6: 26px over the 1.7-block hitbox. No arms, and the head is the
-//     biggest part of it, which is most of why it reads as a face on a
-//     stalk.
+//   * No necks. Heads sat directly on torsos — Minecraft's zombie does that
+//     too, but at this scale a head welded to a chest reads as a bobble, so
+//     the humanoids get a real neck (a small skin-toned box the head pivots
+//     on) and the animals get one connecting the body to the head out in
+//     front of it. A neck is what turns a stack of boxes into a figure.
 //
-// Each model exposes { group, update(state) } and nothing else, so the
-// renderer (mobs-render.js) knows nothing about either of them.
+// Beyond those two, everything got redrawn: the faces are hand-drawn 8×8
+// pixel maps instead of noise (a creeper's face is sixteen black pixels,
+// and it matters exactly where), the bodies are painted maps with shading
+// and mottle instead of flat wobble, and the whole file is now
+// data-driven: each mob is a spec — a list of boxes in skin pixels with
+// their textures — and one builder turns a spec into a THREE group. The
+// spec is also what the art preview tool renders, so the drawn mob and the
+// played mob can never drift apart.
+//
+// Proportions stay Minecraft's own: a zombie is 32 skin pixels over its
+// 1.95-block hitbox (legs 12, torso 11, neck 2, head 7), a creeper is 26
+// over 1.7. Each model exposes { kind, group, update(state) } and nothing
+// else, so the renderer (mobs-render.js) knows nothing about any of them.
 
 import * as THREE from '../vendor/three.module.min.js';
-import { mulberry32, clamp } from './utils.js';
+import { clamp } from './utils.js';
 import { ZOMBIE, CREEPER, SKELETON, SPIDER, PIG, COW, CHICKEN, SHEEP } from './mobs.js';
+import { paintedCanvas } from './pixelart.js';
+
+// ------------------------------------------------------------ pixel constants
 
 /** Zombie: 32 skin pixels over 1.95 blocks. */
 const Z_PX = 1.95 / 32;
 /** Creeper: 26 over 1.7. */
 const C_PX = 1.7 / 26;
+/** Skeleton: 32 over 1.99. */
+const S_PX = 1.99 / 32;
+/** Spider: 16 over 0.9. */
+const SP_PX = 0.9 / 16;
 
-// The zombie's palette, brighter than Minecraft's for the same reason the
-// player's is: ACES tone mapping crushes anything darker, and a silhouette
-// is not a zombie.
-const Z_SKIN = 0x59a04f;
-const Z_SKIN_DARK = 0x3f7a38;
-const Z_SHIRT = 0x0d7c7c;
-const Z_SLEEVE = 0x0a6868;
-const Z_PANTS = 0x4a4a8c;
-const Z_EYE = 0x0c1a0c;
-
-// Creeper greens: a base, a light mottle, a dark mottle, and the near-black
-// of the face. The mottling is what makes a creeper a creeper rather than a
-// green box — the texture is famously random noise, and so is this.
-const C_BASE = 0x69a83f;
-const C_LIGHT = 0x8cc75c;
-const C_DARK = 0x4c8030;
-const C_FACE = 0x101c0c;
-
-/** The self-illumination every part carries, as in the player model. */
+/** The self-illumination every part carries, as in the player model: ACES
+ *  tone mapping crushes an unlit face to black, and a mob on the far side
+ *  of the sun must still be a figure and not a hole. */
 const AMBIENT = 0x6e6e6e;
 
-// ------------------------------------------------------------- the textures
+// --------------------------------------------------------------- palettes
+//
+// Hand-picked per mob, slightly brighter than Minecraft's own because ACES
+// tone mapping crushes anything darker.
+
+const Z_SKIN = '#5ea552';
+const Z_SKIN_DARK = '#427c38';
+const Z_SHIRT = '#0d8c8c';
+const Z_SHIRT_DARK = '#096a6a';
+const Z_PANTS = '#4a4a9c';
+const Z_PANTS_DARK = '#3a3a80';
+const Z_EYE = '#0c140c';
+
+const C_BASE = '#69a83f';
+const C_LIGHT = '#8cc75c';
+const C_DARK = '#4c8030';
+const C_FACE = '#101c0c';
+
+const S_BONE = '#c9c9bd';
+const S_BONE_DARK = '#8a8a80';
+const S_SOCKET = '#101010';
+
+const SP_DARK = '#2a2320';
+const SP_MID = '#3a312c';
+const SP_LIGHT = '#4a4038';
+const SP_EYE = '#d01818';
+
+const Q_PIG = '#e8a0a0';
+const Q_PIG_DARK = '#c88080';
+const Q_PIG_SNOUT = '#d87878';
+const Q_COW = '#6b4a2a';
+const Q_COW_DARK = '#573a20';
+const Q_COW_SNOUT = '#d8c8b8';
+const Q_SHEEP = '#e6e6e0';
+const Q_SHEEP_DARK = '#4a463e';
+const Q_CHICK = '#f0f0e8';
+const Q_CHICK_DARK = '#d8d8d0';
+const Q_BEAK = '#d8a038';
+
+// ------------------------------------------------------- the face map format
+//
+// A face (or body) is a small pixel map: N strings of N letters, a palette,
+// painted with a seeded per-pixel wobble by pixelart.js. The letters mean
+// whatever the palette says; the *placement* is the drawing.
+
+/** A canvas texture from a pixel map, nearest-neighbour, sRGB. */
+function mapTexture(rows, palette, seed, wobble = 0.06) {
+  const size = rows.length;
+  const cv = paintedCanvas(size, rows, palette, { seed, wobble });
+  const tex = new THREE.CanvasTexture(cv);
+  tex.magFilter = THREE.NearestFilter;
+  tex.minFilter = THREE.NearestFilter;
+  tex.colorSpace = THREE.SRGBColorSpace;
+  return tex;
+}
+
+/** A flat colour with a seeded wobble, for the parts without a drawing. */
+function flatTexture(color, seed) {
+  const size = 8;
+  const rows = Array.from({ length: size }, () => 'm'.repeat(size));
+  return mapTexture(rows, { m: color }, seed, 0.09);
+}
+
+// ------------------------------------------------------------- zombie art
 
 /**
- * An S×S canvas of a colour with a seeded wobble, optionally with rows of
- * other colours over the top — the same painter the avatar uses.
+ * The zombie's face, hand-drawn: green skin with a lit brow, deep black
+ * eyes two texels wide and two tall (Minecraft's zombie eyes), a shaded
+ * nose, and the slack grimace of a mouth across the bottom.
  */
-function flatTexture(color, seed, opts = {}) {
-  const { rows = null, mottle = null } = opts;
-  const S = 8;
-  const rand = mulberry32(seed);
-  const cv = document.createElement('canvas');
-  cv.width = cv.height = S;
-  const ctx = cv.getContext('2d');
-  const paint = (c, y0, y1) => {
-    for (let y = y0; y < y1; y++) {
-      for (let x = 0; x < S; x++) {
-        const f = 0.88 + rand() * 0.22;
-        const r = clamp(Math.round(((c >> 16) & 255) * f), 0, 255);
-        const g = clamp(Math.round(((c >> 8) & 255) * f), 0, 255);
-        const b = clamp(Math.round((c & 255) * f), 0, 255);
-        ctx.fillStyle = `rgb(${r},${g},${b})`;
-        ctx.fillRect(x, y, 1, 1);
-      }
-    }
-  };
-  paint(color, 0, S);
-  // Optional two-tone mottling: blotches of another colour scattered over
-  // the base, which is the creeper's skin exactly — random light and dark
-  // patches over green, no pattern anywhere.
-  if (mottle) {
-    for (const { color: c, chance } of mottle) {
-      for (let y = 0; y < S; y++) {
-        for (let x = 0; x < S; x++) {
-          if (rand() < chance) {
-            const f = 0.9 + rand() * 0.2;
-            const r = clamp(Math.round(((c >> 16) & 255) * f), 0, 255);
-            const g = clamp(Math.round(((c >> 8) & 255) * f), 0, 255);
-            const b = clamp(Math.round((c & 255) * f), 0, 255);
-            ctx.fillStyle = `rgb(${r},${g},${b})`;
-            ctx.fillRect(x, y, 1, 1);
-          }
-        }
-      }
-    }
-  }
-  for (const row of rows ?? []) paint(row.color, row.from, row.to);
-  const tex = new THREE.CanvasTexture(cv);
-  tex.magFilter = THREE.NearestFilter;
-  tex.minFilter = THREE.NearestFilter;
-  tex.colorSpace = THREE.SRGBColorSpace;
-  return tex;
-}
+const ZOMBIE_FACE_PX = [
+  'hhgggggh',
+  'hggggggh',
+  'gggggggg',
+  'gEEggEEg',
+  'gEEggEEg',
+  'ggNNgggg',
+  'ggNNMMMM',
+  'ddgMMMMd',
+];
+const ZOMBIE_FACE_PALETTE = {
+  g: Z_SKIN, h: '#7ac46c', d: Z_SKIN_DARK, N: Z_SKIN_DARK, E: Z_EYE, M: '#2a4a22',
+};
 
-/** The zombie's face: green skin, black brow-deep eyes, a grim mouth. */
-function zombieFaceTexture() {
-  const S = 8;
-  const cv = document.createElement('canvas');
-  cv.width = cv.height = S;
-  const ctx = cv.getContext('2d');
-  const rand = mulberry32(9902);
-  const px = (x, y, c) => {
-    ctx.fillStyle = c;
-    ctx.fillRect(x, y, 1, 1);
-  };
-  const rgb = (c) => {
-    const f = 0.88 + rand() * 0.22;
-    const r = clamp(Math.round(((c >> 16) & 255) * f), 0, 255);
-    const g = clamp(Math.round(((c >> 8) & 255) * f), 0, 255);
-    const b = clamp(Math.round((c & 255) * f), 0, 255);
-    return `rgb(${r},${g},${b})`;
-  };
-  for (let y = 0; y < S; y++) {
-    for (let x = 0; x < S; x++) px(x, y, rgb(Z_SKIN));
-  }
-  // Deep-set black eyes, one pixel wide and two tall, Minecraft's zombie.
-  const eye = `#${Z_EYE.toString(16).padStart(6, '0')}`;
-  px(1, 3, eye); px(1, 4, eye);
-  px(2, 3, eye); px(2, 4, eye);
-  px(5, 3, eye); px(5, 4, eye);
-  px(6, 3, eye); px(6, 4, eye);
-  // The nose and the slack grimace of a mouth, darker green.
-  const dark = `#${Z_SKIN_DARK.toString(16).padStart(6, '0')}`;
-  px(3, 4, dark); px(4, 4, dark);
-  px(2, 6, dark); px(3, 6, dark); px(4, 6, dark); px(5, 6, dark);
-  const tex = new THREE.CanvasTexture(cv);
-  tex.magFilter = THREE.NearestFilter;
-  tex.minFilter = THREE.NearestFilter;
-  tex.colorSpace = THREE.SRGBColorSpace;
-  return tex;
-}
+/** The zombie's shirt: teal with a darker hem and shoulder shading. */
+const ZOMBIE_SHIRT_PX = [
+  'mmhmmmmm',
+  'mhmmmmmm',
+  'mmmmmmmm',
+  'mmmmmmmm',
+  'mmmmmmmm',
+  'mmmmmmmm',
+  'mmddddmm',
+  'dddddddd',
+];
+const ZOMBIE_SHIRT_PALETTE = {
+  m: Z_SHIRT, h: '#1a9c9c', d: Z_SHIRT_DARK,
+};
 
-/**
- * The creeper's face. Sixteen black pixels, and everybody on earth knows
- * exactly what they are: two 2×2 eyes, and the downturned mouth below —
- * two pixels wide at the top, four in the middle, and the two gaps at the
- * bottom that make it a frown instead of a hole. Nothing else. The face is
- * the mob; the rest is green.
- */
-function creeperFaceTexture() {
-  const S = 8;
-  const cv = document.createElement('canvas');
-  cv.width = cv.height = S;
-  const ctx = cv.getContext('2d');
-  const rand = mulberry32(4404);
-  for (let y = 0; y < S; y++) {
-    for (let x = 0; x < S; x++) {
-      const f = 0.88 + rand() * 0.22;
-      const r = clamp(Math.round(((C_BASE >> 16) & 255) * f), 0, 255);
-      const g = clamp(Math.round(((C_BASE >> 8) & 255) * f), 0, 255);
-      const b = clamp(Math.round((C_BASE & 255) * f), 0, 255);
-      ctx.fillStyle = `rgb(${r},${g},${b})`;
-      ctx.fillRect(x, y, 1, 1);
-    }
-  }
-  const face = `#${C_FACE.toString(16).padStart(6, '0')}`;
-  const px = (x, y) => {
-    ctx.fillStyle = face;
-    ctx.fillRect(x, y, 1, 1);
-  };
-  // eyes, 2x2 each
-  for (const ox of [1, 5]) {
-    px(ox, 2); px(ox + 1, 2);
-    px(ox, 3); px(ox + 1, 3);
-  }
-  // mouth: narrow at the top, wide in the middle, split at the bottom
-  px(3, 4); px(4, 4);
-  px(2, 5); px(3, 5); px(4, 5); px(5, 5);
-  px(2, 6); px(3, 6); px(4, 6); px(5, 6);
-  px(2, 7); px(5, 7);
-  const tex = new THREE.CanvasTexture(cv);
-  tex.magFilter = THREE.NearestFilter;
-  tex.minFilter = THREE.NearestFilter;
-  tex.colorSpace = THREE.SRGBColorSpace;
-  return tex;
-}
+/** The zombie's pants: blue-violet, darker toward the cuffs. */
+const ZOMBIE_PANTS_PX = [
+  'mmmmmmmm',
+  'mmmmmmmm',
+  'mmmmmmmm',
+  'mmmmmmmm',
+  'mmmmmmmm',
+  'mmmmmmmm',
+  'mmddddmm',
+  'dddddddd',
+];
+const ZOMBIE_PANTS_PALETTE = {
+  m: Z_PANTS, d: Z_PANTS_DARK,
+};
 
-// Textures are built once per page and shared by every mob of a kind — the
-// materials are cloned per mob so flashes can tint one zombie at a time,
-// but the pixels behind them are one canvas each.
+// ------------------------------------------------------------ creeper art
+//
+// The creeper's face: sixteen black pixels, and everybody on earth knows
+// exactly what they are — two 2×2 eyes and the downturned mouth below.
+// The rest of the head is the mottled hide.
+
+const CREEPER_FACE_PX = [
+  'cccccccc',
+  'cEEccEEc',
+  'cEEccEEc',
+  'cccccccc',
+  'cccMMccc',
+  'ccMMMMcc',
+  'ccMMMMcc',
+  'ccMMcMMc',
+];
+const CREEPER_FACE_PALETTE = {
+  c: C_BASE, E: C_FACE, M: C_FACE,
+};
+
+/** The creeper's hide: mottle placed by hand, denser toward the bottom. */
+const CREEPER_HIDE_PX = [
+  'cmclcmcm',
+  'mcmcmcmc',
+  'cmcmcmcl',
+  'mcmcmcmc',
+  'cmclmcmc',
+  'lcmcmcml',
+  'mcmclmcm',
+  'cmlmcmcl',
+];
+const CREEPER_HIDE_PALETTE = {
+  c: C_BASE, m: C_BASE, l: C_LIGHT,
+};
+
+// ------------------------------------------------------------ skeleton art
+
+const SKELETON_FACE_PX = [
+  'bbbbbbbb',
+  'bbbbbbbb',
+  'bbbbbbbb',
+  'bSSbbSSb',
+  'bSSbbSSb',
+  'bbbbbbbb',
+  'bbbSSbbb',
+  'bbbbbbbb',
+];
+const SKELETON_FACE_PALETTE = {
+  b: S_BONE, S: S_SOCKET,
+};
+
+/** Ribcage: bone with darker gaps between the ribs. */
+const SKELETON_RIBS_PX = [
+  'bbbbbbbb',
+  'bdbbbbdb',
+  'bdbdbdbd',
+  'bbbbbbbb',
+  'bdbbbbdb',
+  'bdbdbdbd',
+  'bbbbbbbb',
+  'bbbbbbbb',
+];
+const SKELETON_RIBS_PALETTE = {
+  b: S_BONE, d: S_BONE_DARK,
+};
+
+// -------------------------------------------------------------- spider art
+
+const SPIDER_HIDE_PX = [
+  'mldmmmmm',
+  'mmmmldmm',
+  'dmmmmmmm',
+  'mmmmmmdl',
+  'mmldmmmm',
+  'mmmmmmmm',
+  'dmmmmmmm',
+  'mmmmdmmm',
+];
+const SPIDER_HIDE_PALETTE = {
+  m: SP_MID, d: SP_DARK, l: SP_LIGHT,
+};
+
+/** The spider's eye plate: four red eyes in two rows, like the real one. */
+const SPIDER_FACE_PX = [
+  'mmmmmmmm',
+  'mmmmmmmm',
+  'mRRmmRRm',
+  'mmmmmmmm',
+  'mmmmmmmm',
+  'mmRRRRmm',
+  'mmmmmmmm',
+  'mmmmmmmm',
+];
+const SPIDER_FACE_PALETTE = {
+  m: SP_MID, R: SP_EYE,
+};
+
+// ------------------------------------------------------------ animal art
+
+/** Pig: pink hide with a darker belly band. */
+const PIG_HIDE_PX = [
+  'mhmmmmmm',
+  'hmmmmmmm',
+  'mmmmmmmm',
+  'mmmmmmmm',
+  'mmmmmmmm',
+  'mmddddmm',
+  'dddddddd',
+  'dddddddd',
+];
+const PIG_HIDE_PALETTE = { m: Q_PIG, h: '#f4b8b8', d: Q_PIG_DARK };
+
+/** Pig face: the flat snout with the two nostrils and small dark eyes. */
+const PIG_FACE_PX = [
+  'hhhhhhhh',
+  'hhEhhEhh',
+  'hhhhhhhh',
+  'hhsssshh',
+  'hssssssh',
+  'hhsssshh',
+  'hssnnssh',
+  'hhsssssh',
+];
+const PIG_FACE_PALETTE = {
+  h: Q_PIG, E: '#3a2424', s: Q_PIG_SNOUT, n: '#5c3838',
+};
+
+/** Cow: brown hide with white patches (the classic dairy cow). */
+const COW_HIDE_PX = [
+  'mwwmmmmm',
+  'mwwmmmmm',
+  'mmmmwwmm',
+  'mmmmwwmm',
+  'mmwwmmmm',
+  'mmwwmmmm',
+  'mmmmmmww',
+  'mmmmmmww',
+];
+const COW_HIDE_PALETTE = { m: Q_COW, w: '#c8b098' };
+
+/** Cow face: brown with a white blaze and a pale muzzle. */
+const COW_FACE_PX = [
+  'bwwbbbwb',
+  'bEwwbbEb',
+  'bwwbbbwb',
+  'bbbbbbbb',
+  'bbssssbb',
+  'bssssssb',
+  'bssnnssb',
+  'bbssssbb',
+];
+const COW_FACE_PALETTE = {
+  b: Q_COW, w: '#c8b098', E: '#241410', s: Q_COW_SNOUT, n: '#8a7a6a',
+};
+
+/** Sheep wool: curls drawn as light rings on a slightly darker fleece. */
+const SHEEP_WOOL_PX = [
+  'mlmlmmml',
+  'lmmmmlmm',
+  'mmmlmmml',
+  'mlmmlmmm',
+  'lmmmmlmm',
+  'mmmlmmml',
+  'mlmlmmml',
+  'lmmmmlmm',
+];
+const SHEEP_WOOL_PALETTE = { m: Q_SHEEP, l: '#f8f8f4' };
+
+/** Sheep face: the dark grey face of the classic white sheep. */
+const SHEEP_FACE_PX = [
+  'dddddddd',
+  'dEddddEd',
+  'dddddddd',
+  'ddmmmmdd',
+  'ddmmmmdd',
+  'ddmmmmdd',
+  'dddddddd',
+  'dddddddd',
+];
+const SHEEP_FACE_PALETTE = {
+  d: Q_SHEEP_DARK, m: '#6a6458', E: '#141210',
+};
+
+/** Chicken feathers: pale with a darker wing stripe. */
+const CHICK_HIDE_PX = [
+  'mmmmmmmm',
+  'mmmmmmmm',
+  'mmddddmm',
+  'mddddddm',
+  'mmddddmm',
+  'mmmmmmmm',
+  'mmmmmmmm',
+  'mmmmmmmm',
+];
+const CHICK_HIDE_PALETTE = { m: Q_CHICK, d: Q_CHICK_DARK };
+
+/** Chicken head: eyes at the sides, no mouth to speak of. */
+const CHICK_FACE_PX = [
+  'mmmmmmmm',
+  'mEmmmmEm',
+  'mmmmmmmm',
+  'mmmmmmmm',
+  'mmmmmmmm',
+  'mmmmmmmm',
+  'mmmmmmmm',
+  'mmmmmmmm',
+];
+const CHICK_FACE_PALETTE = { m: Q_CHICK, E: '#241410' };
+
+// ----------------------------------------------------------------- textures
+//
+// Built once per kind and shared by every mob of that kind — the materials
+// are cloned per mob so a flash can tint one zombie at a time, but the
+// pixels behind them are one canvas each.
+
 let Z_TEX = null;
 let C_TEX = null;
+let S_TEX = null;
+let SP_TEX = null;
+let Q_TEX = null;
 
 function zombieTextures() {
   if (!Z_TEX) {
     Z_TEX = {
       skin: flatTexture(Z_SKIN, 101),
       skinDark: flatTexture(Z_SKIN_DARK, 102),
-      shirt: flatTexture(Z_SHIRT, 103),
-      sleeve: flatTexture(Z_SLEEVE, 104),
-      pants: flatTexture(Z_PANTS, 105),
-      face: zombieFaceTexture(),
+      shirt: mapTexture(ZOMBIE_SHIRT_PX, ZOMBIE_SHIRT_PALETTE, 103),
+      sleeve: flatTexture(Z_SHIRT_DARK, 104),
+      pants: mapTexture(ZOMBIE_PANTS_PX, ZOMBIE_PANTS_PALETTE, 105),
+      face: mapTexture(ZOMBIE_FACE_PX, ZOMBIE_FACE_PALETTE, 106),
     };
   }
   return Z_TEX;
@@ -212,146 +404,218 @@ function zombieTextures() {
 function creeperTextures() {
   if (!C_TEX) {
     C_TEX = {
-      hide: flatTexture(C_BASE, 201, {
-        mottle: [
-          { color: C_LIGHT, chance: 0.18 },
-          { color: C_DARK, chance: 0.14 },
-        ],
-      }),
-      face: creeperFaceTexture(),
+      hide: mapTexture(CREEPER_HIDE_PX, CREEPER_HIDE_PALETTE, 201),
+      hideDark: flatTexture(C_DARK, 202),
+      face: mapTexture(CREEPER_FACE_PX, CREEPER_FACE_PALETTE, 203),
     };
   }
   return C_TEX;
 }
 
-// ---------------------------------------------------------------- the parts
+function skeletonTextures() {
+  if (!S_TEX) {
+    S_TEX = {
+      bone: flatTexture(S_BONE, 301),
+      dark: flatTexture(S_BONE_DARK, 302),
+      ribs: mapTexture(SKELETON_RIBS_PX, SKELETON_RIBS_PALETTE, 303),
+      face: mapTexture(SKELETON_FACE_PX, SKELETON_FACE_PALETTE, 304),
+    };
+  }
+  return S_TEX;
+}
+
+function spiderTextures() {
+  if (!SP_TEX) {
+    SP_TEX = {
+      hide: mapTexture(SPIDER_HIDE_PX, SPIDER_HIDE_PALETTE, 401),
+      dark: flatTexture(SP_DARK, 402),
+      face: mapTexture(SPIDER_FACE_PX, SPIDER_FACE_PALETTE, 403),
+    };
+  }
+  return SP_TEX;
+}
+
+function quadrupedTextures() {
+  if (!Q_TEX) {
+    Q_TEX = {
+      pig: mapTexture(PIG_HIDE_PX, PIG_HIDE_PALETTE, 501),
+      pigFace: mapTexture(PIG_FACE_PX, PIG_FACE_PALETTE, 502),
+      pigSnout: flatTexture(Q_PIG_SNOUT, 503),
+      cow: mapTexture(COW_HIDE_PX, COW_HIDE_PALETTE, 504),
+      cowFace: mapTexture(COW_FACE_PX, COW_FACE_PALETTE, 505),
+      cowSnout: flatTexture(Q_COW_SNOUT, 506),
+      sheep: mapTexture(SHEEP_WOOL_PX, SHEEP_WOOL_PALETTE, 507),
+      sheepFace: mapTexture(SHEEP_FACE_PX, SHEEP_FACE_PALETTE, 508),
+      sheepDark: flatTexture(Q_SHEEP_DARK, 509),
+      chicken: mapTexture(CHICK_HIDE_PX, CHICK_HIDE_PALETTE, 510),
+      chickenDark: flatTexture(Q_CHICK_DARK, 511),
+      chickenFace: mapTexture(CHICK_FACE_PX, CHICK_FACE_PALETTE, 512),
+      beak: flatTexture(Q_BEAK, 513),
+    };
+  }
+  return Q_TEX;
+}
+
+// ------------------------------------------------------------------- parts
+//
+// One builder turns a spec into a group. A spec is a list of parts; each
+// part is:
+//
+//   { name, at:[x,y,z], size:[w,h,d], tex:'skin', faces?: {front:'face'} }
+//     a box centred at `at` (skin pixels, +y up, -z = the mob's front).
+//   { name, at:[x,y,z], size:[w,h,d], tex, limb:true }
+//     a box hanging *down* from a pivot at `at`, so rotating the pivot
+//     swings the limb from the shoulder/hip like a hinge.
+//   { name, at:[x,y,z], pivot:true, children:[...] }
+//     a group (the head pivot) holding its children.
+//   { name, at:[x,y,z], size:[w,h,d], tex, faces:[...only these sides...] }
+//     a box whose material array is named by side: 'front','back','left',
+//     'right','top','bottom'.
+//
+// Positions are in skin pixels, scaled by the mob's px constant, measured
+// from the group's origin — which is the mob's *feet*. Standing still, the
+// bottom of every leg is at y = 0: the origin is the ground.
 
 const geoCache = new Map();
 
-/**
- * A box geometry, cached per (kind, part). *Every* box a mob is made of
- * comes through here — the heads and the creeper's body included. They used
- * to be built with a bare `new THREE.BoxGeometry` each, which the renderer
- * then never disposed (it disposes materials only, on the promise that
- * geometry is shared), so a night of spawning and despawning leaked one
- * geometry per zombie and two per creeper. Shared is the promise; this is
- * what keeps it.
- */
-function boxGeo(key, w, h, d, pxScale) {
-  let geo = geoCache.get(key);
+/** A box geometry, cached per (kind, name) — every box a mob is made of
+ *  comes through here, which is what makes a night of spawns leak-free. */
+function boxGeo(kind, name, w, h, d, px) {
+  let geo = geoCache.get(`${kind}:${name}`);
   if (!geo) {
-    geo = new THREE.BoxGeometry(w * pxScale, h * pxScale, d * pxScale);
-    geoCache.set(key, geo);
+    geo = new THREE.BoxGeometry(w * px, h * px, d * px);
+    geoCache.set(`${kind}:${name}`, geo);
   }
   return geo;
 }
 
 /**
  * A textured box: shared geometry, and a material of its very own — the
- * hurt flash tints *this* zombie, not zombies generally.
+ * hurt flash tints *this* mob, not mobs generally.
  */
-function part(kind, name, w, h, d, pxScale, tex, seed) {
-  const geo = boxGeo(`${kind}:${name}`, w, h, d, pxScale);
+function part(kind, p, px, T) {
+  const geo = boxGeo(kind, p.name, p.size[0], p.size[1], p.size[2], px);
   const mat = new THREE.MeshLambertMaterial({
-    map: tex,
-    emissiveMap: tex,
+    map: T[p.tex],
+    emissiveMap: T[p.tex],
     emissive: AMBIENT,
   });
-  mat.userData.seed = seed;
   const mesh = new THREE.Mesh(geo, mat);
   mesh.castShadow = true;
   mesh.receiveShadow = true;
+  mesh.position.set(p.at[0] * px, p.at[1] * px, p.at[2] * px);
   return mesh;
 }
 
 /**
- * A limb: a box whose geometry hangs *down* from its group's origin, so
- * rotating the group swings the limb from the shoulder/hip like a hinge
- * rather than spinning it about its middle.
+ * A multi-face box — the head, whose front face carries the drawn face.
+ * `faces` names which texture goes on which side, in box material order
+ * (+x, -x, +y, -y, +z, -z); the front (-z) is the direction the body calls
+ * forward, matching the player avatar.
  */
-function limb(kind, name, w, h, d, pxScale, tex, seed) {
-  const g = new THREE.Group();
-  const mesh = part(kind, name, w, h, d, pxScale, tex, seed);
-  mesh.position.y = (-h / 2) * pxScale;
-  g.add(mesh);
-  return g;
+function facedPart(kind, p, px, T) {
+  const geo = boxGeo(kind, p.name, p.size[0], p.size[1], p.size[2], px);
+  const make = (key) => new THREE.MeshLambertMaterial({
+    map: T[key], emissiveMap: T[key], emissive: AMBIENT,
+  });
+  const f = p.faces;
+  const mesh = new THREE.Mesh(geo, [
+    make(f.left ?? p.tex),
+    make(f.right ?? p.tex),
+    make(f.top ?? p.tex),
+    make(f.bottom ?? p.tex),
+    make(f.back ?? p.tex),
+    make(f.front ?? p.tex),
+  ]);
+  mesh.castShadow = true;
+  mesh.receiveShadow = true;
+  mesh.position.set(p.at[0] * px, p.at[1] * px, p.at[2] * px);
+  return mesh;
 }
 
-// ------------------------------------------------------------------ zombie
-
 /**
- * Build a zombie. The group's origin is its feet; `front` is -Z as with the
- * player, so the same yaw convention drives both.
+ * Build a group from a spec, handing back { group, handles } where handles
+ * maps part names to their objects (groups for limbs and pivots, meshes for
+ * plain parts) so the per-kind update can animate them by name.
  */
-export function createZombieModel() {
-  const T = zombieTextures();
-  const PX = Z_PX;
+function buildFromSpec(kind, spec, px, T) {
   const group = new THREE.Group();
-
-  // Body frame: dies (tips over) by rotating this, without disturbing the
-  // group's position or the parts' walk angles inside it.
   const root = new THREE.Group();
   root.rotation.order = 'YXZ';
   group.add(root);
-
-  // head, on a neck pivot so it can look around independently of the body.
-  // The box is centred one half-head above the pivot so it sits *on* the
-  // shoulders rather than half-buried in them.
-  const headPivot = new THREE.Group();
-  headPivot.position.y = 24 * PX;
-  root.add(headPivot);
-  const skin = () => new THREE.MeshLambertMaterial({
-    map: T.skin, emissiveMap: T.skin, emissive: AMBIENT,
-  });
-  // Box material order: +x, -x, +y, -y, +z, -z. The face is on -Z, the
-  // direction the body calls forward, matching the player avatar.
-  const faceMat = new THREE.MeshLambertMaterial({
-    map: T.face, emissiveMap: T.face, emissive: AMBIENT,
-  });
-  const topMat = new THREE.MeshLambertMaterial({
-    map: T.skinDark, emissiveMap: T.skinDark, emissive: AMBIENT,
-  });
-  const head = new THREE.Mesh(
-    boxGeo(`${ZOMBIE}:head`, 8, 8, 8, PX),
-    [skin(), skin(), topMat, skin(), skin(), faceMat]);
-  head.position.y = 4 * PX;
-  head.castShadow = true;
-  headPivot.add(head);
-
-  // torso: 8 wide, 12 tall, 4 deep
-  const torso = part(ZOMBIE, 'torso', 8, 12, 4, PX, T.shirt, 21);
-  torso.position.y = 18 * PX;
-  root.add(torso);
-
-  // arms, aimed dead ahead: the zombie's whole posture. They hang from the
-  // shoulder pivot like any limb and are then rotated to horizontal, so a
-  // walk cycle can still bob them a little without ever breaking the pose.
-  const armL = limb(ZOMBIE, 'arm', 4, 12, 4, PX, T.sleeve, 31);
-  armL.position.set(-6 * PX, 23 * PX, 0);
-  root.add(armL);
-  const armR = limb(ZOMBIE, 'arm', 4, 12, 4, PX, T.sleeve, 32);
-  armR.position.set(6 * PX, 23 * PX, 0);
-  root.add(armR);
-
-  // legs from the hips
-  const legL = limb(ZOMBIE, 'leg', 4, 12, 4, PX, T.pants, 41);
-  legL.position.set(-2 * PX, 12 * PX, 0);
-  root.add(legL);
-  const legR = limb(ZOMBIE, 'leg', 4, 12, 4, PX, T.pants, 42);
-  legR.position.set(2 * PX, 12 * PX, 0);
-  root.add(legR);
-
-  // Every part that can flash (all of them) is collected once so a hit can
-  // tint the whole figure without traversing the graph per frame.
+  const handles = { root };
   const allMats = [];
-  root.traverse((o) => {
-    if (o.isMesh) {
-      // The head is a multi-material mesh; collect each face's material.
-      if (Array.isArray(o.material)) allMats.push(...o.material);
-      else allMats.push(o.material);
-    }
-  });
 
+  const collect = (mesh) => {
+    if (Array.isArray(mesh.material)) allMats.push(...mesh.material);
+    else allMats.push(mesh.material);
+  };
+
+  const buildInto = (parent, parts) => {
+    for (const p of parts) {
+      if (p.pivot) {
+        const g = new THREE.Group();
+        g.position.set(p.at[0] * px, p.at[1] * px, p.at[2] * px);
+        parent.add(g);
+        handles[p.name] = g;
+        buildInto(g, p.children ?? []);
+      } else if (p.limb) {
+        // A limb: the group is the pivot at `at`, and the box hangs *down*
+        // from it — so the box's own position is just the hang offset, not
+        // `at` again (applying both doubles the reach of every arm).
+        const g = new THREE.Group();
+        g.position.set(p.at[0] * px, p.at[1] * px, p.at[2] * px);
+        parent.add(g);
+        const mesh = part(kind, p, px, T);
+        mesh.position.set(0, (-p.size[1] / 2) * px, 0);
+        g.add(mesh);
+        collect(mesh);
+        handles[p.name] = g;
+      } else {
+        const mesh = p.faces ? facedPart(kind, p, px, T) : part(kind, p, px, T);
+        parent.add(mesh);
+        collect(mesh);
+        handles[p.name] = mesh;
+      }
+    }
+  };
+
+  buildInto(root, spec);
+  return { group, handles, allMats };
+}
+
+// ------------------------------------------------------------------ zombie
+//
+// 32 skin pixels over the 1.95-block hitbox, Minecraft's own proportions
+// with one adjustment: a 2-pixel neck between the shoulders and the head,
+// because a head welded to a chest reads as a bobble at this scale. The
+// head pivots on top of the neck so it looks around from the *top* of the
+// figure instead of from inside the chest.
+
+export function createZombieModel() {
+  const T = zombieTextures();
+  const PX = Z_PX;
+  const spec = [
+    // legs from the hips — 12px, feet at 0
+    { name: 'legL', at: [-2, 12, 0], size: [4, 12, 4], tex: 'pants', limb: true },
+    { name: 'legR', at: [2, 12, 0], size: [4, 12, 4], tex: 'pants', limb: true },
+    // torso 11px (12..23): one pixel shorter than the classic to make room
+    // for the neck without making the figure taller than its hitbox.
+    { name: 'torso', at: [0, 17.5, 0], size: [8, 11, 4], tex: 'shirt' },
+    // the neck and head live on the head pivot at y=25
+    {
+      name: 'headPivot', at: [0, 25, 0], pivot: true, children: [
+        { name: 'neck', at: [0, -1, 0], size: [4, 2, 4], tex: 'skin' },
+        { name: 'head', at: [0, 3.5, 0], size: [8, 7, 8], tex: 'skin', faces: { front: 'face' } },
+      ],
+    },
+    // arms, aimed dead ahead: the zombie's whole posture. They hang from
+    // the shoulder pivot and are rotated to horizontal in update().
+    { name: 'armL', at: [-6, 22.5, 0], size: [4, 12, 4], tex: 'sleeve', limb: true },
+    { name: 'armR', at: [6, 22.5, 0], size: [4, 12, 4], tex: 'sleeve', limb: true },
+  ];
+
+  const { group, handles: h, allMats } = buildFromSpec(ZOMBIE, spec, PX, T);
   let phase = 0;
 
   /**
@@ -362,91 +626,61 @@ export function createZombieModel() {
     group.position.set(s.x, s.y, s.z);
     group.rotation.y = s.yaw;
 
-    // Head follows the target within reason: the neck turns after the
-    // body's own yaw, clamped like a spine would.
+    // The neck turns after the body's own yaw, clamped like a spine would.
     let rel = s.headYaw - s.yaw;
     while (rel > Math.PI) rel -= Math.PI * 2;
     while (rel < -Math.PI) rel += Math.PI * 2;
-    headPivot.rotation.y = clamp(rel, -1.1, 1.1);
-    headPivot.rotation.x = clamp(s.headPitch, -0.6, 0.6);
+    h.headPivot.rotation.y = clamp(rel, -1.1, 1.1);
+    h.headPivot.rotation.x = clamp(s.headPitch, -0.6, 0.6);
 
     // The walk: legs in opposition, the shamble slowed a touch to match the
     // 2.3-blocks-a-second the sim actually moves. The arms stay aimed and
     // merely sway with the stride.
     phase = s.walkPhase;
     const swing = Math.sin(phase) * 0.55;
-    legL.rotation.x = swing;
-    legR.rotation.x = -swing;
+    h.legL.rotation.x = swing;
+    h.legR.rotation.x = -swing;
     const armSway = Math.sin(phase) * 0.09;
-    armL.rotation.x = -Math.PI / 2 + armSway;
-    armR.rotation.x = -Math.PI / 2 - armSway;
-    armL.rotation.z = 0.05 + Math.abs(Math.sin(phase)) * 0.03;
-    armR.rotation.z = -0.05 - Math.abs(Math.sin(phase)) * 0.03;
+    h.armL.rotation.x = -Math.PI / 2 + armSway;
+    h.armR.rotation.x = -Math.PI / 2 - armSway;
+    h.armL.rotation.z = 0.05 + Math.abs(Math.sin(phase)) * 0.03;
+    h.armR.rotation.z = -0.05 - Math.abs(Math.sin(phase)) * 0.03;
 
-    applyCommon(root, allMats, s);
+    applyCommon(h.root, allMats, s);
   }
 
   return { kind: ZOMBIE, group, update };
 }
 
 // ----------------------------------------------------------------- creeper
+//
+// Head 8, body 12 on its side (8 wide, 4 deep), four legs 6: 26 skin
+// pixels over the 1.7-block hitbox, the real model's proportions. The
+// creeper's anatomy is head-on-body — that is what a creeper is — but the
+// head now sits on a slightly raised collar so the face is not buried in
+// the shoulders.
 
-/**
- * Build a creeper: head 8, body 12 tall/8 wide/4 deep, four 6-tall legs —
- * 26 skin pixels over the 1.7-block hitbox, the real model's proportions.
- */
 export function createCreeperModel() {
   const T = creeperTextures();
   const PX = C_PX;
-  const group = new THREE.Group();
+  const spec = [
+    { name: 'legFL', at: [-2, 6, -2], size: [4, 6, 4], tex: 'hideDark', limb: true },
+    { name: 'legFR', at: [2, 6, -2], size: [4, 6, 4], tex: 'hideDark', limb: true },
+    { name: 'legBL', at: [-2, 6, 2], size: [4, 6, 4], tex: 'hideDark', limb: true },
+    { name: 'legBR', at: [2, 6, 2], size: [4, 6, 4], tex: 'hideDark', limb: true },
+    // body 6..18, on the legs
+    { name: 'body', at: [0, 12, 0], size: [8, 12, 4], tex: 'hide' },
+    {
+      name: 'headPivot', at: [0, 18, 0], pivot: true, children: [
+        // a collar of darker hide the head stands on, so the head reads as
+        // a head and not as the body simply stopping
+        { name: 'collar', at: [0, 0.5, 0], size: [8, 2, 4], tex: 'hideDark' },
+        { name: 'head', at: [0, 4, 0], size: [8, 8, 8], tex: 'hide', faces: { front: 'face' } },
+      ],
+    },
+  ];
 
-  const root = new THREE.Group();
-  root.rotation.order = 'YXZ';
-  group.add(root);
-
-  const headPivot = new THREE.Group();
-  headPivot.position.y = 18 * PX; // legs 6 + body 12
-  root.add(headPivot);
-  const headGeo = boxGeo(`${CREEPER}:head`, 8, 8, 8, PX);
-  const hide = () => new THREE.MeshLambertMaterial({
-    map: T.hide, emissiveMap: T.hide, emissive: AMBIENT,
-  });
-  const faceMat = new THREE.MeshLambertMaterial({
-    map: T.face, emissiveMap: T.face, emissive: AMBIENT,
-  });
-  const head = new THREE.Mesh(headGeo, [hide(), hide(), hide(), hide(), hide(), faceMat]);
-  head.position.y = 4 * C_PX; // half a head above the neck
-  head.castShadow = true;
-  headPivot.add(head);
-
-  // body: 8 wide (x), 12 tall (y), 4 deep (z), sitting on the legs
-  const body = new THREE.Mesh(boxGeo(`${CREEPER}:body`, 8, 12, 4, PX), hide());
-  body.castShadow = true;
-  body.position.y = 12 * PX;
-  root.add(body);
-
-  // four legs, 4x6x4, hung from their tops at the body's base. Front pair
-  // and back pair each pivot from a hip so the shuffle can alternate.
-  const legFL = limb(CREEPER, 'legF', 4, 6, 4, PX, T.hide, 51);
-  legFL.position.set(-2 * PX, 6 * PX, -2 * PX);
-  root.add(legFL);
-  const legFR = limb(CREEPER, 'legF', 4, 6, 4, PX, T.hide, 52);
-  legFR.position.set(2 * PX, 6 * PX, -2 * PX);
-  root.add(legFR);
-  const legBL = limb(CREEPER, 'legB', 4, 6, 4, PX, T.hide, 53);
-  legBL.position.set(-2 * PX, 6 * PX, 2 * PX);
-  root.add(legBL);
-  const legBR = limb(CREEPER, 'legB', 4, 6, 4, PX, T.hide, 54);
-  legBR.position.set(2 * PX, 6 * PX, 2 * PX);
-  root.add(legBR);
-
-  const allMats = [];
-  root.traverse((o) => {
-    if (o.isMesh) {
-      if (Array.isArray(o.material)) allMats.push(...o.material);
-      else allMats.push(o.material);
-    }
-  });
+  const { group, handles: h, allMats } = buildFromSpec(CREEPER, spec, PX, T);
 
   function update(s) {
     group.position.set(s.x, s.y, s.z);
@@ -455,39 +689,30 @@ export function createCreeperModel() {
     let rel = s.headYaw - s.yaw;
     while (rel > Math.PI) rel -= Math.PI * 2;
     while (rel < -Math.PI) rel += Math.PI * 2;
-    headPivot.rotation.y = clamp(rel, -1.1, 1.1);
-    headPivot.rotation.x = clamp(s.headPitch, -0.5, 0.5);
+    h.headPivot.rotation.y = clamp(rel, -1.1, 1.1);
+    h.headPivot.rotation.x = clamp(s.headPitch, -0.5, 0.5);
 
-    // The shuffle: diagonals together, like a lizard's gait — the four legs
-    // a creeper has make it a trotter rather than a walker, and pairs
-    // moving opposite reads as "scurrying" at exactly the speed it moves.
+    // The shuffle: diagonals together, like a lizard's gait.
     const swing = Math.sin(s.walkPhase) * 0.6;
-    legFL.rotation.x = swing;
-    legBR.rotation.x = swing;
-    legFR.rotation.x = -swing;
-    legBL.rotation.x = -swing;
+    h.legFL.rotation.x = swing;
+    h.legBR.rotation.x = swing;
+    h.legFR.rotation.x = -swing;
+    h.legBL.rotation.x = -swing;
 
-    applyCommon(root, allMats, s);
+    applyCommon(h.root, allMats, s);
   }
 
   return { kind: CREEPER, group, update };
 }
 
-// ------------------------------------------------------------ shared states
+// ------------------------------------------------------------- shared states
+//
+// The states every mob shares, in one place so every `update` ends the same
+// way: the hurt flash, the burn glow, the creeper's swell, and the
+// fall-over of death.
 
-/**
- * The states every mob model shares, in one place so both `update`s end the
- * same way: the hurt flash, the burn glow, the creeper's swell, and the
- * fall-over of death.
- *
- * The flash is an emissive tint — Lambert materials carry their texture as
- * an emissiveMap already, so the flash is the material's emissive colour
- * sliding toward red (a hit) or white (a swell) and back, and every part
- * slides together because allMats was collected at build time.
- */
 function applyCommon(root, allMats, s) {
-  // Death: tip over sideways and settle into the floor, over 0.9s. The
-  // sim's `dying` counts *down* from 0.9; t runs the other way.
+  // Death: tip over sideways and settle into the floor, over 0.9s.
   if (s.dying >= 0) {
     const t = clamp(1 - s.dying / 0.9, 0, 1);
     const ease = t * t * (3 - 2 * t); // smoothstep: slow, then over, then settled
@@ -499,8 +724,7 @@ function applyCommon(root, allMats, s) {
   }
 
   // The creeper's swell, drawn as Minecraft draws it: bigger, and flashing
-  // white faster and faster. The scale rides the whole root; the flash
-  // rides the emissive, so the lit and unlit sides agree.
+  // white faster and faster.
   let flash = s.hurtFlash;
   let scale = 1;
   if (s.fuse > 0) {
@@ -508,14 +732,11 @@ function applyCommon(root, allMats, s) {
     flash = Math.max(flash, s.fuse * pulse);
     scale = 1 + s.fuse * 0.22;
   }
-  // Set every time, not only when it is not 1: a creeper whose fuse was
-  // unwound — you got seven blocks away, or you killed it mid-swell, which
-  // zeroes the fuse — kept whatever size the last swelling frame left it,
-  // and stayed that size for the rest of its life and its corpse.
+  // Set every time: a creeper whose fuse was unwound kept the size the
+  // last swelling frame left it — for the rest of its life and its corpse.
   root.scale.setScalar(scale);
 
-  // Fire: a warm flicker that sits on top of everything else the figure is
-  // doing, because a burning zombie keeps walking. That is the point of it.
+  // Fire: a warm flicker on top of everything else the figure is doing.
   let emissive = null;
   if (flash > 0) emissive = new THREE.Color(0.9 * flash, 0.12 * flash, 0.1 * flash);
   if (s.burning > 0) {
@@ -530,106 +751,35 @@ function applyCommon(root, allMats, s) {
 }
 
 // ----------------------------------------------------------------- skeleton
-
-/**
- * The skeleton: the zombie's body with the flesh off. Bone-white boxes in
- * the same 32-pixel humanoid proportions, a head with black sockets where
- * the eyes used to be, and a bow held out in front of it — the tell, from
- * across the field, that this one does not have to reach you.
- */
-const S_PX = 1.99 / 32;
-const S_BONE = 0xc9c9bd;
-const S_BONE_DARK = 0x8a8a80;
-const S_SOCKET = 0x141414;
-
-let S_TEX = null;
-function skeletonTextures() {
-  if (!S_TEX) {
-    S_TEX = {
-      bone: flatTexture(S_BONE, 301),
-      dark: flatTexture(S_BONE_DARK, 302),
-      face: (() => {
-        const S = 8;
-        const cv = document.createElement('canvas');
-        cv.width = cv.height = S;
-        const ctx = cv.getContext('2d');
-        const rand = mulberry32(3303);
-        for (let y = 0; y < S; y++) {
-          for (let x = 0; x < S; x++) {
-            const f = 0.9 + rand() * 0.18;
-            const r = clamp(Math.round(((S_BONE >> 16) & 255) * f), 0, 255);
-            const g = clamp(Math.round(((S_BONE >> 8) & 255) * f), 0, 255);
-            const b = clamp(Math.round((S_BONE & 255) * f), 0, 255);
-            ctx.fillStyle = `rgb(${r},${g},${b})`;
-            ctx.fillRect(x, y, 1, 1);
-          }
-        }
-        ctx.fillStyle = `#${S_SOCKET.toString(16).padStart(6, '0')}`;
-        for (const ox of [1, 5]) {
-          ctx.fillRect(ox, 3, 2, 2);
-          ctx.fillRect(ox, 5, 1, 1); // the nose slit
-        }
-        const tex = new THREE.CanvasTexture(cv);
-        tex.magFilter = THREE.NearestFilter;
-        tex.minFilter = THREE.NearestFilter;
-        tex.colorSpace = THREE.SRGBColorSpace;
-        return tex;
-      })(),
-    };
-  }
-  return S_TEX;
-}
+//
+// The zombie's body with the flesh off: bone-white boxes in the same
+// 32-pixel humanoid proportions — legs 12, torso 11, a 2-pixel neck of
+// vertebrae, head 7 — with black sockets where the eyes used to be, and a
+// bow held out in front of it: the tell, from across the field, that this
+// one does not have to reach you.
 
 export function createSkeletonModel() {
   const T = skeletonTextures();
   const PX = S_PX;
-  const group = new THREE.Group();
-  const root = new THREE.Group();
-  root.rotation.order = 'YXZ';
-  group.add(root);
+  const spec = [
+    { name: 'legL', at: [-1.5, 12, 0], size: [3, 12, 3], tex: 'bone', limb: true },
+    { name: 'legR', at: [1.5, 12, 0], size: [3, 12, 3], tex: 'bone', limb: true },
+    { name: 'torso', at: [0, 17.5, 0], size: [6, 11, 3], tex: 'ribs' },
+    {
+      name: 'headPivot', at: [0, 25, 0], pivot: true, children: [
+        { name: 'neck', at: [0, -1, 0], size: [3, 2, 3], tex: 'bone' },
+        { name: 'head', at: [0, 3.5, 0], size: [8, 7, 8], tex: 'bone', faces: { front: 'face' } },
+      ],
+    },
+    { name: 'armL', at: [-4.5, 22.5, 0], size: [3, 12, 3], tex: 'bone', limb: true },
+    { name: 'armR', at: [4.5, 22.5, 0], size: [3, 12, 3], tex: 'bone', limb: true },
+    // The bow: a stave and a string, held out in front of the right arm so
+    // the silhouette says "archer" at range.
+    { name: 'bow', at: [6.5, 20, -7], size: [1, 10, 1], tex: 'dark' },
+    { name: 'string', at: [6.5, 20, -7], size: [1, 10, 0.5], tex: 'bone' },
+  ];
 
-  const headPivot = new THREE.Group();
-  headPivot.position.y = 24 * PX;
-  root.add(headPivot);
-  const bone = () => new THREE.MeshLambertMaterial({ map: T.bone, emissiveMap: T.bone, emissive: AMBIENT });
-  const faceMat = new THREE.MeshLambertMaterial({ map: T.face, emissiveMap: T.face, emissive: AMBIENT });
-  const head = new THREE.Mesh(
-    boxGeo(`${SKELETON}:head`, 8, 8, 8, PX),
-    [bone(), bone(), bone(), bone(), bone(), faceMat]);
-  head.position.y = 4 * PX;
-  head.castShadow = true;
-  headPivot.add(head);
-
-  const torso = part(SKELETON, 'torso', 8, 12, 4, PX, T.bone, 21);
-  torso.position.y = 18 * PX;
-  root.add(torso);
-
-  const armL = limb(SKELETON, 'arm', 3, 12, 3, PX, T.bone, 31);
-  armL.position.set(-4.5 * PX, 23 * PX, 0);
-  root.add(armL);
-  const armR = limb(SKELETON, 'arm', 3, 12, 3, PX, T.bone, 32);
-  armR.position.set(4.5 * PX, 23 * PX, 0);
-  root.add(armR);
-  // The bow: two slim boxes, one the stave and one the string's pull, held
-  // out in front of the right arm so the silhouette says "archer" at range.
-  const bow = part(SKELETON, 'bow', 1, 10, 1, PX, T.dark, 33);
-  bow.position.set(6.5 * PX, 20 * PX, -7 * PX);
-  root.add(bow);
-
-  const legL = limb(SKELETON, 'leg', 3, 12, 3, PX, T.bone, 41);
-  legL.position.set(-1.5 * PX, 12 * PX, 0);
-  root.add(legL);
-  const legR = limb(SKELETON, 'leg', 3, 12, 3, PX, T.bone, 42);
-  legR.position.set(1.5 * PX, 12 * PX, 0);
-  root.add(legR);
-
-  const allMats = [];
-  root.traverse((o) => {
-    if (o.isMesh) {
-      if (Array.isArray(o.material)) allMats.push(...o.material);
-      else allMats.push(o.material);
-    }
-  });
+  const { group, handles: h, allMats } = buildFromSpec(SKELETON, spec, PX, T);
 
   function update(s) {
     group.position.set(s.x, s.y, s.z);
@@ -637,122 +787,67 @@ export function createSkeletonModel() {
     let rel = s.headYaw - s.yaw;
     while (rel > Math.PI) rel -= Math.PI * 2;
     while (rel < -Math.PI) rel += Math.PI * 2;
-    headPivot.rotation.y = clamp(rel, -1.1, 1.1);
-    headPivot.rotation.x = clamp(s.headPitch, -0.6, 0.6);
+    h.headPivot.rotation.y = clamp(rel, -1.1, 1.1);
+    h.headPivot.rotation.x = clamp(s.headPitch, -0.6, 0.6);
     const swing = Math.sin(s.walkPhase) * 0.6;
-    legL.rotation.x = swing;
-    legR.rotation.x = -swing;
+    h.legL.rotation.x = swing;
+    h.legR.rotation.x = -swing;
     // The bow arm stays out; the other swings a little with the stride.
-    armR.rotation.x = -Math.PI / 2 + Math.sin(s.walkPhase) * 0.06;
-    armL.rotation.x = -Math.PI / 2 - Math.sin(s.walkPhase) * 0.08;
-    applyCommon(root, allMats, s);
+    h.armR.rotation.x = -Math.PI / 2 + Math.sin(s.walkPhase) * 0.06;
+    h.armL.rotation.x = -Math.PI / 2 - Math.sin(s.walkPhase) * 0.08;
+    applyCommon(h.root, allMats, s);
   }
   return { kind: SKELETON, group, update };
 }
 
 // ------------------------------------------------------------------- spider
-
-/**
- * The spider: a low, wide body and eight legs, because the one thing a
- * spider must never look like is the two-legged mobs it hunts beside. The
- * legs are thin boxes canted out and down; the walk shuffles them in
- * opposition, and the low body is the whole reason it reads as a spider at
- * first glance even before it moves.
- */
-const SP_PX = 0.9 / 16; // the body is 16 skin px tall, over the 0.9 hitbox
-const SP_DARK = 0x2a2320;
-const SP_MID = 0x3a312c;
-const SP_EYE = 0xd01818;
-
-let SP_TEX = null;
-function spiderTextures() {
-  if (!SP_TEX) {
-    SP_TEX = {
-      hide: flatTexture(SP_MID, 401, {
-        mottle: [
-          { color: SP_DARK, chance: 0.22 },
-          { color: 0x4a4038, chance: 0.16 },
-        ],
-      }),
-      dark: flatTexture(SP_DARK, 402),
-    };
-  }
-  return SP_TEX;
-}
+//
+// A low, wide body and eight legs, because the one thing a spider must
+// never look like is the two-legged mobs it hunts beside. Each leg has two
+// segments — a thigh from the body and a shin down to the ground — and the
+// feet land exactly at the origin, which is the whole of the grounding fix:
+// the previous spider stood with its eight feet two pixels under the
+// floorboards.
 
 export function createSpiderModel() {
   const T = spiderTextures();
   const PX = SP_PX;
-  const group = new THREE.Group();
-  const root = new THREE.Group();
-  root.rotation.order = 'YXZ';
-  group.add(root);
+  const spec = [
+    // The eye head: a small box out front, its -Z face carrying four red
+    // eyes.
+    { name: 'head', at: [0, 10, -11], size: [8, 6, 6], tex: 'hide', faces: { front: 'face' } },
+    // The abdomen: the big box behind the head.
+    { name: 'abdomen', at: [0, 11, 5], size: [14, 10, 16], tex: 'hide' },
+  ];
 
-  const hide = () => new THREE.MeshLambertMaterial({ map: T.hide, emissiveMap: T.hide, emissive: AMBIENT });
-  const darkMat = new THREE.MeshLambertMaterial({ map: T.dark, emissiveMap: T.dark, emissive: AMBIENT });
+  const { group, handles: h, allMats } = buildFromSpec(SPIDER, spec, PX, T);
 
-  // The eye head: a small box in front, its -Z face carrying four red eyes.
-  const eyeFace = (() => {
-    const S = 8;
-    const cv = document.createElement('canvas');
-    cv.width = cv.height = S;
-    const ctx = cv.getContext('2d');
-    const rand = mulberry32(4405);
-    for (let y = 0; y < S; y++) {
-      for (let x = 0; x < S; x++) {
-        const f = 0.88 + rand() * 0.22;
-        const r = clamp(Math.round(((SP_MID >> 16) & 255) * f), 0, 255);
-        const g = clamp(Math.round(((SP_MID >> 8) & 255) * f), 0, 255);
-        const b = clamp(Math.round((SP_MID & 255) * f), 0, 255);
-        ctx.fillStyle = `rgb(${r},${g},${b})`;
-        ctx.fillRect(x, y, 1, 1);
-      }
-    }
-    ctx.fillStyle = `#${SP_EYE.toString(16).padStart(6, '0')}`;
-    ctx.fillRect(1, 2, 2, 1);
-    ctx.fillRect(5, 2, 2, 1);
-    ctx.fillRect(2, 5, 2, 1);
-    ctx.fillRect(4, 5, 2, 1);
-    const tex = new THREE.CanvasTexture(cv);
-    tex.magFilter = THREE.NearestFilter;
-    tex.minFilter = THREE.NearestFilter;
-    tex.colorSpace = THREE.SRGBColorSpace;
-    return new THREE.MeshLambertMaterial({ map: tex, emissiveMap: tex, emissive: AMBIENT });
-  })();
-
-  const head = new THREE.Mesh(boxGeo(`${SPIDER}:head`, 8, 6, 6, PX), [hide(), hide(), hide(), hide(), hide(), eyeFace]);
-  head.position.set(0, 10 * PX, -11 * PX);
-  head.castShadow = true;
-  root.add(head);
-
-  // The abdomen: the big box behind the head.
-  const abdomen = new THREE.Mesh(boxGeo(`${SPIDER}:body`, 14, 10, 16, PX), hide());
-  abdomen.position.set(0, 11 * PX, 5 * PX);
-  abdomen.castShadow = true;
-  root.add(abdomen);
-
-  // Eight legs, four a side, canted out and down from the body's centre.
+  // Eight legs, four a side. Each is a group at the body's side with two
+  // segments: a thigh canted out and down, and a shin from the knee to the
+  // floor. The rest pose puts every foot at y = 0.
   const legs = [];
   for (let i = 0; i < 8; i++) {
     const side = i % 2 === 0 ? 1 : -1;
     const zOff = (i >> 1) - 1.5; // -1.5..2
     const g = new THREE.Group();
-    g.position.set(side * 5 * PX, 9 * PX, zOff * 5 * PX);
-    g.rotation.z = -side * 0.9;
-    const mesh = part(SPIDER, 'leg', 1.5, 11, 1.5, PX, T.dark, 51 + i);
-    mesh.position.y = -5 * PX;
-    g.add(mesh);
-    root.add(g);
-    legs.push({ g, baseRot: g.rotation.z, side });
-  }
+    g.position.set(side * 5 * PX, 11 * PX, zOff * 5 * PX);
+    g.rotation.z = -side * 0.55;
 
-  const allMats = [];
-  root.traverse((o) => {
-    if (o.isMesh) {
-      if (Array.isArray(o.material)) allMats.push(...o.material);
-      else allMats.push(o.material);
-    }
-  });
+    const thigh = part(SPIDER, { name: 'legThigh', size: [1.5, 6, 1.5], at: [0, -1, 0], tex: 'dark' }, PX, T);
+    allMats.push(thigh.material);
+    g.add(thigh);
+
+    const shin = new THREE.Group();
+    shin.position.set(side * 2 * PX, -6.2 * PX, 0);
+    shin.rotation.z = side * 0.5;
+    const shinMesh = part(SPIDER, { name: 'legShin', size: [1.2, 5, 1.2], at: [0, -2.1, 0], tex: 'dark' }, PX, T);
+    shin.add(shinMesh);
+    allMats.push(shinMesh.material);
+    g.add(shin);
+
+    h.root.add(g);
+    legs.push({ g, shin, baseRot: g.rotation.z, side });
+  }
 
   function update(s) {
     group.position.set(s.x, s.y, s.z);
@@ -760,12 +855,10 @@ export function createSpiderModel() {
     const swing = Math.sin(s.walkPhase) * 0.5;
     legs.forEach((leg, i) => {
       const phase = i % 2 === 0 ? swing : -swing;
-      leg.g.rotation.z = leg.baseRot + phase * 0.35;
-      leg.g.rotation.x = -0.2 + Math.abs(phase) * 0.15;
+      leg.g.rotation.z = leg.baseRot + phase * 0.3;
+      leg.shin.rotation.z = leg.side * 0.5 - phase * 0.25;
     });
-    // A spider has no neck to speak of; the whole front reads the turn.
-    root.rotation.y += 0;
-    applyCommon(root, allMats, s);
+    applyCommon(h.root, allMats, s);
   }
   return { kind: SPIDER, group, update };
 }
@@ -773,89 +866,71 @@ export function createSpiderModel() {
 // --------------------------------------------------------------- quadrupeds
 //
 // Pig, cow and sheep are one idea with three paint jobs: a body, a head out
-// in front, four legs that trot in diagonal pairs. A chicken is the same
-// idea on a smaller, two-legged scale. The builder below is shared so the
-// three of them cannot drift apart in the way their legs swing or their
-// heads sit — which is exactly the drift a player notices first.
-
-let Q_TEX = null;
-function quadrupedTextures() {
-  if (!Q_TEX) {
-    Q_TEX = {
-      pig: flatTexture(0xe8a0a0, 501, { mottle: [{ color: 0xc88080, chance: 0.15 }] }),
-      pigSnout: flatTexture(0xd87878, 502),
-      cow: flatTexture(0x6b4a2a, 503, { mottle: [{ color: 0x8a6a42, chance: 0.3 }] }),
-      cowSnout: flatTexture(0xd8c8b8, 504),
-      sheep: flatTexture(0xe0e0dc, 505, { mottle: [{ color: 0xc4c4c0, chance: 0.25 }] }),
-      sheepDark: flatTexture(0x4a463e, 506),
-      legPink: flatTexture(0xd08888, 507),
-      legBrown: flatTexture(0x5a3c22, 508),
-      chicken: flatTexture(0xf0f0e8, 509, { mottle: [{ color: 0xd8d8d0, chance: 0.2 }] }),
-      chickenDark: flatTexture(0xd8a038, 510),
-    };
-  }
-  return Q_TEX;
-}
+// in front of it, a neck joining the two, and four legs that trot in
+// diagonal pairs. A chicken is the same idea on a smaller, two-legged
+// scale. The builder below is shared so the three of them cannot drift
+// apart in the way their legs swing or their heads sit — which is exactly
+// the drift a player notices first.
 
 /**
- * A four-legged animal. `opts` gives the sizes in skin pixels and which
- * textures cover which parts; the proportions are the real mobs' roughly —
- * a cow is a big square body on tall legs, a pig a low round one, a sheep a
- * woolly one with a dark face.
+ * Build a four-legged animal. `opts`:
+ *   px      — blocks per skin pixel
+ *   body    — [w, h, d]
+ *   head    — [w, h, d]
+ *   leg     — [w, h, d]  (feet land exactly at y = 0)
+ *   headAt  — [x, y, z]  the head pivot, in skin pixels
+ *   bodyTex, headTex, legTex, faceTex, neckTex — texture keys
+ *   extras  — [{ name, at, size, tex }]  (wool, horns, ears...)
  */
 function buildQuadruped(kind, opts) {
-  const { px, body, head, leg, headAt, bodyTex, headTex, legTex, faceTex = null, wool = null } = opts;
   const T = quadrupedTextures();
-  const group = new THREE.Group();
-  const root = new THREE.Group();
-  root.rotation.order = 'YXZ';
-  group.add(root);
+  const px = opts.px;
+  const spec = [];
 
-  const mat = (tex) => new THREE.MeshLambertMaterial({ map: tex, emissiveMap: tex, emissive: AMBIENT });
-  const headPivot = new THREE.Group();
-  headPivot.position.set(headAt[0] * px, headAt[1] * px, headAt[2] * px);
-  root.add(headPivot);
-
-  const face = faceTex ? mat(faceTex) : mat(headTex);
-  const headMats = [mat(headTex), mat(headTex), mat(headTex), mat(headTex), mat(headTex), face];
-  const headMesh = new THREE.Mesh(boxGeo(`${kind}:head`, head[0], head[1], head[2], px), headMats);
-  headMesh.position.set(0, head[1] / 2 * px, 0);
-  headMesh.castShadow = true;
-  headPivot.add(headMesh);
-
-  const bodyMesh = part(kind, 'body', body[0], body[1], body[2], px, bodyTex, 21);
-  bodyMesh.position.set(0, body[1] / 2 * px, 0);
-  bodyMesh.castShadow = true;
-  root.add(bodyMesh);
-
-  // Four legs, hung from the body's underside at its four corners.
-  const legMeshes = [];
+  // Four legs hung from their tops at the body's underside — the hip is at
+  // y = legH, so the foot is at exactly 0.
   const corners = [[-1, -1], [1, -1], [-1, 1], [1, 1]];
   corners.forEach(([sx, sz], i) => {
-    const g = limb(kind, 'leg', leg[0], leg[1], leg[2], px, legTex, 31 + i);
-    g.position.set(
-      sx * (body[0] / 2 - leg[0] / 2) * px,
-      0,
-      sz * (body[2] / 2 - leg[2] / 2) * px);
-    root.add(g);
-    legMeshes.push(g);
+    spec.push({
+      name: `leg${i}`,
+      at: [sx * (opts.body[0] / 2 - opts.leg[0] / 2), opts.leg[1], sz * (opts.body[2] / 2 - opts.leg[2] / 2)],
+      size: opts.leg, tex: opts.legTex, limb: true,
+    });
   });
 
-  // The woolly sheep wears its fleece as a second, larger body box, so the
-  // whole silhouette is the white wool and only the face and legs are dark.
-  if (wool) {
-    const w = part(kind, 'wool', wool[0], wool[1], wool[2], px, bodyTex, 22);
-    w.position.set(0, (body[1] / 2) * px, 0);
-    root.add(w);
-  }
-
-  const allMats = [];
-  root.traverse((o) => {
-    if (o.isMesh) {
-      if (Array.isArray(o.material)) allMats.push(...o.material);
-      else allMats.push(o.material);
-    }
+  // The body, sitting on the legs.
+  spec.push({
+    name: 'body',
+    at: [0, opts.leg[1] + opts.body[1] / 2, 0],
+    size: opts.body, tex: opts.bodyTex,
   });
+
+  // The neck: a box running from the body's front shoulder to the head
+  // pivot, so the head is visibly *attached* rather than floating.
+  const ny = opts.leg[1] + opts.body[1] - 2;
+  spec.push({
+    name: 'neck',
+    at: [opts.headAt[0] * 0.55, ny, opts.headAt[2] * 0.55],
+    size: [Math.max(3, opts.head[0] - 2), 4, Math.max(3, opts.head[2] - 2)],
+    tex: opts.neckTex ?? opts.bodyTex,
+  });
+
+  // The head on its pivot.
+  spec.push({
+    name: 'headPivot', at: opts.headAt, pivot: true, children: [
+      {
+        name: 'head',
+        at: [0, opts.head[1] / 2, 0],
+        size: opts.head,
+        tex: opts.headTex,
+        faces: opts.faceTex ? { front: opts.faceTex } : undefined,
+      },
+    ],
+  });
+
+  for (const extra of opts.extras ?? []) spec.push(extra);
+
+  const { group, handles: h, allMats } = buildFromSpec(kind, spec, px, T);
 
   function update(s) {
     group.position.set(s.x, s.y, s.z);
@@ -863,110 +938,103 @@ function buildQuadruped(kind, opts) {
     let rel = s.headYaw - s.yaw;
     while (rel > Math.PI) rel -= Math.PI * 2;
     while (rel < -Math.PI) rel += Math.PI * 2;
-    headPivot.rotation.y = clamp(rel, -0.9, 0.9);
-    headPivot.rotation.x = clamp(s.headPitch, -0.4, 0.4);
-    // Diagonal pairs together, like a creeper — a four-legged trot.
+    h.headPivot.rotation.y = clamp(rel, -0.9, 0.9);
+    h.headPivot.rotation.x = clamp(s.headPitch, -0.4, 0.4);
+    // Diagonal pairs together — a four-legged trot.
     const swing = Math.sin(s.walkPhase) * 0.55;
-    legMeshes[0].rotation.x = swing;
-    legMeshes[3].rotation.x = swing;
-    legMeshes[1].rotation.x = -swing;
-    legMeshes[2].rotation.x = -swing;
-    applyCommon(root, allMats, s);
+    h.leg0.rotation.x = swing;
+    h.leg3.rotation.x = swing;
+    h.leg1.rotation.x = -swing;
+    h.leg2.rotation.x = -swing;
+    applyCommon(h.root, allMats, s);
   }
   return { kind, group, update };
 }
 
 export function createPigModel() {
-  const T = quadrupedTextures();
   return buildQuadruped(PIG, {
     px: 0.9 / 32,
-    body: [14, 12, 20],
-    head: [8, 8, 8],
-    leg: [4, 6, 4],
-    headAt: [0, 12, -14],
-    bodyTex: T.pig,
-    headTex: T.pig,
-    legTex: T.legPink,
-    faceTex: T.pigSnout,
+    body: [14, 11, 20],
+    head: [8, 7, 8],
+    leg: [4, 5, 4],
+    headAt: [0, 13, -14],
+    bodyTex: 'pig',
+    headTex: 'pig',
+    legTex: 'pigSnout',
+    faceTex: 'pigFace',
+    neckTex: 'pigSnout',
+    extras: [
+      // ears: two small boxes on top of the head
+      { name: 'earL', at: [-2.5, 19.5, -14.5], size: [2, 1.5, 3], tex: 'pig' },
+      { name: 'earR', at: [2.5, 19.5, -14.5], size: [2, 1.5, 3], tex: 'pig' },
+    ],
   });
 }
 
 export function createCowModel() {
-  const T = quadrupedTextures();
   return buildQuadruped(COW, {
     px: 1.4 / 32,
-    body: [14, 14, 22],
+    body: [14, 12, 22],
     head: [8, 9, 10],
-    leg: [4, 10, 4],
-    headAt: [0, 16, -15],
-    bodyTex: T.cow,
-    headTex: T.cow,
-    legTex: T.legBrown,
-    faceTex: T.cowSnout,
+    leg: [4, 8, 4],
+    headAt: [0, 17, -15],
+    bodyTex: 'cow',
+    headTex: 'cow',
+    legTex: 'cow',
+    faceTex: 'cowFace',
+    neckTex: 'cow',
+    extras: [
+      // horns: two short boxes at the back of the head
+      { name: 'hornL', at: [-2.5, 25.5, -15], size: [1.5, 2, 1.5], tex: 'cowSnout' },
+      { name: 'hornR', at: [2.5, 25.5, -15], size: [1.5, 2, 1.5], tex: 'cowSnout' },
+      // udder
+      { name: 'udder', at: [0, 9, 6], size: [4, 3, 4], tex: 'cowSnout' },
+    ],
   });
 }
 
 export function createSheepModel() {
-  const T = quadrupedTextures();
   return buildQuadruped(SHEEP, {
     px: 1.3 / 32,
-    body: [14, 12, 20],
+    body: [14, 9, 20],
     head: [7, 7, 7],
-    leg: [4, 8, 4],
-    headAt: [0, 14, -13],
-    bodyTex: T.sheep,
-    headTex: T.sheepDark,
-    legTex: T.sheepDark,
-    wool: [16, 14, 22],
+    leg: [4, 6, 4],
+    headAt: [0, 13, -13],
+    bodyTex: 'sheep',
+    headTex: 'sheepDark',
+    legTex: 'sheepDark',
+    faceTex: 'sheepFace',
+    neckTex: 'sheep',
+    extras: [
+      // the fleece: a second, larger body box, so the whole silhouette is
+      // the white wool and only the face and legs are dark
+      { name: 'wool', at: [0, 12, 0], size: [16, 12, 22], tex: 'sheep' },
+    ],
   });
 }
 
-/**
- * The chicken: the one two-legged animal. A small round body, a tiny head
- * with a beak, and two twig legs — the proportions are the whole reason it
- * reads as a chicken and not as a small cow.
- */
+/** The chicken: the one two-legged animal. A round body, a tiny head with
+ *  a beak and a comb, a neck, and two twig legs — feet exactly at 0. */
 export function createChickenModel() {
   const T = quadrupedTextures();
   const PX = 0.85 / 24;
-  const group = new THREE.Group();
-  const root = new THREE.Group();
-  root.rotation.order = 'YXZ';
-  group.add(root);
+  const spec = [
+    { name: 'legL', at: [-1.5, 4, 0], size: [1, 4, 1], tex: 'chickenDark', limb: true },
+    { name: 'legR', at: [1.5, 4, 0], size: [1, 4, 1], tex: 'chickenDark', limb: true },
+    { name: 'body', at: [0, 8, 0], size: [8, 8, 10], tex: 'chicken' },
+    // a feathered neck rising from the breast to the head
+    { name: 'neck', at: [0, 12.5, -4], size: [3, 3, 3], tex: 'chicken' },
+    {
+      name: 'headPivot', at: [0, 14, -7], pivot: true, children: [
+        { name: 'head', at: [0, 2, 0], size: [5, 5, 5], tex: 'chicken', faces: { front: 'chickenFace' } },
+        { name: 'beak', at: [0, 2, -3.5], size: [2, 1.5, 2], tex: 'beak' },
+        { name: 'comb', at: [0, 5, 0], size: [2, 1.5, 2], tex: 'beak' },
+      ],
+    },
+    { name: 'tail', at: [0, 11, 4.5], size: [2, 3, 2], tex: 'chickenDark' },
+  ];
 
-  const mat = (tex) => new THREE.MeshLambertMaterial({ map: tex, emissiveMap: tex, emissive: AMBIENT });
-  const body = part(CHICKEN, 'body', 8, 8, 10, PX, T.chicken, 21);
-  body.position.y = 10 * PX;
-  root.add(body);
-
-  const headPivot = new THREE.Group();
-  headPivot.position.set(0, 14 * PX, -7 * PX);
-  root.add(headPivot);
-  const head = part(CHICKEN, 'head', 5, 5, 5, PX, T.chicken, 22);
-  head.position.y = 2 * PX;
-  headPivot.add(head);
-  const beak = part(CHICKEN, 'beak', 2, 1.5, 2, PX, T.chickenDark, 23);
-  beak.position.set(0, 2 * PX, -3.5 * PX);
-  headPivot.add(beak);
-  const comb = part(CHICKEN, 'comb', 2, 1, 2, PX, T.chickenDark, 24);
-  comb.position.set(0, 5 * PX, 0);
-  headPivot.add(comb);
-
-  const legs = [];
-  for (const side of [-1, 1]) {
-    const g = limb(CHICKEN, 'leg', 1, 4, 1, PX, T.chickenDark, 31 + (side > 0 ? 1 : 0));
-    g.position.set(side * 1.5 * PX, 6 * PX, 0);
-    root.add(g);
-    legs.push(g);
-  }
-
-  const allMats = [];
-  root.traverse((o) => {
-    if (o.isMesh) {
-      if (Array.isArray(o.material)) allMats.push(...o.material);
-      else allMats.push(o.material);
-    }
-  });
+  const { group, handles: h, allMats } = buildFromSpec(CHICKEN, spec, PX, T);
 
   function update(s) {
     group.position.set(s.x, s.y, s.z);
@@ -974,19 +1042,16 @@ export function createChickenModel() {
     let rel = s.headYaw - s.yaw;
     while (rel > Math.PI) rel -= Math.PI * 2;
     while (rel < -Math.PI) rel += Math.PI * 2;
-    headPivot.rotation.y = clamp(rel, -1, 1);
+    h.headPivot.rotation.y = clamp(rel, -1, 1);
     const swing = Math.sin(s.walkPhase) * 0.5;
-    legs[0].rotation.x = swing;
-    legs[1].rotation.x = -swing;
-    applyCommon(root, allMats, s);
+    h.legL.rotation.x = swing;
+    h.legR.rotation.x = -swing;
+    applyCommon(h.root, allMats, s);
   }
   return { kind: CHICKEN, group, update };
 }
 
-/**
- * Which factory builds which kind. The renderer only knows this table, so
- * adding a mob is a model file and one entry here.
- */
+/** Which factory builds which kind. The renderer only knows this table. */
 export function createMobModel(kind) {
   switch (kind) {
     case CREEPER: return createCreeperModel();

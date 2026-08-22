@@ -1160,6 +1160,59 @@ function waterWorld(depth = 4, floor = 0) {
   delete globalThis.document;
 }
 
+// ----------------------------------------------------------- feet on ground
+// The whole point of the model rework: every mob's feet land at the group
+// origin. The old cow stood nearly half a block in the dirt; a world-space
+// corner scan of every box catches that for every kind.
+{
+  class Ctx {
+    constructor() { this.fillStyle = '#000'; }
+    fillRect() {}
+  }
+  class Canvas {
+    constructor() { this.width = 8; this.height = 8; this._ctx = new Ctx(); }
+    getContext() { return this._ctx; }
+  }
+  globalThis.document = {
+    createElement: (tag) => (tag === 'canvas' ? new Canvas() : {}),
+    createElementNS: (ns, tag) => (tag === 'canvas' ? new Canvas() : {}),
+  };
+
+  const models = await import('../src/mob-models.js');
+
+  const feetOf = (model) => {
+    model.group.updateMatrixWorld(true);
+    let minY = Infinity;
+    model.group.traverse((o) => {
+      if (!o.isMesh) return;
+      const c = o.geometry.parameters;
+      const w = o.matrixWorld.elements;
+      for (const sx of [-1, 1]) {
+        for (const sy of [-1, 1]) {
+          for (const sz of [-1, 1]) {
+            const x = sx * c.width / 2;
+            const y = sy * c.height / 2;
+            const z = sz * c.depth / 2;
+            const wy = w[1] * x + w[5] * y + w[9] * z + w[13];
+            if (wy < minY) minY = wy;
+          }
+        }
+      }
+    });
+    return minY;
+  };
+
+  for (const [kind, name] of [[ZOMBIE, 'zombie'], [CREEPER, 'creeper'],
+    [SKELETON, 'skeleton'], [SPIDER, 'spider'], [PIG, 'pig'], [COW, 'cow'],
+    [CHICKEN, 'chicken'], [SHEEP, 'sheep']]) {
+    const minY = feetOf(models.createMobModel(kind));
+    assert(`the ${name} stands ON the ground, not in it`,
+      minY >= -0.02 && minY <= 0.05, minY.toFixed(3));
+  }
+
+  delete globalThis.document;
+}
+
 // ---------------------------------------------------------------------- total
 
 for (const [name, ok, detail] of results) {

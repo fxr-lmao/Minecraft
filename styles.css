@@ -197,7 +197,9 @@ body.nocursor #game { cursor: none; }
 /*
  * Each pip is an empty socket with the full sprite laid over it, clipped from
  * the left — so a half heart is the same picture cut in two rather than a
- * second drawing of one.
+ * second drawing of one. The fill carries a one-pixel drop shadow so a full
+ * bar stays legible on snow and sky alike, which is the difference between a
+ * HUD and a row of stickers.
  */
 #vitals i {
   position: relative;
@@ -206,6 +208,7 @@ body.nocursor #game { cursor: none; }
   background-size: contain;
   background-repeat: no-repeat;
   image-rendering: pixelated;
+  filter: drop-shadow(1px 1px 0 rgba(0, 0, 0, 0.55));
 }
 
 #vitals i b {
@@ -220,6 +223,43 @@ body.nocursor #game { cursor: none; }
 
 /* Air has no empty socket: a bubble that has gone is simply not there. */
 #air i { background-image: none; }
+
+/* ---- the life the bars are supposed to have ---- */
+
+/* A hit: the hearts flare white for a beat. The animation re-triggers from
+   hud.js by dropping and re-adding the class (see setVitals). */
+@keyframes hurt-flash {
+  0%   { filter: brightness(2.6) saturate(0.15); }
+  60%  { filter: brightness(1.4) saturate(0.6); }
+  100% { filter: none; }
+}
+#health.hurt { animation: hurt-flash 0.45s ease-out; }
+
+/* Four hit points or fewer: the hearts throb, slowly, like the thing they
+   are counting down. */
+@keyframes low-pulse {
+  0%, 100% { opacity: 1; }
+  50%      { opacity: 0.45; }
+}
+#health.low { animation: low-pulse 1.15s ease-in-out infinite; }
+
+/* Starving: the drumsticks jiggle — Minecraft's hunger bar does exactly
+   this, and the bar itself is the warning. */
+@keyframes hunger-wiggle {
+  0%, 100% { transform: rotate(0deg); }
+  25%      { transform: rotate(4deg); }
+  75%      { transform: rotate(-4deg); }
+}
+#hunger.low { animation: hunger-wiggle 0.4s ease-in-out infinite; }
+
+/* The first piece of armour: the bar pops in over the hearts instead of
+   simply existing, so putting a helmet on reads as an event. */
+@keyframes armour-pop {
+  0%   { transform: scale(1.4); opacity: 0; }
+  55%  { transform: scale(0.92); opacity: 1; }
+  100% { transform: scale(1); opacity: 1; }
+}
+#armour.pop { animation: armour-pop 0.32s ease-out; }
 
 #held-name {
   position: fixed;

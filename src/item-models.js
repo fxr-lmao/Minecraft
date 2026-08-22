@@ -86,6 +86,44 @@ export const SHAPE_DEPTH = {
   [SHAPE_LUMP]: 3 / 16,
 };
 
+/**
+ * The 3D depth profile for each tool shape: how many texels thick the model
+ * is at each row of its 16-row sprite (row 0 is the top of the tool).
+ *
+ * This is what turns the icon into a thing. A pickaxe's head is chunky and
+ * its haft is a slim stick; an axe's head is a thick wedge on a thin
+ * handle; a sword has a thin blade, a crossguard that stands proud of it,
+ * a slim grip, and a pommel with a little weight. The extruder
+ * (held-geometry.js) follows the profile row by row and builds the ledges
+ * where the thickness steps.
+ */
+export const TOOL_PROFILES = {
+  [SHAPE_PICKAXE]: (row) => (row <= 6 ? 3.2 : 2.0),
+  [SHAPE_SHOVEL]: (row) => (row <= 6 ? 2.8 : 2.0),
+  [SHAPE_AXE]: (row) => (row <= 9 ? 3.4 : 2.0),
+  [SHAPE_SWORD]: (row) => (row <= 7 ? 1.4 : row <= 9 ? 3.6 : row <= 13 ? 1.9 : 2.6),
+  [SHAPE_STICK]: () => 1.8,
+  [SHAPE_LUMP]: () => 3.0,
+};
+
+/**
+ * Extra boxes for tool shapes, in texel space, bolted onto the extruded
+ * sprite — the details a profile cannot draw. The sword's fuller (the dark
+ * groove down a real blade) is the one: a slim box inside the blade,
+ * proud of the front and back faces.
+ */
+export const TOOL_BOXES = {
+  [SHAPE_SWORD]: (palette) => [
+    {
+      // the fuller: a groove down the blade, between the guard and the tip
+      from: [7.15, 5.4, 7.7], to: [8.85, 8.0, 8.3],
+      color: palette.o,
+      faces: ['front', 'back'],
+      shades: { front: 0.55, back: 0.5 },
+    },
+  ],
+};
+
 /** The lumps: sprite and palette per id. */
 const LUMP_SPRITES = {
   [COAL]: [COAL_PX, COAL_PALETTE],
@@ -172,13 +210,19 @@ export function modelSpec(id) {
 
   const kind = TOOL_KINDS[id];
   if (!kind) return null;
+  const palette = { ...HAFT, ...TIER_PALETTES[kind.tier] };
   return {
-    kind: 'sprite',
+    kind: 'tool',
     shape,
     tier: kind.tier,
     rows: SHAPE_SPRITES[shape],
-    palette: { ...HAFT, ...TIER_PALETTES[kind.tier] },
-    depth: SHAPE_DEPTH[shape],
+    palette,
+    // The depth profile is what makes the 3D model dimensional — see
+    // TOOL_PROFILES. Profiles are in texels; the extruder wants fractions
+    // of the unit model, so divide by the sprite size. The boxes are the
+    // details the profile cannot draw.
+    depth: (row) => TOOL_PROFILES[shape](row) / 16,
+    boxes: TOOL_BOXES[shape] ? TOOL_BOXES[shape](palette) : [],
     // Tools are drawn haft-down-left in their icons and held haft-down-right
     // in a hand. See held-geometry.js for why this is a pixel mirror rather
     // than a rotation.
@@ -242,10 +286,12 @@ export const FIRST_PERSON_POSES = {
     // Down and right a little further than a block, because a tool is longer
     // than it is wide and its head would otherwise sit in the middle of the
     // screen. Rolled so the haft runs out of the bottom-right corner, which
-    // is where a hand is.
-    pos: [0.06, -0.10, 0.06],
-    rot: [0.22, -0.44, -0.72],
-    scale: 1.28,
+    // is where a hand is — and rolled a touch further than before, because a
+    // dimensional tool shows its thick head best when the light rakes across
+    // the edge rather than straight down the front face.
+    pos: [0.04, -0.12, 0.08],
+    rot: [0.30, -0.50, -0.78],
+    scale: 1.22,
   },
   [POSE_KIND_BUCKET]: {
     // A bucket is carried upright — it has water in it — so it gets almost no

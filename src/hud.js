@@ -54,6 +54,10 @@ export class Hud {
     this._statusTimer = null;
     /** Live rows in the pickup feed, oldest first. */
     this._pickups = [];
+    /** Health last frame, so a drop can flash the hearts white. */
+    this._lastHealth = null;
+    /** When the armour bar last appeared, for its pop-in. */
+    this._armourShown = false;
     this._buildVitals();
   }
 
@@ -120,18 +124,39 @@ export class Hud {
   }
 
   /**
-   * Draw the health, the breath and the hunger.
+   * Draw the health, the breath, the hunger and the armour — with the three
+   * bits of life the bars are supposed to have:
+   *
+   *   * A hit flashes the hearts white for a beat, so damage reads as an
+   *     event rather than as a number quietly getting smaller.
+   *   * Low health makes the hearts throb; low hunger makes the drumsticks
+   *     jiggle, exactly as Minecraft's hunger bar does when you are
+   *     starving — the bar itself becomes the warning.
+   *   * The armour bar pops in when the first piece goes on, and hides
+   *     itself entirely while none is worn, as Minecraft hides it.
    *
    * The air row is only there when it is telling you something — Minecraft
-   * hides a full bar too, and a row of bubbles over the hotbar while you are
-   * walking across a field is just furniture. The drumsticks are the same
-   * socket-and-fill construction as the hearts, and round up exactly the same
-   * way: a sliver of food still shows as half a drumstick.
+   * hides a full bar too. The drumsticks and armour pips are the same
+   * socket-and-fill construction as the hearts, and round up the same way:
+   * a sliver still shows as half a pip.
    */
   setVitals(health, air, food, armour, visible = true) {
     if (!this.hearts) return;
     this.vitalsEl.classList.toggle('hidden', !visible);
     if (!visible) return;
+
+    // The hurt flash: health went down since last frame (and not because a
+    // new world loaded). Re-triggering the animation means dropping the
+    // class and forcing a reflow, or the browser sees "same class, no new
+    // animation" and does nothing.
+    if (this._lastHealth !== null && health < this._lastHealth - 0.001) {
+      this.healthEl.classList.remove('hurt');
+      void this.healthEl.offsetWidth;
+      this.healthEl.classList.add('hurt');
+    }
+    this._lastHealth = health;
+    this.healthEl.classList.toggle('low', health > 0 && health <= 4);
+
     for (let i = 0; i < this.hearts.length; i++) {
       // Two hit points a heart, and the half is the sprite cut down the
       // middle rather than a second picture of one.
@@ -148,21 +173,31 @@ export class Hud {
       this.bubbles[i].style.width = i < bubbles ? '100%' : '0';
     }
     this.airEl.style.visibility = air >= MAX_AIR ? 'hidden' : 'visible';
-    // Two shanks a drumstick, same rounding-up as the hearts.
+    // Two shanks a drumstick, same rounding-up as the hearts. Below seven
+    // shanks the bar jiggles — hunger is a warning, not a footnote.
     for (let i = 0; i < this.drumsticks.length; i++) {
       const points = Math.max(0, Math.min(2, food - i * 2));
       this.drumsticks[i].style.width = `${Math.ceil(points) * 50}%`;
     }
+    this.hungerEl.classList.toggle('low', food <= 6);
+
     // Armour: ten pips for twenty points, so two points to a pip and the
     // same half-icon rounding as the hearts. One pip per *point* would peg
     // the bar at ten and make a full iron suit (15) and a full diamond one
     // (20) draw identically — which is exactly the comparison the bar exists
-    // to make. Hidden entirely while none is worn, as Minecraft hides it.
+    // to make.
     for (let i = 0; i < this.armours.length; i++) {
       const points = Math.max(0, Math.min(2, armour - i * 2));
       this.armours[i].style.width = `${Math.ceil(points) * 50}%`;
     }
-    this.armourEl.style.visibility = armour > 0 ? 'visible' : 'hidden';
+    const armoured = armour > 0;
+    this.armourEl.style.visibility = armoured ? 'visible' : 'hidden';
+    if (armoured && !this._armourShown) {
+      this.armourEl.classList.remove('pop');
+      void this.armourEl.offsetWidth;
+      this.armourEl.classList.add('pop');
+    }
+    this._armourShown = armoured;
   }
 
   /** The screen that says what got you, and offers to put you back. */

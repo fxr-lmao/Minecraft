@@ -22,8 +22,8 @@
 
 import {
   buildExtrudedSprite, buildBoxModel, buildBucketModel, bucketBoxes,
-  spriteCells, parseHex, meshBounds, coincidentFaces, windingErrors,
-  MeshBuilder, shade, SPRITE_DEPTH, SPRITE_SIZE, FACE_SHADE,
+  buildToolModel, spriteCells, parseHex, meshBounds, coincidentFaces,
+  windingErrors, MeshBuilder, shade, SPRITE_DEPTH, SPRITE_SIZE, FACE_SHADE,
 } from '../src/held-geometry.js';
 import {
   modelSpec, poseKind, firstPersonPose, thirdPersonPose,
@@ -61,9 +61,9 @@ const near = (a, b, eps = 1e-9) => Math.abs(a - b) < eps;
 function meshFor(id) {
   const spec = modelSpec(id);
   if (!spec) return null;
-  return spec.kind === 'bucket'
-    ? buildBucketModel(spec.full)
-    : buildExtrudedSprite(spec.rows, spec.palette, spec);
+  if (spec.kind === 'bucket') return buildBucketModel(spec.full);
+  if (spec.kind === 'tool') return buildToolModel(spec);
+  return buildExtrudedSprite(spec.rows, spec.palette, spec);
 }
 
 // --------------------------------------------------------------- primitives
@@ -363,6 +363,62 @@ function meshFor(id) {
     const shape = itemShape(id);
     assert(`${name} has a grip height`, GRIP_HEIGHT[shape] !== undefined, shape);
   }
+}
+
+// ----------------------------------------------------- the dimensional tools
+{
+  // The profile is the whole of the new tool look: a sword's crossguard
+  // stands proud of its blade, a pickaxe's head is chunky over a slim
+  // haft. Each is checked by the widest z the model reaches.
+  const maxZ = (mesh) => {
+    let z = 0;
+    for (let i = 2; i < mesh.positions.length; i += 3) {
+      z = Math.max(z, Math.abs(mesh.positions[i]));
+    }
+    return z;
+  };
+
+  const sword = meshFor(IRON_SWORD);
+  const pick = meshFor(PICKAXE);
+  const axe = meshFor(IRON_AXE);
+
+  // The sword guard is 3.6 texels thick, the blade 1.4: the guard is the
+  // thickest thing on the model and the blade is not.
+  assert('a sword has a crossguard thicker than its blade',
+    Math.abs(maxZ(sword) - 3.6 / 32) < 1e-9, maxZ(sword).toFixed(4));
+  // The pickaxe head (3.2 texels) is thicker than the haft (2.0) and the
+  // head sets the bound.
+  assert('a pickaxe head is chunky over a slim haft',
+    Math.abs(maxZ(pick) - 3.2 / 32) < 1e-9, maxZ(pick).toFixed(4));
+  assert('an axe head is a thick wedge on a thin handle',
+    Math.abs(maxZ(axe) - 3.4 / 32) < 1e-9, maxZ(axe).toFixed(4));
+
+  // The step ledges the profile creates are real faces: a profiled sword
+  // has more triangles than the same sprite extruded at one flat depth.
+  const flat = buildExtrudedSprite(SWORD_PX, { ...HAFT, ...HEAD_IRON }, { depth: 1.5 / 16 });
+  assert('the profile adds the step faces a flat extrusion lacks',
+    sword.triangles > flat.triangles + 8,
+    `${sword.triangles} vs ${flat.triangles}`);
+  assert('...still wound outward', windingErrors(sword) === 0);
+  assert('...with nothing doubled', coincidentFaces(sword) === 0);
+
+  // The fuller is inside the blade: it reaches no further out than the
+  // blade's own front face, or it would be a ridge instead of a groove.
+  // The blade is the upper half of the model (rows 0-7, y in 0..0.5), so
+  // look at triangles whose vertices all live up there — that keeps the
+  // guard (the thickest part) out of the measurement.
+  let bladeZ = 0;
+  const pos = sword.positions;
+  for (let t = 0; t < pos.length; t += 9) {
+    let inBlade = true;
+    for (let v = 0; v < 9; v += 3) {
+      if (pos[t + v + 1] < 0.001) inBlade = false;
+    }
+    if (!inBlade) continue;
+    for (let v = 0; v < 9; v += 3) bladeZ = Math.max(bladeZ, Math.abs(pos[t + v + 2]));
+  }
+  assert('the fuller stays inside the blade',
+    Math.abs(bladeZ - 1.4 / 32) < 1e-9, bladeZ.toFixed(4));
 }
 
 // ---------------------------------------------------------- the item registry
