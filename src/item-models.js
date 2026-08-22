@@ -87,44 +87,75 @@ export const SHAPE_DEPTH = {
 };
 
 /**
- * The 3D depth profile for each tool shape: how many texels thick the model
- * is at each row of its 16-row sprite (row 0 is the top of the tool).
+ * The 3D models of the tools, as lists of solid parts in texel space
+ * (16×16×16, origin at the centre, +y up) — what 3D-resource-pack models
+ * are made of. Each part is a box ({ from, to, color }) or a hexahedron
+ * ({ corners, color }, corners in the canonical order held-geometry.js
+ * defines), and every face is shaded by the direction it points.
  *
- * This is what turns the icon into a thing. A pickaxe's head is chunky and
- * its haft is a slim stick; an axe's head is a thick wedge on a thin
- * handle; a sword has a thin blade, a crossguard that stands proud of it,
- * a slim grip, and a pommel with a little weight. The extruder
- * (held-geometry.js) follows the profile row by row and builds the ledges
- * where the thickness steps.
+ * These are *objects*, not pictures: the sword has a blade that tapers to
+ * a real point, the axe head is a wedge that ends in a cutting edge, the
+ * pickaxe head curves down over the haft, the shovel flares toward the
+ * ground. That is the difference between a tool you could pick up and the
+ * icon of one wearing a coat of thickness — which is what the previous
+ * extruded-sprite tools were.
+ *
+ * Metal parts take their paint from the tier palette (`p.h` light, `p.m`
+ * mid, `p.d` dark) so a wooden pickaxe and a diamond one are the same
+ * shape with different paint, exactly like their icons. The haft is oak
+ * in every tier, the way the icons' hafts are.
  */
-export const TOOL_PROFILES = {
-  [SHAPE_PICKAXE]: (row) => (row <= 6 ? 3.2 : 2.0),
-  [SHAPE_SHOVEL]: (row) => (row <= 6 ? 2.8 : 2.0),
-  [SHAPE_AXE]: (row) => (row <= 9 ? 3.4 : 2.0),
-  [SHAPE_SWORD]: (row) => (row <= 7 ? 1.4 : row <= 9 ? 3.6 : row <= 13 ? 1.9 : 2.6),
-  [SHAPE_STICK]: () => 1.8,
-  [SHAPE_LUMP]: () => 3.0,
-};
+const SOLID_HAFT = '#a86e2c';
 
-/**
- * Extra boxes for tool shapes, in texel space, bolted onto the extruded
- * sprite — the details a depth profile cannot draw, because a profile can
- * only vary thickness by *row* and some details do not run in rows.
- *
- * Nothing needs one yet. There was a sword fuller here — the dark groove
- * down a real blade — and it did not survive its own geometry: this
- * sword's blade is a two-pixel diagonal, so an axis-aligned box cannot
- * follow it, and a groove has to be cut *into* a surface while everything
- * this mesher does is additive. What was actually being built was a slim
- * box buried inside the crossguard, contributing four triangles that no
- * camera angle could ever see. A detail you cannot see is not a detail.
- *
- * The table stays because the mechanism is sound and cheap (see
- * buildToolModel): a shape that genuinely needs a box — a raised pommel
- * cap, a bow's grip wrap — declares one here and gets it welded into the
- * same mesh as the sprite.
- */
-export const TOOL_BOXES = {};
+export const TOOL_SOLIDS = {
+  [SHAPE_PICKAXE]: (p) => [
+    // the haft: a slim stick, one and three-quarter texels square
+    { from: [7.1, 0.4, 7.1], to: [8.9, 13.6, 8.9], color: SOLID_HAFT },
+    // the head: a cap over the haft's top, two arms stepping outward and
+    // two tips curving down — five boxes describing the classic arch
+    { from: [6.0, 12.8, 7.35], to: [10.0, 14.8, 8.65], color: p.h },
+    { from: [3.2, 12.4, 7.35], to: [6.0, 13.8, 8.65], color: p.m },
+    { from: [10.0, 12.4, 7.35], to: [12.8, 13.8, 8.65], color: p.m },
+    { from: [1.4, 10.6, 7.35], to: [3.8, 12.4, 8.65], color: p.d },
+    { from: [12.2, 10.6, 7.35], to: [14.6, 12.4, 8.65], color: p.d },
+  ],
+  [SHAPE_SWORD]: (p) => [
+    // the blade: a hexahedron whose top face collapses to a single point —
+    // a real pointed blade, tapering in both width and thickness
+    { corners: [
+      [7.0, 5.2, 7.5], [9.0, 5.2, 7.5], [8.0, 14.4, 8.0], [8.0, 14.4, 8.0],
+      [7.0, 5.2, 8.5], [9.0, 5.2, 8.5], [8.0, 14.4, 8.0], [8.0, 14.4, 8.0],
+    ], color: p.h },
+    // the crossguard, standing proud of the blade on every side
+    { from: [5.2, 4.6, 6.3], to: [10.8, 5.8, 9.7], color: p.m },
+    // the grip
+    { from: [7.5, 1.3, 7.5], to: [8.5, 4.6, 8.5], color: SOLID_HAFT },
+    // the pommel, a little weight at the end
+    { from: [6.8, 0, 6.8], to: [9.2, 1.5, 9.2], color: p.d },
+  ],
+  [SHAPE_AXE]: (p) => [
+    // the haft, a little longer than the pickaxe's — an axe is swung
+    { from: [7.1, 0.4, 7.1], to: [8.9, 15.2, 8.9], color: SOLID_HAFT },
+    // the poll: the thick back of the head
+    { from: [3.4, 10.4, 5.8], to: [12.6, 13.6, 7.0], color: p.m },
+    // the blade: a hexahedron sloping down from the poll to a line — the
+    // cutting edge — at the front, low and proud of the haft
+    { corners: [
+      [3.8, 11.2, 6.0], [12.2, 11.2, 6.0], [3.8, 13.8, 6.0], [12.2, 13.8, 6.0],
+      [3.8, 9.4, 9.6], [12.2, 9.4, 9.6], [3.8, 13.8, 9.6], [12.2, 13.8, 9.6],
+    ], color: p.h },
+  ],
+  [SHAPE_SHOVEL]: (p) => [
+    // the haft
+    { from: [7.1, 2.6, 7.1], to: [8.9, 15.4, 8.9], color: SOLID_HAFT },
+    // the blade: a hexahedron that flares toward the ground — narrow at
+    // the neck, wide at the digging edge, slightly thinner at the top
+    { corners: [
+      [5.2, 0.2, 7.1], [10.8, 0.2, 7.1], [6.6, 3.4, 7.3], [9.4, 3.4, 7.3],
+      [5.2, 0.2, 8.9], [10.8, 0.2, 8.9], [6.6, 3.4, 8.7], [9.4, 3.4, 8.7],
+    ], color: p.h },
+  ],
+};
 
 /** The lumps: sprite and palette per id. */
 const LUMP_SPRITES = {
@@ -214,21 +245,12 @@ export function modelSpec(id) {
   if (!kind) return null;
   const palette = { ...HAFT, ...TIER_PALETTES[kind.tier] };
   return {
-    kind: 'tool',
+    kind: 'solid',
     shape,
     tier: kind.tier,
-    rows: SHAPE_SPRITES[shape],
-    palette,
-    // The depth profile is what makes the 3D model dimensional — see
-    // TOOL_PROFILES. Profiles are in texels; the extruder wants fractions
-    // of the unit model, so divide by the sprite size. The boxes are the
-    // details the profile cannot draw.
-    depth: (row) => TOOL_PROFILES[shape](row) / 16,
-    boxes: TOOL_BOXES[shape] ? TOOL_BOXES[shape](palette) : [],
-    // Tools are drawn haft-down-left in their icons and held haft-down-right
-    // in a hand. See held-geometry.js for why this is a pixel mirror rather
-    // than a rotation.
-    mirrorX: true,
+    // The parts are the 3D model — hand-built cuboids and hexahedra, the
+    // way a resource pack builds them, painted with this tier's palette.
+    parts: TOOL_SOLIDS[shape](palette),
   };
 }
 
@@ -285,15 +307,14 @@ export const FIRST_PERSON_POSES = {
     scale: 1,
   },
   [POSE_KIND_TOOL]: {
-    // Down and right a little further than a block, because a tool is longer
-    // than it is wide and its head would otherwise sit in the middle of the
-    // screen. Rolled so the haft runs out of the bottom-right corner, which
-    // is where a hand is — and rolled a touch further than before, because a
-    // dimensional tool shows its thick head best when the light rakes across
-    // the edge rather than straight down the front face.
-    pos: [0.04, -0.12, 0.08],
-    rot: [0.30, -0.50, -0.78],
-    scale: 1.22,
+    // An upright tool in the fist: the haft runs down to the bottom-right
+    // corner where the hand is, and the head leans toward the camera so
+    // the blade face is what you see — the way a hand actually presents a
+    // tool. The grip point is slid to the fist by gripOffset, so the pose
+    // only has to say how the *tool* leans, not where the hand is.
+    pos: [0.02, -0.12, 0.06],
+    rot: [0.52, -0.55, 0.16],
+    scale: 1.12,
   },
   [POSE_KIND_BUCKET]: {
     // A bucket is carried upright — it has water in it — so it gets almost no
@@ -327,11 +348,12 @@ export const THIRD_PERSON_POSES = {
     scale: 0.46,
   },
   [POSE_KIND_TOOL]: {
-    // Slid down the haft so the fist is at the grip, and rolled to lie along
-    // the forearm rather than sticking out sideways from the knuckles.
-    pos: [0, -0.16, 0.02],
-    rot: [0.15, 0, -0.55],
-    scale: 0.78,
+    // Slid down the haft so the fist is at the grip; the tool stands up
+    // from the fist along the arm rather than lying across the knuckles —
+    // a solid tool reads as held, not as stuck to the hand.
+    pos: [0, -0.14, 0.02],
+    rot: [0.1, 0, 0.12],
+    scale: 0.7,
   },
   [POSE_KIND_BUCKET]: {
     // Hanging from the hand, and kept upright: the handle is at the top of
