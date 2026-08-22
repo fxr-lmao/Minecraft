@@ -3,3 +3,4 @@ dist/
 docs/
 .puppeteer-cache/
 .DS_Store
+preview/

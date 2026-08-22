@@ -1160,6 +1160,272 @@ function waterWorld(depth = 4, floor = 0) {
   delete globalThis.document;
 }
 
+// ----------------------------------------------------------- feet on ground
+// The whole point of the model rework: every mob's feet land at the group
+// origin. The old cow stood nearly half a block in the dirt; a world-space
+// corner scan of every box catches that for every kind.
+{
+  class Ctx {
+    constructor() { this.fillStyle = '#000'; }
+    fillRect() {}
+  }
+  class Canvas {
+    constructor() { this.width = 8; this.height = 8; this._ctx = new Ctx(); }
+    getContext() { return this._ctx; }
+  }
+  globalThis.document = {
+    createElement: (tag) => (tag === 'canvas' ? new Canvas() : {}),
+    createElementNS: (ns, tag) => (tag === 'canvas' ? new Canvas() : {}),
+  };
+
+  const models = await import('../src/mob-models.js');
+
+  const feetOf = (model) => {
+    model.group.updateMatrixWorld(true);
+    let minY = Infinity;
+    model.group.traverse((o) => {
+      if (!o.isMesh) return;
+      const c = o.geometry.parameters;
+      const w = o.matrixWorld.elements;
+      for (const sx of [-1, 1]) {
+        for (const sy of [-1, 1]) {
+          for (const sz of [-1, 1]) {
+            const x = sx * c.width / 2;
+            const y = sy * c.height / 2;
+            const z = sz * c.depth / 2;
+            const wy = w[1] * x + w[5] * y + w[9] * z + w[13];
+            if (wy < minY) minY = wy;
+          }
+        }
+      }
+    });
+    return minY;
+  };
+
+  for (const [kind, name] of [[ZOMBIE, 'zombie'], [CREEPER, 'creeper'],
+    [SKELETON, 'skeleton'], [SPIDER, 'spider'], [PIG, 'pig'], [COW, 'cow'],
+    [CHICKEN, 'chicken'], [SHEEP, 'sheep']]) {
+    const minY = feetOf(models.createMobModel(kind));
+    assert(`the ${name} stands ON the ground, not in it`,
+      minY >= -0.02 && minY <= 0.05, minY.toFixed(3));
+  }
+
+  delete globalThis.document;
+}
+
+// ------------------------------------------------------------ nothing floats
+// The neck has one job: join the head to the body. It is measured rather
+// than guessed, and this is why — the length used to be the head's offset
+// scaled by a constant, which works only while the head sits about as far
+// forward as the body is long. The sheep breaks that: its head is pushed
+// out to clear the fleece, so the scaled neck stopped short and left the
+// head hovering in front of a bridge that reached neither end.
+//
+// Only the quadrupeds are checked, and only this one chain. The rest of a
+// model cannot be tested this way: an arm or a spider's shin is measured
+// here at rest, but it is never *drawn* at rest — update() swings it — and
+// a skeleton's bow is placed to land in a hand that has already rotated
+// ninety degrees forward.
+{
+  class Ctx {
+    constructor() { this.fillStyle = '#000'; }
+    fillRect() {}
+  }
+  class Canvas {
+    constructor() { this.width = 8; this.height = 8; this._ctx = new Ctx(); }
+    getContext() { return this._ctx; }
+  }
+  globalThis.document = {
+    createElement: (tag) => (tag === 'canvas' ? new Canvas() : {}),
+    createElementNS: (ns, tag) => (tag === 'canvas' ? new Canvas() : {}),
+  };
+
+  const models = await import('../src/mob-models.js');
+  const overlap = (a, b) => Math.min(a[1], b[1]) - Math.max(a[0], b[0]);
+  const joined = (a, b) =>
+    overlap(a.x, b.x) > 1e-9 && overlap(a.y, b.y) > 1e-9 && overlap(a.z, b.z) > 1e-9;
+
+  const partsOf = (model) => {
+    model.group.updateMatrixWorld(true);
+    const out = [];
+    model.group.traverse((o) => {
+      if (!o.isMesh) return;
+      const c = o.geometry.parameters;
+      const w = o.matrixWorld.elements;
+      out.push({
+        vol: c.width * c.height * c.depth,
+        x: [w[12] - c.width / 2, w[12] + c.width / 2],
+        y: [w[13] - c.height / 2, w[13] + c.height / 2],
+        z: [w[14] - c.depth / 2, w[14] + c.depth / 2],
+      });
+    });
+    return out;
+  };
+
+  for (const [kind, name] of [[PIG, 'pig'], [COW, 'cow'], [SHEEP, 'sheep']]) {
+    const parts = partsOf(models.createMobModel(kind));
+    // The head is the part reaching furthest forward (-z); the body is the
+    // largest; the neck is what has to touch both.
+    const head = parts.reduce((a, b) => (b.z[0] < a.z[0] ? b : a));
+    const body = parts.reduce((a, b) => (b.vol > a.vol ? b : a));
+    const neck = parts.find((p) => p !== head && p !== body
+      && joined(p, head) && joined(p, body));
+    assert(`the ${name}'s neck reaches both its head and its body`,
+      Boolean(neck),
+      neck ? '' : `head z${head.z[0].toFixed(2)} body z${body.z[0].toFixed(2)}`);
+  }
+
+  delete globalThis.document;
+}
+
+// ------------------------------------------------------- no coincident faces
+// A box model does not fail by throwing; it fails by flickering. Two boxes
+// that interpenetrate and happen to share a face plane put two surfaces at
+// exactly the same depth pointing the same way, and the depth buffer cannot
+// choose between them — so the seam crawls and shimmers as the camera moves,
+// which is the single most obvious "this is not Minecraft" tell there is.
+//
+// It is also easy to write by accident, because the natural way to place a
+// detail is to line it up with the thing it sits on: a creeper's collar at
+// the body's own width, a sheep's fleece starting where its belly does, a
+// neck whose top lands on the back it grows out of. All three did exactly
+// that. This scans every pair of boxes in every model, in world space, and
+// only complains about pairs that genuinely overlap in all three axes —
+// boxes that merely *touch* (a leg meeting a body) share a plane too, but
+// their faces point away from each other and are hidden.
+{
+  class Ctx {
+    constructor() { this.fillStyle = '#000'; }
+    fillRect() {}
+  }
+  class Canvas {
+    constructor() { this.width = 8; this.height = 8; this._ctx = new Ctx(); }
+    getContext() { return this._ctx; }
+  }
+  globalThis.document = {
+    createElement: (tag) => (tag === 'canvas' ? new Canvas() : {}),
+    createElementNS: (ns, tag) => (tag === 'canvas' ? new Canvas() : {}),
+  };
+
+  const models = await import('../src/mob-models.js');
+  const { createPlayerModel } = await import('../src/player-model.js');
+
+  const boxesOf = (model) => {
+    model.group.updateMatrixWorld(true);
+    const out = [];
+    model.group.traverse((o) => {
+      if (!o.isMesh) return;
+      const c = o.geometry.parameters;
+      const w = o.matrixWorld.elements;
+      out.push({
+        x: [w[12] - c.width / 2, w[12] + c.width / 2],
+        y: [w[13] - c.height / 2, w[13] + c.height / 2],
+        z: [w[14] - c.depth / 2, w[14] + c.depth / 2],
+      });
+    });
+    return out;
+  };
+  // Positive means the two spans genuinely interpenetrate; zero means they
+  // are flush, which is a join and not an overlap.
+  const overlap = (a, b) => Math.min(a[1], b[1]) - Math.max(a[0], b[0]);
+
+  const clashes = (model) => {
+    const bs = boxesOf(model);
+    const found = [];
+    for (let i = 0; i < bs.length; i++) {
+      for (let j = i + 1; j < bs.length; j++) {
+        const a = bs[i];
+        const b = bs[j];
+        if (overlap(a.x, b.x) <= 1e-6) continue;
+        if (overlap(a.y, b.y) <= 1e-6) continue;
+        if (overlap(a.z, b.z) <= 1e-6) continue;
+        for (const [ax, o1, o2] of [['x', 'y', 'z'], ['y', 'x', 'z'], ['z', 'x', 'y']]) {
+          // Same end of the same axis: a min against a min, or a max
+          // against a max. Opposite ends face away from each other.
+          for (const end of [0, 1]) {
+            if (Math.abs(a[ax][end] - b[ax][end]) > 1e-9) continue;
+            if (overlap(a[o1], b[o1]) <= 1e-6) continue;
+            if (overlap(a[o2], b[o2]) <= 1e-6) continue;
+            found.push(`box${i}/box${j} ${ax}${end ? 'max' : 'min'}`);
+          }
+        }
+      }
+    }
+    return [...new Set(found)];
+  };
+
+  for (const [kind, name] of [[ZOMBIE, 'zombie'], [CREEPER, 'creeper'],
+    [SKELETON, 'skeleton'], [SPIDER, 'spider'], [PIG, 'pig'], [COW, 'cow'],
+    [CHICKEN, 'chicken'], [SHEEP, 'sheep']]) {
+    const bad = clashes(models.createMobModel(kind));
+    assert(`no two faces of the ${name} z-fight`, bad.length === 0, bad.join(' '));
+  }
+  const badPlayer = clashes(createPlayerModel());
+  assert('no two faces of the player z-fight', badPlayer.length === 0, badPlayer.join(' '));
+
+  delete globalThis.document;
+}
+
+// --------------------------------------------------------- the player avatar
+// The player model was rebuilt the same way the mobs were: a neck, painted
+// textures, feet at the origin. The same corner-scan harness proves the
+// grounding, and the neck is a real part of the figure rather than a claim
+// in a comment.
+{
+  class Ctx {
+    constructor() { this.fillStyle = '#000'; }
+    fillRect() {}
+  }
+  class Canvas {
+    constructor() { this.width = 8; this.height = 8; this._ctx = new Ctx(); }
+    getContext() { return this._ctx; }
+  }
+  globalThis.document = {
+    createElement: (tag) => (tag === 'canvas' ? new Canvas() : {}),
+    createElementNS: (ns, tag) => (tag === 'canvas' ? new Canvas() : {}),
+  };
+
+  const { createPlayerModel } = await import('../src/player-model.js');
+  const { PLAYER_HEIGHT } = await import('../src/constants.js');
+  const model = createPlayerModel();
+  model.group.updateMatrixWorld(true);
+
+  let minY = Infinity;
+  let maxY = -Infinity;
+  let neckFound = false;
+  const PX = PLAYER_HEIGHT / 32;
+  model.group.traverse((o) => {
+    if (!o.isMesh) return;
+    const c = o.geometry.parameters;
+    const w = o.matrixWorld.elements;
+    // the neck: a 2px-tall box sitting between the torso top (23px) and the
+    // head pivot (25px)
+    if (Math.abs(c.height - 2 * PX) < 1e-6 && Math.abs(w[13] - 24 * PX) < 0.01) {
+      neckFound = true;
+    }
+    for (const sx of [-1, 1]) {
+      for (const sy of [-1, 1]) {
+        for (const sz of [-1, 1]) {
+          const x = sx * c.width / 2;
+          const y = sy * c.height / 2;
+          const z = sz * c.depth / 2;
+          const wy = w[1] * x + w[5] * y + w[9] * z + w[13];
+          if (wy < minY) minY = wy;
+          if (wy > maxY) maxY = wy;
+        }
+      }
+    }
+  });
+
+  assert('the player stands ON the ground, not in it',
+    minY >= -0.02 && minY <= 0.02, minY.toFixed(3));
+  assert('...and fills the 1.8-block hitbox',
+    maxY > PLAYER_HEIGHT - 0.02 && maxY <= PLAYER_HEIGHT + 0.02, maxY.toFixed(3));
+  assert('the player has a neck between chest and head', neckFound);
+
+  delete globalThis.document;
+}
+
 // ---------------------------------------------------------------------- total
 
 for (const [name, ok, detail] of results) {

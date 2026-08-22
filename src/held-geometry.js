@@ -214,23 +214,50 @@ function sameColor(a, b) {
  * a solid blade and not sixteen stacked boxes with their sides showing
  * through each other where the depth buffer cannot decide.
  *
+ * `depthAt(row)` is the new part: a depth *profile*. When present, each row
+ * extrudes to its own thickness (in texels), so a sword can have a thin
+ * blade, a thick crossguard and a slim grip in one model — and where two
+ * rows of different thickness meet, the extruder emits the ledge that the
+ * thicker row steps out into, which is what makes the guard read as a
+ * guard instead of as a coloured stripe. Walls split where the thickness
+ * changes so the silhouette follows the profile.
+ *
  * @param {string[]} rows 16 strings of 16 characters
  * @param {Record<string,string>} palette letter -> '#rrggbb'
  * @param {object} [opts]
- * @param {number} [opts.depth]   total thickness, default SPRITE_DEPTH
+ * @param {number|function} [opts.depth]   total thickness as a fraction of
+ *                                          the 1x1 sprite (default
+ *                                          SPRITE_DEPTH, one texel), or a
+ *                                          function (row) => that same
+ *                                          fraction, for a per-row profile
  * @param {boolean} [opts.mirrorX]
  * @param {number} [opts.scale]   uniform scale applied to the finished model
+ * @param {MeshBuilder} [opts.out] build into this builder (for composite
+ *                                 models) instead of a fresh one
  * @returns {{positions:number[], normals:number[], colors:number[], triangles:number}}
  */
 export function buildExtrudedSprite(rows, palette, opts = {}) {
+  const builder = opts.out ?? new MeshBuilder();
+  extrudeInto(builder, rows, palette, opts);
+  return opts.out ? builder : builder.build();
+}
+
+/**
+ * The working half of buildExtrudedSprite: write the extrusion into an
+ * existing builder. Shared by the plain path and the tool models, which
+ * extrude the sprite and then bolt extra parts onto the same mesh.
+ */
+export function extrudeInto(builder, rows, palette, opts = {}) {
   const {
     depth = SPRITE_DEPTH,
     mirrorX = false,
     scale = 1,
   } = opts;
+  const depthAt = typeof depth === 'function'
+    ? depth
+    : () => depth;
   const { size, cells } = spriteCells(rows, palette, { mirrorX });
-  const mesh = new MeshBuilder();
-  const half = depth / 2;
+  const half = (row) => depthAt(row) / 2;
   const at = (x, y) => (x < 0 || y < 0 || x >= size || y >= size ? null : cells[y * size + x]);
 
   // Pixel (x, row) occupies [x/size, (x+1)/size] across and, because row 0 is
@@ -243,18 +270,10 @@ export function buildExtrudedSprite(rows, palette, opts = {}) {
 
   // ---- front (+z) and back (-z) ----
   //
-  // Greedy-merged in two dimensions, not one. A run along a row is the
-  // obvious thing and it is not enough: a 4x4 patch of one colour comes out
-  // as four horizontal strips, which is four quads where one would do, and a
-  // tool head is mostly patches. So each run is extended *downwards* for as
-  // long as the row below it is an identical run — the standard greedy voxel
-  // merge, on a 16x16 grid where it costs nothing to run.
-  //
-  // Two of the models halve their triangle count on this alone, and the
-  // reason to care is not the GPU (these are two-hundred-triangle objects) —
-  // it is that every extra quad is another pair of edges that can catch the
-  // light differently from its neighbour and put a seam down the middle of a
-  // flat surface.
+  // Greedy-merged in two dimensions. A run along a row is extended
+  // *downwards* for as long as the row below it is an identical run *of the
+  // same depth*, which keeps the seam where a blade meets a guard exactly
+  // where the profile says it is.
   const used = new Uint8Array(size * size);
   for (let y = 0; y < size; y++) {
     for (let x = 0; x < size;) {
@@ -266,9 +285,10 @@ export function buildExtrudedSprite(rows, palette, opts = {}) {
       let w = 1;
       while (x + w < size && !used[y * size + x + w] && sameColor(at(x + w, y), c)) w++;
 
-      // How far down it can be extended, keeping the same width exactly.
+      // How far down it can be extended, keeping the same width and depth.
       let h = 1;
       outer: while (y + h < size) {
+        if (depthAt(y + h) !== depthAt(y)) break;
         for (let i = 0; i < w; i++) {
           const j = (y + h) * size + x + i;
           if (used[j] || !sameColor(at(x + i, y + h), c)) break outer;
@@ -284,12 +304,13 @@ export function buildExtrudedSprite(rows, palette, opts = {}) {
       const x1 = px(x + w);
       const y0 = py(y + h);
       const y1 = py(y);
-      mesh.quad(
-        [[x0, y0, pz(half)], [x1, y0, pz(half)], [x1, y1, pz(half)], [x0, y1, pz(half)]],
+      const hz = half(y);
+      builder.quad(
+        [[x0, y0, pz(hz)], [x1, y0, pz(hz)], [x1, y1, pz(hz)], [x0, y1, pz(hz)]],
         [0, 0, 1], shade(c, FACE_SHADE.front)
       );
-      mesh.quad(
-        [[x1, y0, pz(-half)], [x0, y0, pz(-half)], [x0, y1, pz(-half)], [x1, y1, pz(-half)]],
+      builder.quad(
+        [[x1, y0, pz(-hz)], [x0, y0, pz(-hz)], [x0, y1, pz(-hz)], [x1, y1, pz(-hz)]],
         [0, 0, -1], shade(c, FACE_SHADE.back)
       );
       x += w;
@@ -297,10 +318,9 @@ export function buildExtrudedSprite(rows, palette, opts = {}) {
   }
 
   // ---- left (-x) and right (+x) silhouette, merged downwards ----
+  // Runs split where the colour changes *or* the depth changes, so the
+  // side wall follows the profile.
   for (let x = 0; x <= size; x++) {
-    // Two independent runs down this column boundary: one for pixels that
-    // have nothing to their left, one for pixels that have nothing to their
-    // right. They are separate because a one-pixel-wide haft needs both.
     for (const dir of [-1, 1]) {
       const cx = dir === -1 ? x : x - 1; // the pixel that owns the face
       let y = 0;
@@ -312,19 +332,21 @@ export function buildExtrudedSprite(rows, palette, opts = {}) {
         while (end < size) {
           const c2 = at(cx, end);
           if (!c2 || at(cx + dir, end) || !sameColor(c2, c)) break;
+          if (depthAt(end) !== depthAt(y)) break;
           end++;
         }
         const fx = px(dir === -1 ? cx : cx + 1);
         const y0 = py(end);
         const y1 = py(y);
+        const hz = half(y);
         if (dir === -1) {
-          mesh.quad(
-            [[fx, y0, pz(-half)], [fx, y0, pz(half)], [fx, y1, pz(half)], [fx, y1, pz(-half)]],
+          builder.quad(
+            [[fx, y0, pz(-hz)], [fx, y0, pz(hz)], [fx, y1, pz(hz)], [fx, y1, pz(-hz)]],
             [-1, 0, 0], shade(c, FACE_SHADE.left)
           );
         } else {
-          mesh.quad(
-            [[fx, y0, pz(half)], [fx, y0, pz(-half)], [fx, y1, pz(-half)], [fx, y1, pz(half)]],
+          builder.quad(
+            [[fx, y0, pz(hz)], [fx, y0, pz(-hz)], [fx, y1, pz(-hz)], [fx, y1, pz(hz)]],
             [1, 0, 0], shade(c, FACE_SHADE.right)
           );
         }
@@ -347,19 +369,21 @@ export function buildExtrudedSprite(rows, palette, opts = {}) {
         while (end < size) {
           const c2 = at(end, cy);
           if (!c2 || at(end, cy + dir) || !sameColor(c2, c)) break;
+          if (depthAt(cy) !== depthAt(end)) break;
           end++;
         }
         const fy = py(dir === -1 ? cy : cy + 1);
         const x0 = px(x);
         const x1 = px(end);
+        const hz = half(cy);
         if (dir === -1) {
-          mesh.quad(
-            [[x0, fy, pz(half)], [x1, fy, pz(half)], [x1, fy, pz(-half)], [x0, fy, pz(-half)]],
+          builder.quad(
+            [[x0, fy, pz(hz)], [x1, fy, pz(hz)], [x1, fy, pz(-hz)], [x0, fy, pz(-hz)]],
             [0, 1, 0], shade(c, FACE_SHADE.top)
           );
         } else {
-          mesh.quad(
-            [[x0, fy, pz(-half)], [x1, fy, pz(-half)], [x1, fy, pz(half)], [x0, fy, pz(half)]],
+          builder.quad(
+            [[x0, fy, pz(-hz)], [x1, fy, pz(-hz)], [x1, fy, pz(hz)], [x0, fy, pz(hz)]],
             [0, -1, 0], shade(c, FACE_SHADE.bottom)
           );
         }
@@ -368,7 +392,63 @@ export function buildExtrudedSprite(rows, palette, opts = {}) {
     }
   }
 
-  return mesh.build();
+  // ---- depth steps: the ledges where the profile changes ----
+  //
+  // Two adjacent opaque rows of different thickness leave the thicker one
+  // sticking out of the thinner one's front and back faces. These ledges
+  // are the faces that close that step. One per pixel column — a profile
+  // changes at whole-row boundaries, and a row's worth of 1px ledges is
+  // nothing.
+  //
+  // Two things about a step are easy to get wrong and invisible until you
+  // walk round the model:
+  //
+  //   * The extrusion is symmetric about z = 0, so a step sticks out at
+  //     the *back* exactly as it does at the front. Closing only the front
+  //     leaves a hole you can see straight into from behind — which is
+  //     what a sword's crossguard did.
+  //   * A step faces one way, not both. The thicker row owns the ledge: a
+  //     thicker row *below* leaves its own top surface exposed (+y), a
+  //     thicker row *above* leaves its underside exposed (-y). Emitting
+  //     both buries a face inside solid material, where it catches light
+  //     that should never have reached it.
+  for (let y = 0; y < size - 1; y++) {
+    const hUp = half(y);
+    const hDn = half(y + 1);
+    if (hUp === hDn) continue;
+    const upThicker = hUp > hDn;
+    const fy = py(y + 1);
+    const zLo = pz(Math.min(hUp, hDn));
+    const zHi = pz(Math.max(hUp, hDn));
+    // The two strips the step leaves open: one in front of the thin row,
+    // one behind it.
+    const strips = [[zLo, zHi], [-zHi, -zLo]];
+    for (let x = 0; x < size; x++) {
+      const cu = at(x, y);
+      const cd = at(x, y + 1);
+      if (!cu || !cd) continue;
+      // The ledge is part of the thicker row, so it takes that row's colour.
+      const c = upThicker ? cu : cd;
+      const col = shade(c, FACE_SHADE[upThicker ? 'bottom' : 'top']);
+      const x0 = px(x);
+      const x1 = px(x + 1);
+      for (const [zA, zB] of strips) {
+        if (upThicker) {
+          builder.quad(
+            [[x0, fy, zA], [x1, fy, zA], [x1, fy, zB], [x0, fy, zB]],
+            [0, -1, 0], col
+          );
+        } else {
+          builder.quad(
+            [[x0, fy, zB], [x1, fy, zB], [x1, fy, zA], [x0, fy, zA]],
+            [0, 1, 0], col
+          );
+        }
+      }
+    }
+  }
+
+  return builder;
 }
 
 // ---------------------------------------------------------------- box models
@@ -412,49 +492,83 @@ const ALL_FACES = ['front', 'back', 'left', 'right', 'top', 'bottom'];
 export function buildBoxModel(boxes, opts = {}) {
   const { scale = 1 } = opts;
   const mesh = new MeshBuilder();
+  for (const box of boxes) boxInto(mesh, box, scale);
+  return mesh.build();
+}
+
+/**
+ * One texel-space box, written into an existing builder — the shared
+ * half of buildBoxModel, so a tool can extrude its sprite and bolt its
+ * boxes onto the same mesh.
+ */
+export function boxInto(builder, box, scale = 1) {
   const p = (t) => (t / SPRITE_SIZE - 0.5) * scale;
+  const [fx, fy, fz] = box.from;
+  const [tx, ty, tz] = box.to;
+  if (tx <= fx || ty <= fy || tz <= fz) {
+    throw new Error(`degenerate box ${JSON.stringify(box)}`);
+  }
+  const rgb = parseHex(box.color);
+  const faces = box.faces ?? ALL_FACES;
+  const shades = box.shades ?? {};
+  const factor = (name) => shades[name] ?? FACE_SHADE[name];
+  const x0 = p(fx), x1 = p(tx);
+  const y0 = p(fy), y1 = p(ty);
+  const z0 = p(fz), z1 = p(tz);
 
-  for (const box of boxes) {
-    const [fx, fy, fz] = box.from;
-    const [tx, ty, tz] = box.to;
-    if (tx <= fx || ty <= fy || tz <= fz) {
-      throw new Error(`degenerate box ${JSON.stringify(box)}`);
-    }
-    const rgb = parseHex(box.color);
-    const faces = box.faces ?? ALL_FACES;
-    const shades = box.shades ?? {};
-    const factor = (name) => shades[name] ?? FACE_SHADE[name];
-    const x0 = p(fx), x1 = p(tx);
-    const y0 = p(fy), y1 = p(ty);
-    const z0 = p(fz), z1 = p(tz);
-
-    for (const face of faces) {
-      const col = shade(rgb, factor(face));
-      switch (face) {
-        case 'front':
-          mesh.quad([[x0, y0, z1], [x1, y0, z1], [x1, y1, z1], [x0, y1, z1]], [0, 0, 1], col);
-          break;
-        case 'back':
-          mesh.quad([[x1, y0, z0], [x0, y0, z0], [x0, y1, z0], [x1, y1, z0]], [0, 0, -1], col);
-          break;
-        case 'left':
-          mesh.quad([[x0, y0, z0], [x0, y0, z1], [x0, y1, z1], [x0, y1, z0]], [-1, 0, 0], col);
-          break;
-        case 'right':
-          mesh.quad([[x1, y0, z1], [x1, y0, z0], [x1, y1, z0], [x1, y1, z1]], [1, 0, 0], col);
-          break;
-        case 'top':
-          mesh.quad([[x0, y1, z1], [x1, y1, z1], [x1, y1, z0], [x0, y1, z0]], [0, 1, 0], col);
-          break;
-        case 'bottom':
-          mesh.quad([[x0, y0, z0], [x1, y0, z0], [x1, y0, z1], [x0, y0, z1]], [0, -1, 0], col);
-          break;
-        default:
-          throw new Error(`unknown face ${face}`);
-      }
+  for (const face of faces) {
+    const col = shade(rgb, factor(face));
+    switch (face) {
+      case 'front':
+        builder.quad([[x0, y0, z1], [x1, y0, z1], [x1, y1, z1], [x0, y1, z1]], [0, 0, 1], col);
+        break;
+      case 'back':
+        builder.quad([[x1, y0, z0], [x0, y0, z0], [x0, y1, z0], [x1, y1, z0]], [0, 0, -1], col);
+        break;
+      case 'left':
+        builder.quad([[x0, y0, z0], [x0, y0, z1], [x0, y1, z1], [x0, y1, z0]], [-1, 0, 0], col);
+        break;
+      case 'right':
+        builder.quad([[x1, y0, z1], [x1, y0, z0], [x1, y1, z0], [x1, y1, z1]], [1, 0, 0], col);
+        break;
+      case 'top':
+        builder.quad([[x0, y1, z1], [x1, y1, z1], [x1, y1, z0], [x0, y1, z0]], [0, 1, 0], col);
+        break;
+      case 'bottom':
+        builder.quad([[x0, y0, z0], [x1, y0, z0], [x1, y0, z1], [x0, y0, z1]], [0, -1, 0], col);
+        break;
+      default:
+        throw new Error(`unknown face ${face}`);
     }
   }
-  return mesh.build();
+  return builder;
+}
+
+// --------------------------------------------------------------- tool models
+//
+// A tool is an extruded sprite with a depth *profile* — a per-row thickness
+// that turns the icon into a thing: a pickaxe's head is chunky while its
+// haft is a slim stick, a sword's blade is thin while its crossguard is a
+// slab standing proud of it. The profile lives with the shape (see
+// TOOL_PROFILES in item-models.js); this is the mesher that applies it,
+// plus any extra boxes the shape calls for (the fuller down a sword blade,
+// say). Sprite and boxes land in one mesh, so the tool is a single solid
+// and not two objects bolted together.
+
+/**
+ * Build a tool model from a modelSpec (kind 'tool'): the sprite extruded
+ * under the spec's depth profile, then the spec's boxes.
+ *
+ * @param {{rows:string[], palette:Record<string,string>,
+ *   depth:number|function, mirrorX?:boolean, scale?:number,
+ *   boxes?:Array}} spec
+ */
+export function buildToolModel(spec) {
+  const { rows, palette } = spec;
+  const builder = new MeshBuilder();
+  extrudeInto(builder, rows, palette, spec);
+  for (const box of spec.boxes ?? []) boxInto(builder, box, spec.scale ?? 1);
+  return builder.build();
 }
 
 // ------------------------------------------------------------- the bucket

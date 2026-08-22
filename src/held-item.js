@@ -17,7 +17,7 @@
 
 import * as THREE from '../vendor/three.module.min.js';
 import {
-  buildExtrudedSprite, buildBucketModel, meshBounds,
+  buildExtrudedSprite, buildBucketModel, buildToolModel, meshBounds,
 } from './held-geometry.js';
 import {
   modelSpec, poseKind, firstPersonPose, thirdPersonPose,
@@ -57,7 +57,9 @@ export function itemGeometry(id) {
   }
   const mesh = spec.kind === 'bucket'
     ? buildBucketModel(spec.full)
-    : buildExtrudedSprite(spec.rows, spec.palette, spec);
+    : spec.kind === 'tool'
+      ? buildToolModel(spec)
+      : buildExtrudedSprite(spec.rows, spec.palette, spec);
   const geo = toGeometry(mesh);
   geometryCache.set(id, geo);
   boundsCache.set(id, meshBounds(mesh));
@@ -164,16 +166,27 @@ export class FirstPersonHand {
     camera.add(this.frame);
 
     /**
+     * The idle bob: a slow breathing motion so a held tool is never a
+     * frozen prop between swings. Sits between the frame and the pivot so
+     * the swing never fights it.
+     */
+    this.bob = new THREE.Group();
+    this.frame.add(this.bob);
+
+    /**
      * The swing pivot. A tool rotates about the *bottom* of its haft — the
      * wrist — not about its middle. Swinging about the middle makes the head
      * come down and the handle go up, which reads as a seesaw rather than as
      * a strike.
      */
     this.pivot = new THREE.Group();
-    this.frame.add(this.pivot);
+    this.bob.add(this.pivot);
 
     this.holder = new THREE.Group();
     this.pivot.add(this.holder);
+
+    /** Seconds of held-item time, for the idle bob. */
+    this.time = 0;
 
     this.material = createItemMaterial();
     this.blockMaterial = null; // set by the caller: the atlas material
@@ -281,6 +294,7 @@ export class FirstPersonHand {
    * — because a pickaxe is swung and a block is merely shoved into place.
    */
   update(dt) {
+    this.time += dt;
     if (this.swing > 0) this.swing = Math.max(0, this.swing - dt * 4.5);
     const s = this.swing;
     const t = s > 0 ? 1 - s : 0;
@@ -289,8 +303,16 @@ export class FirstPersonHand {
       : Math.cos(((t - 0.35) / 0.65) * Math.PI * 0.5));
 
     const tool = this.kind === POSE_KIND_TOOL;
+
+    // The idle bob: two slow sines, out of phase, so the tool drifts on a
+    // little ellipse instead of a line — a held thing that breathes.
+    this.bob.rotation.x = Math.sin(this.time * 1.6) * 0.012;
+    this.bob.rotation.y = Math.cos(this.time * 1.3) * 0.015;
+    this.bob.position.y = Math.sin(this.time * 2.1) * 0.006;
+
     // The pivot swings; the item inside it keeps its pose. Down and back,
-    // with the tool going further and rolling as it goes.
+    // with the tool going further and rolling as it goes, and a slight yaw
+    // so the strike sweeps across instead of chopping straight down.
     //
     // The distances are in *frame* units, and the frame is scaled to the
     // item's on-screen size — which is the point of the split. The old code
@@ -299,6 +321,7 @@ export class FirstPersonHand {
     // changed the swing. Here the swing is the same swing on any screen.
     this.pivot.rotation.x = curve * (tool ? 1.15 : 0.8);
     this.pivot.rotation.z = tool ? curve * 0.42 : 0;
+    this.pivot.rotation.y = tool ? -curve * 0.22 : 0;
     this.pivot.position.y = -curve * (tool ? 0.70 : 0.94);
     this.pivot.position.x = -curve * (tool ? 0.30 : 0.43);
     this.pivot.position.z = curve * (tool ? 0.20 : 0.10);

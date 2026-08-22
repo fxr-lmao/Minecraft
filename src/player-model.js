@@ -1,14 +1,22 @@
 // Blocky player avatar shown in the two third-person views.
 //
 // Proportions follow the classic 64x32 skin layout measured in "skin pixels":
-// legs 12, body 12, head 8 = 32 px tall, scaled so the model is exactly the
-// 1.8 block hitbox. Limbs hang from pivots (hips/shoulders) so they swing
-// from the right end.
+// legs 12, body 11, neck 2, head 7 = 32 px tall, scaled so the model is
+// exactly the 1.8 block hitbox. Limbs hang from pivots (hips/shoulders) so
+// they swing from the right end.
+//
+// The rebuild matches the mobs: a real neck between the shoulders and the
+// head (the old head was welded to the chest, which reads as a bobble in
+// third person), and hand-drawn painted textures instead of noise — a
+// Steve-style face with pupils and a mouth, a shirt with a collar hem, and
+// shoes. The animation contract (update state, swingArm, setHeldItem,
+// setOpacity, hand) is unchanged.
 
 import * as THREE from '../vendor/three.module.min.js';
 import { PLAYER_HEIGHT } from './constants.js';
-import { mulberry32, clamp } from './utils.js';
+import { clamp } from './utils.js';
 import { AvatarHand } from './held-item.js';
+import { paintedCanvas } from './pixelart.js';
 
 const PX = PLAYER_HEIGHT / 32; // one skin pixel in world units
 
@@ -16,35 +24,23 @@ const PX = PLAYER_HEIGHT / 32; // one skin pixel in world units
 // tone-mapped, so anything near Steve's #3f2a17 hair collapses to black when
 // the sun is on the far side of the player (which is most of the time in
 // third person).
-const SKIN = 0xe8b28c;
-const HAIR = 0x7a5130;
-const SHIRT = 0x00b6b6;
-const SLEEVE = 0x14a0a0;
-const PANTS = 0x4f63c8;
-const SHOE = 0x5f5c6b;
+const SKIN = '#e8b28c';
+const SKIN_DARK = '#c68d66';
+const HAIR = '#8a5c38';
+const HAIR_DARK = '#6e482a';
+const SHIRT = '#00b6b6';
+const SHIRT_LIGHT = '#28c8c8';
+const SHIRT_DARK = '#008080';
+const SLEEVE = '#14a0a0';
+const SLEEVE_DARK = '#0d7878';
+const PANTS = '#4f63c8';
+const PANTS_DARK = '#3a4aa0';
+const SHOE = '#5f5c6b';
+const SHOE_LIGHT = '#7a7688';
 
-/** Small noisy 8x8 texture so flat colours don't look plasticky. */
-function flatTexture(color, seed, opts = {}) {
-  const { rows = null } = opts; // rows: [{ from, to, color }] painted on top
-  const S = 8;
-  const rand = mulberry32(seed);
-  const cv = document.createElement('canvas');
-  cv.width = cv.height = S;
-  const ctx = cv.getContext('2d');
-  const paint = (c, y0, y1) => {
-    for (let y = y0; y < y1; y++) {
-      for (let x = 0; x < S; x++) {
-        const f = 0.88 + rand() * 0.22;
-        const r = clamp(Math.round(((c >> 16) & 255) * f), 0, 255);
-        const g = clamp(Math.round(((c >> 8) & 255) * f), 0, 255);
-        const b = clamp(Math.round((c & 255) * f), 0, 255);
-        ctx.fillStyle = `rgb(${r},${g},${b})`;
-        ctx.fillRect(x, y, 1, 1);
-      }
-    }
-  };
-  paint(color, 0, S);
-  for (const row of rows ?? []) paint(row.color, row.from, row.to);
+/** A canvas texture from a pixel map, nearest-neighbour, sRGB. */
+function mapTexture(rows, palette, seed, wobble = 0.05) {
+  const cv = paintedCanvas(rows.length, rows, palette, { seed, wobble });
   const tex = new THREE.CanvasTexture(cv);
   tex.magFilter = THREE.NearestFilter;
   tex.minFilter = THREE.NearestFilter;
@@ -52,40 +48,92 @@ function flatTexture(color, seed, opts = {}) {
   return tex;
 }
 
-/** The face: skin, hair fringe, two eyes and a mouth. */
-function faceTexture() {
-  const S = 8;
-  const cv = document.createElement('canvas');
-  cv.width = cv.height = S;
-  const ctx = cv.getContext('2d');
-  ctx.fillStyle = `#${SKIN.toString(16).padStart(6, '0')}`;
-  ctx.fillRect(0, 0, S, S);
-  ctx.fillStyle = `#${HAIR.toString(16).padStart(6, '0')}`;
-  ctx.fillRect(0, 0, S, 2);
-  // eyes: white sclera with a dark blue pupil
-  ctx.fillStyle = '#ffffff';
-  ctx.fillRect(1, 3, 2, 1);
-  ctx.fillRect(5, 3, 2, 1);
-  ctx.fillStyle = '#3b3b8c';
-  ctx.fillRect(2, 3, 1, 1);
-  ctx.fillRect(5, 3, 1, 1);
-  // mouth
-  ctx.fillStyle = '#8b5a45';
-  ctx.fillRect(3, 6, 2, 1);
-  const tex = new THREE.CanvasTexture(cv);
-  tex.magFilter = THREE.NearestFilter;
-  tex.minFilter = THREE.NearestFilter;
-  tex.colorSpace = THREE.SRGBColorSpace;
-  return tex;
-}
+/**
+ * The face: hair fringe, white eyes with pupils, a shaded nose and a mouth
+ * — drawn as a map, the way the mobs' faces are, because a face is the one
+ * place noise never belongs.
+ */
+const FACE_PX = [
+  'HHHHHHHH',
+  'HHssssHH',
+  'ssssssss',
+  'sWpsspWs',
+  'ssNNssss',
+  'ssNNssss',
+  'ssMMMMss',
+  'ssddddss',
+];
+const FACE_PALETTE = {
+  H: HAIR, s: SKIN, d: SKIN_DARK, W: '#ffffff', p: '#3b3b8c',
+  N: '#a06e4a', M: '#6e3c2c',
+};
 
-function boxMesh(w, h, d, materials) {
-  const geo = new THREE.BoxGeometry(w * PX, h * PX, d * PX);
-  const mesh = new THREE.Mesh(geo, materials);
-  mesh.castShadow = true;
-  mesh.receiveShadow = true;
-  return mesh;
-}
+/** The head sides: skin with a two-texel hair band across the top. */
+const HEAD_SIDE_PX = [
+  'HHHHHHHH',
+  'HHHHHHHH',
+  'ssssssss',
+  'ssssssss',
+  'ssssssss',
+  'ssssssss',
+  'ssddddss',
+  'ssssssss',
+];
+const HEAD_SIDE_PALETTE = { H: HAIR, s: SKIN, d: SKIN_DARK };
+
+/** The head top: all hair, with a lit streak. */
+const HEAD_TOP_PX = [
+  'HhHHHHHH',
+  'HHHHHHHH',
+  'HHHHHHHH',
+  'HHHHHHHH',
+  'HHHHHHHH',
+  'HHHHHHHH',
+  'HHHHHHHH',
+  'HHHHHHHH',
+];
+const HEAD_TOP_PALETTE = { H: HAIR, h: '#a8784c' };
+
+/** The shirt: a lit top edge and a darker hem, so the torso reads as cloth. */
+const SHIRT_PX = [
+  'mhmmmmmm',
+  'mmmmmmmm',
+  'mmmmmmmm',
+  'mmmmmmmm',
+  'mmmmmmmm',
+  'mmmmmmmm',
+  'ddmmmmdd',
+  'dddddddd',
+];
+const SHIRT_PALETTE = { m: SHIRT, h: SHIRT_LIGHT, d: SHIRT_DARK };
+
+/** An arm: skin with a sleeve and its darker cuff, light down the side. */
+const ARM_PX = [
+  'mmmmmmmm',
+  'mmmmmmmm',
+  'dddddddd',
+  'ssssssss',
+  'ssssssss',
+  'ssssssss',
+  'ddssssss',
+  'dddddddd',
+];
+const ARM_PALETTE = { m: SLEEVE, d: SLEEVE_DARK, s: SKIN };
+
+/** A leg: pants with a darker cuff, and the shoe at the bottom. */
+const LEG_PX = [
+  'mmmmmmmm',
+  'mmmmmmmm',
+  'mmmmmmmm',
+  'mmmmmmmm',
+  'dddddddd',
+  'eeeeeeee',
+  'eeeeeeee',
+  'dddddddd',
+];
+const LEG_PALETTE = {
+  m: PANTS, d: PANTS_DARK, e: SHOE, l: SHOE_LIGHT,
+};
 
 // Self-illumination (emissive = the part's own texture, dimmed) so the side
 // facing away from the sun stays readable instead of turning into a
@@ -96,8 +144,31 @@ function partMaterial(tex) {
   return new THREE.MeshLambertMaterial({ map: tex, emissiveMap: tex, emissive: AMBIENT });
 }
 
-function uniformMaterials(color, seed, opts) {
-  return partMaterial(flatTexture(color, seed, opts));
+function boxMesh(w, h, d, materials) {
+  const geo = new THREE.BoxGeometry(w * PX, h * PX, d * PX);
+  const mesh = new THREE.Mesh(geo, materials);
+  mesh.castShadow = true;
+  mesh.receiveShadow = true;
+  return mesh;
+}
+
+let P_TEX = null;
+function playerTextures() {
+  if (!P_TEX) {
+    P_TEX = {
+      face: mapTexture(FACE_PX, FACE_PALETTE, 601),
+      headSide: mapTexture(HEAD_SIDE_PX, HEAD_SIDE_PALETTE, 602),
+      headTop: mapTexture(HEAD_TOP_PX, HEAD_TOP_PALETTE, 603),
+      headBottom: mapTexture(
+        Array.from({ length: 8 }, () => 'ssssssss'), { s: SKIN }, 604),
+      headBack: mapTexture(
+        Array.from({ length: 8 }, () => 'HHHHHHHH'), { H: HAIR }, 605),
+      shirt: mapTexture(SHIRT_PX, SHIRT_PALETTE, 606),
+      arm: mapTexture(ARM_PX, ARM_PALETTE, 607),
+      leg: mapTexture(LEG_PX, LEG_PALETTE, 608),
+    };
+  }
+  return P_TEX;
 }
 
 /**
@@ -105,6 +176,7 @@ function uniformMaterials(color, seed, opts) {
  * The group's origin sits at the player's feet.
  */
 export function createPlayerModel() {
+  const T = playerTextures();
   const group = new THREE.Group();
   /**
    * Everything hangs off this rather than off the group directly, so that
@@ -117,41 +189,51 @@ export function createPlayerModel() {
   root.rotation.order = 'YXZ';
   group.add(root);
 
-  // ---- head (front face is -Z, matching the forward vector) ----
-  const hairSide = { rows: [{ from: 0, to: 2, color: HAIR }] };
-  const headSide = uniformMaterials(SKIN, 11, hairSide);
-  const headTop = uniformMaterials(HAIR, 12);
-  const headBottom = uniformMaterials(SKIN, 13);
-  const headBack = uniformMaterials(HAIR, 14);
-  const face = partMaterial(faceTexture());
-  // BoxGeometry material order: +x, -x, +y, -y, +z, -z
-  const head = boxMesh(8, 8, 8, [headSide, headSide, headTop, headBottom, headBack, face]);
-  const headPivot = new THREE.Group();
-  headPivot.position.y = 24 * PX; // neck
-  head.position.y = 4 * PX; // head centre, relative to the neck pivot
-  headPivot.add(head);
-  root.add(headPivot);
-
-  // ---- body ----
-  const body = boxMesh(8, 12, 4, uniformMaterials(SHIRT, 21));
-  body.position.y = 18 * PX;
-  root.add(body);
-
-  // ---- arms / legs on pivots ----
-  const limb = (color, seed, w, h, d, x, y, opts) => {
+  // ---- legs: 12px, feet exactly at the origin (hips at y=12) ----
+  const limb = (tex, w, h, d, x, y) => {
     const pivot = new THREE.Group();
     pivot.position.set(x * PX, y * PX, 0);
-    const mesh = boxMesh(w, h, d, uniformMaterials(color, seed, opts));
+    const mesh = boxMesh(w, h, d, partMaterial(tex));
     mesh.position.y = (-h / 2) * PX;
     pivot.add(mesh);
     root.add(pivot);
     return pivot;
   };
 
-  const sleeve = { rows: [{ from: 0, to: 3, color: SLEEVE }] };
-  const shoe = { rows: [{ from: 5, to: 8, color: SHOE }] };
-  const armL = limb(SKIN, 31, 4, 12, 4, -6, 24, sleeve);
-  const armR = limb(SKIN, 32, 4, 12, 4, 6, 24, sleeve);
+  const legL = limb(T.leg, 4, 12, 4, -2, 12);
+  const legR = limb(T.leg, 4, 12, 4, 2, 12);
+
+  // ---- torso: 11px (12..23), one shorter than the classic to make room
+  // for the neck without making the figure taller than its hitbox ----
+  const body = boxMesh(8, 11, 4, partMaterial(T.shirt));
+  body.position.y = 17.5 * PX;
+  root.add(body);
+
+  // ---- the neck: a 2px skin box on the shoulders (23..25) ----
+  const neck = boxMesh(4, 2, 4, partMaterial(T.arm));
+  neck.position.y = 24 * PX;
+  root.add(neck);
+
+  // ---- head (front face is -Z, matching the forward vector) ----
+  // BoxGeometry material order: +x, -x, +y, -y, +z, -z
+  const head = boxMesh(8, 7, 8, [
+    partMaterial(T.headSide),
+    partMaterial(T.headSide),
+    partMaterial(T.headTop),
+    partMaterial(T.headBottom),
+    partMaterial(T.headBack),
+    partMaterial(T.face),
+  ]);
+  const headPivot = new THREE.Group();
+  headPivot.position.y = 25 * PX; // the top of the neck
+  head.position.y = 3.5 * PX; // head centre, relative to the neck pivot
+  headPivot.add(head);
+  headPivot.rotation.order = 'YXZ';
+  root.add(headPivot);
+
+  // ---- arms on shoulder pivots (shoulders at y=23, the torso's top) ----
+  const armL = limb(T.arm, 4, 12, 4, -6, 23);
+  const armR = limb(T.arm, 4, 12, 4, 6, 23);
 
   // What the avatar is holding, parented to the right arm so it swings with
   // it. A block sits in the fist at Minecraft's angle; a tool goes in the
@@ -171,11 +253,6 @@ export function createPlayerModel() {
    * the pickaxe used to disappear as you turned. AvatarHand owns all of that.
    */
   const heldHand = new AvatarHand(hand);
-  const legL = limb(PANTS, 41, 4, 12, 4, -2, 12, shoe);
-  const legR = limb(PANTS, 42, 4, 12, 4, 2, 12, shoe);
-
-  // The head turns independently of the body (YXZ so yaw applies before pitch).
-  headPivot.rotation.order = 'YXZ';
 
   const materials = [];
   group.traverse((o) => {
@@ -362,11 +439,11 @@ export function createPlayerModel() {
 
       const lean = bend * 0.45 + sprintLean * upright * 0.16;
       body.rotation.x = lean;
-      body.position.y = (18 - 2 * bend) * PX;
-      headPivot.position.y = (24 - 3 * bend) * PX;
+      body.position.y = (17.5 - 2 * bend) * PX;
+      headPivot.position.y = (25 - 3 * bend) * PX;
       headPivot.position.z = bend * 2.2 * PX;
       headPivot.rotation.x -= lean * 0.75; // keep the head level while leaning
-      armL.position.y = armR.position.y = (24 - 3 * bend) * PX;
+      armL.position.y = armR.position.y = (23 - 3 * bend) * PX;
       armL.position.z = armR.position.z = bend * 1.8 * PX;
       legL.position.y = legR.position.y = (12 - 1 * bend) * PX;
 
