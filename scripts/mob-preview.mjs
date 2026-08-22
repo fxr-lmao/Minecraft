@@ -42,6 +42,7 @@ globalThis.document = {
 };
 
 const { createMobModel } = await import('../src/mob-models.js');
+const { createPlayerModel } = await import('../src/player-model.js');
 const { ZOMBIE, CREEPER, SKELETON, SPIDER, PIG, COW, CHICKEN, SHEEP } = await import('../src/mobs.js');
 
 // ---- png encoder ----
@@ -194,6 +195,17 @@ function render(model, { yaw = 0.7, pitch = 0.25, zoom = 100 } = {}) {
 }
 
 mkdirSync('preview', { recursive: true });
+
+// The player avatar too — same harness, same angles.
+{
+  const model = createPlayerModel();
+  const front = render(model, { yaw: 0.6, pitch: 0.12, zoom: 105 });
+  png('preview/mob-player-front.png', front.w, front.h, front.rgba);
+  const side = render(model, { yaw: 0.6 + Math.PI / 2, pitch: 0.12, zoom: 105 });
+  png('preview/mob-player-side.png', side.w, side.h, side.rgba);
+  console.log('player');
+}
+
 const KINDS = [ZOMBIE, CREEPER, SKELETON, SPIDER, PIG, COW, CHICKEN, SHEEP];
 const NAMES = { [ZOMBIE]: 'zombie', [CREEPER]: 'creeper', [SKELETON]: 'skeleton', [SPIDER]: 'spider', [PIG]: 'pig', [COW]: 'cow', [CHICKEN]: 'chicken', [SHEEP]: 'sheep' };
 for (const kind of KINDS) {

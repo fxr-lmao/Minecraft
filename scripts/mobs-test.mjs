@@ -1213,6 +1213,66 @@ function waterWorld(depth = 4, floor = 0) {
   delete globalThis.document;
 }
 
+// --------------------------------------------------------- the player avatar
+// The player model was rebuilt the same way the mobs were: a neck, painted
+// textures, feet at the origin. The same corner-scan harness proves the
+// grounding, and the neck is a real part of the figure rather than a claim
+// in a comment.
+{
+  class Ctx {
+    constructor() { this.fillStyle = '#000'; }
+    fillRect() {}
+  }
+  class Canvas {
+    constructor() { this.width = 8; this.height = 8; this._ctx = new Ctx(); }
+    getContext() { return this._ctx; }
+  }
+  globalThis.document = {
+    createElement: (tag) => (tag === 'canvas' ? new Canvas() : {}),
+    createElementNS: (ns, tag) => (tag === 'canvas' ? new Canvas() : {}),
+  };
+
+  const { createPlayerModel } = await import('../src/player-model.js');
+  const { PLAYER_HEIGHT } = await import('../src/constants.js');
+  const model = createPlayerModel();
+  model.group.updateMatrixWorld(true);
+
+  let minY = Infinity;
+  let maxY = -Infinity;
+  let neckFound = false;
+  const PX = PLAYER_HEIGHT / 32;
+  model.group.traverse((o) => {
+    if (!o.isMesh) return;
+    const c = o.geometry.parameters;
+    const w = o.matrixWorld.elements;
+    // the neck: a 2px-tall box sitting between the torso top (23px) and the
+    // head pivot (25px)
+    if (Math.abs(c.height - 2 * PX) < 1e-6 && Math.abs(w[13] - 24 * PX) < 0.01) {
+      neckFound = true;
+    }
+    for (const sx of [-1, 1]) {
+      for (const sy of [-1, 1]) {
+        for (const sz of [-1, 1]) {
+          const x = sx * c.width / 2;
+          const y = sy * c.height / 2;
+          const z = sz * c.depth / 2;
+          const wy = w[1] * x + w[5] * y + w[9] * z + w[13];
+          if (wy < minY) minY = wy;
+          if (wy > maxY) maxY = wy;
+        }
+      }
+    }
+  });
+
+  assert('the player stands ON the ground, not in it',
+    minY >= -0.02 && minY <= 0.02, minY.toFixed(3));
+  assert('...and fills the 1.8-block hitbox',
+    maxY > PLAYER_HEIGHT - 0.02 && maxY <= PLAYER_HEIGHT + 0.02, maxY.toFixed(3));
+  assert('the player has a neck between chest and head', neckFound);
+
+  delete globalThis.document;
+}
+
 // ---------------------------------------------------------------------- total
 
 for (const [name, ok, detail] of results) {
